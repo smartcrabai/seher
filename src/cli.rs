@@ -5,15 +5,22 @@ use std::str::FromStr;
 use zzsleep::sleep_until;
 
 #[derive(Parser)]
-#[command(name = "seher", about = "CLI tool for Claude.ai and Copilot rate limit monitoring")]
+#[command(
+    name = "seher",
+    about = "CLI tool for Claude.ai and Copilot rate limit monitoring"
+)]
 pub struct Args {
     /// Browser to use (chrome, edge, brave, firefox, safari, etc.)
     #[arg(long, short)]
     pub browser: Option<String>,
 
     /// Browser profile name (e.g. "Profile 1", "default-release")
-    #[arg(long, short)]
+    #[arg(long)]
     pub profile: Option<String>,
+
+    /// Additional arguments to pass to the agent command
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub agent_args: Vec<String>,
 
     /// Suppress informational output (usage, sleep progress, etc.)
     #[arg(long, short)]
@@ -22,10 +29,6 @@ pub struct Args {
     /// Output provider usage as JSON and exit
     #[arg(long, short = 'j')]
     pub json: bool,
-
-    /// Additional arguments to pass to the agent command
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    pub agent_args: Vec<String>,
 }
 
 pub async fn run(args: Args) {
