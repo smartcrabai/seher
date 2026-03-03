@@ -59,6 +59,7 @@ lto = "thin"
 formula = "seher"
 
 [workspace.metadata.dist]
+allow-dirty = ["ci"]
 cargo-dist-version = "0.31.0"
 ci = ["github"]
 installers = ["shell", "homebrew"]
