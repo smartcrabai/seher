@@ -38,7 +38,7 @@ All Chromium-based browsers use the same cookie storage format and encryption. F
 ### Homebrew (macOS / Linux) - recommended
 
 ```sh
-brew install takumi3488/tap/seher
+brew install smartcrabai/tap/seher
 ```
 
 ### Pre-built binaries
@@ -46,13 +46,13 @@ brew install takumi3488/tap/seher
 Pre-built binaries are available for macOS and Linux (x86_64 and aarch64):
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/takumi3488/seher/releases/latest/download/seher-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/smartcrabai/seher/releases/latest/download/seher-installer.sh | sh
 ```
 
 ### Build from source
 
 ```sh
-cargo install --git https://github.com/takumi3488/seher
+cargo install --git https://github.com/smartcrabai/seher
 ```
 
 

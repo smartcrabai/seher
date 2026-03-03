@@ -4,7 +4,7 @@ description = "CLI tool to monitor Claude API rate limits and execute code after
 edition = "2024"
 license = "Apache-2.0"
 name = "sehercode"
-repository = "https://github.com/takumi3488/seher"
+repository = "https://github.com/smartcrabai/seher"
 version = "0.0.13"
 
 [[bin]]
@@ -64,7 +64,7 @@ cargo-dist-version = "0.31.0"
 ci = ["github"]
 installers = ["shell", "homebrew"]
 publish-jobs = ["homebrew"]
-tap = "takumi3488/homebrew-tap"
+tap = "smartcrabai/homebrew-tap"
 targets = [
   "x86_64-unknown-linux-gnu",
   "aarch64-unknown-linux-gnu",
