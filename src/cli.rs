@@ -7,6 +7,7 @@ use zzsleep::sleep_until;
 #[derive(Parser)]
 #[command(
     name = "seher",
+    version,
     about = "CLI tool for Claude.ai and Copilot rate limit monitoring"
 )]
 pub struct Args {
