@@ -6,6 +6,9 @@
       "models": {
         "high": "opus",
         "low": "sonnet"
+      },
+      "env": {
+        "CLAUDE_CODE_MAX_TURNS": "100"
       }
     },
     {

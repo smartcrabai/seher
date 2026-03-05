@@ -150,6 +150,9 @@ impl Agent {
         let mut cmd = std::process::Command::new(self.command());
         cmd.args(resolved_args);
         cmd.args(extra_args);
+        if let Some(env) = &self.config.env {
+            cmd.envs(env);
+        }
         cmd.status()
     }
 
