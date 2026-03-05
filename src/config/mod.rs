@@ -82,14 +82,8 @@ mod tests {
         );
 
         let models = claude.models.as_ref().expect("models should be present");
-        assert_eq!(
-            models.get("high").map(String::as_str),
-            Some("claude-opus-4-5")
-        );
-        assert_eq!(
-            models.get("low").map(String::as_str),
-            Some("claude-sonnet-4-5")
-        );
+        assert_eq!(models.get("high").map(String::as_str), Some("opus"));
+        assert_eq!(models.get("low").map(String::as_str), Some("sonnet"));
     }
 
     #[test]

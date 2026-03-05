@@ -4,8 +4,8 @@
       "command": "claude",
       "args": ["--permission-mode", "bypassPermissions", "--model", "{model}"],
       "models": {
-        "high": "claude-opus-4-5",
-        "low": "claude-sonnet-4-5"
+        "high": "opus",
+        "low": "sonnet"
       }
     },
     {
