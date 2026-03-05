@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Settings {
@@ -32,12 +32,18 @@ impl Default for Settings {
 }
 
 impl Settings {
-    pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
-        let path = Self::settings_path()?;
-        if !path.exists() {
-            return Ok(Settings::default());
-        }
-        let content = std::fs::read_to_string(&path)?;
+    pub fn load(path: Option<&Path>) -> Result<Self, Box<dyn std::error::Error>> {
+        let path = match path {
+            Some(p) => p.to_path_buf(),
+            None => Self::settings_path()?,
+        };
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Settings::default());
+            }
+            Err(e) => return Err(e.into()),
+        };
         let settings: Settings = serde_json::from_str(&content)?;
         Ok(settings)
     }

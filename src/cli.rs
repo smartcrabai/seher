@@ -1,6 +1,7 @@
 use chrono::{DateTime, Local, Utc};
 use clap::Parser;
 use seher::{Agent, AgentLimit, AgentStatus, BrowserDetector, BrowserType, CookieReader, Settings};
+use std::path::PathBuf;
 use std::str::FromStr;
 use zzsleep::sleep_until;
 
@@ -34,10 +35,14 @@ pub struct Args {
     /// Output provider usage as JSON and exit
     #[arg(long, short = 'j')]
     pub json: bool,
+
+    /// Path to settings file
+    #[arg(long, short = 'C')]
+    pub config: Option<PathBuf>,
 }
 
 pub async fn run(args: Args) {
-    let settings = match Settings::load() {
+    let settings = match Settings::load(args.config.as_deref()) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Failed to load settings: {}", e);
