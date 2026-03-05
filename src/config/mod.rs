@@ -14,6 +14,8 @@ pub struct AgentConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub models: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub env: Option<HashMap<String, String>>,
 }
 
 impl Default for Settings {
@@ -23,6 +25,7 @@ impl Default for Settings {
                 command: "claude".to_string(),
                 args: vec![],
                 models: None,
+                env: None,
             }],
         }
     }
@@ -116,6 +119,25 @@ mod tests {
         assert_eq!(settings.agents[0].command, "claude");
         assert!(settings.agents[0].args.is_empty());
         assert!(settings.agents[0].models.is_none());
+    }
+
+    #[test]
+    fn test_parse_settings_with_env() {
+        let json = r#"{"agents": [{"command": "claude", "env": {"ANTHROPIC_API_KEY": "sk-test", "CLAUDE_CODE_MAX_TURNS": "100"}}]}"#;
+        let settings: Settings = serde_json::from_str(json).unwrap();
+
+        let env = settings.agents[0]
+            .env
+            .as_ref()
+            .expect("env should be present");
+        assert_eq!(
+            env.get("ANTHROPIC_API_KEY").map(String::as_str),
+            Some("sk-test")
+        );
+        assert_eq!(
+            env.get("CLAUDE_CODE_MAX_TURNS").map(String::as_str),
+            Some("100")
+        );
     }
 
     #[test]
