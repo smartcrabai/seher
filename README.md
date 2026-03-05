@@ -72,6 +72,9 @@ seher --browser firefox --profile "default-release" "fix bugs"
 seher --browser safari "fix bugs"
 # Most Claude Code options can be used as is
 seher --chrome --disallowedTools "Bash(git:*)" --permission-mode bypassPermissions "fix bugs"
+# Use model level (resolved via agent's models map)
+seher --model high "fix bugs"
+seher -m low "fix bugs"
 ```
 
 
@@ -97,6 +100,7 @@ You can customize seher's behavior by creating `~/.seher/settings.json`. If the 
 | `agents` | array | List of agents to use |
 | `agents[].command` | string | Command name (`"claude"` or `"copilot"`) |
 | `agents[].args` | array of strings | Additional arguments (optional) |
+| `agents[].models` | object | Model level mapping (optional) |
 
 
 ### Example
@@ -107,16 +111,25 @@ You can customize seher's behavior by creating `~/.seher/settings.json`. If the 
   "agents": [
     {
       "command": "claude",
-      "args": ["--permission-mode", "bypassPermissions"]
+      "args": ["--permission-mode", "bypassPermissions", "--model", "{model}"],
+      "models": {
+        "high": "opus",
+        "low": "sonnet"
+      }
     },
     {
       "command": "copilot",
-      "args": []
+      "args": ["--model", "{model}", "--yolo"],
+      "models": {
+        "high": "claude-opus-4.5",
+        "low": "claude-sonnet-4.5"
+      }
     }
   ]
 }
 ```
 
+The `{model}` placeholder in `args` is resolved based on the value passed to `--model`. If the key exists in the `models` map, it is replaced with the mapped value; otherwise the value is used as-is. When `--model` is not specified, any argument containing `{model}` is skipped.
 
 When multiple agents are configured, seher preferentially selects agents that are not rate-limited.
 
