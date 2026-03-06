@@ -157,15 +157,16 @@ impl Agent {
     }
 
     pub fn has_model(&self, model_key: &str) -> bool {
-        self.config
-            .models
-            .as_ref()
-            .is_some_and(|m| m.contains_key(model_key))
+        match &self.config.models {
+            None => true, // models未設定 → パススルーなので任意のモデルキーを受け入れる
+            Some(m) => m.contains_key(model_key),
+        }
     }
 
     pub fn resolved_args(&self, model: Option<&str>) -> Vec<String> {
         const MODEL_PLACEHOLDER: &str = "{model}";
-        self.config
+        let mut args: Vec<String> = self
+            .config
             .args
             .iter()
             .filter_map(|arg| {
@@ -182,6 +183,56 @@ impl Agent {
                     Some(arg.clone())
                 }
             })
-            .collect()
+            .collect();
+
+        // models未設定の場合、--model <value> をそのまま渡す
+        if self.config.models.is_none() {
+            if let Some(model_key) = model {
+                args.push("--model".to_string());
+                args.push(model_key.to_string());
+            }
+        }
+
+        args
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AgentConfig;
+
+    fn make_agent(models: Option<std::collections::HashMap<String, String>>) -> Agent {
+        Agent::new(
+            AgentConfig {
+                command: "claude".to_string(),
+                args: vec![],
+                models,
+                env: None,
+            },
+            vec![],
+            "claude.ai".to_string(),
+        )
+    }
+
+    #[test]
+    fn has_model_returns_true_when_models_is_none() {
+        let agent = make_agent(None);
+        assert!(agent.has_model("high"));
+        assert!(agent.has_model("anything"));
+    }
+
+    #[test]
+    fn resolved_args_passthrough_when_models_is_none_with_model() {
+        let agent = make_agent(None);
+        let args = agent.resolved_args(Some("high"));
+        assert_eq!(args, vec!["--model", "high"]);
+    }
+
+    #[test]
+    fn resolved_args_no_model_flag_when_models_is_none_without_model() {
+        let agent = make_agent(None);
+        let args = agent.resolved_args(None);
+        assert!(!args.contains(&"--model".to_string()));
     }
 }
