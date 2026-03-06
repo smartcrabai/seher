@@ -149,6 +149,23 @@ pub async fn run(args: Args) {
         }
     }
 
+    if let Some(model_key) = args.model.as_deref() {
+        let model_agents: Vec<usize> = agents
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.has_model(model_key))
+            .map(|(i, _)| i)
+            .collect();
+
+        if model_agents.is_empty() {
+            eprintln!("No agents found with model '{}'", model_key);
+            return;
+        }
+
+        available_indices.retain(|i| model_agents.contains(i));
+        limited_indices.retain(|(i, _)| model_agents.contains(i));
+    }
+
     if !available_indices.is_empty() {
         let selected_index = available_indices[0];
         if !args.quiet {

@@ -156,6 +156,13 @@ impl Agent {
         cmd.status()
     }
 
+    pub fn has_model(&self, model_key: &str) -> bool {
+        self.config
+            .models
+            .as_ref()
+            .is_some_and(|m| m.contains_key(model_key))
+    }
+
     pub fn resolved_args(&self, model: Option<&str>) -> Vec<String> {
         const MODEL_PLACEHOLDER: &str = "{model}";
         self.config
