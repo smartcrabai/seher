@@ -1107,6 +1107,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "json_comments"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9dbbfed4e59ba9750e15ba154fdfd9329cee16ff3df539c2666b70f58cc32105"
+
+[[package]]
 name = "leb128fmt"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1796,6 +1802,7 @@ dependencies = [
  "chrono",
  "clap",
  "dirs",
+ "json_comments",
  "pbkdf2",
  "reqwest",
  "rusqlite",

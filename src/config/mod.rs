@@ -76,13 +76,19 @@ impl Settings {
             }
             Err(e) => return Err(e.into()),
         };
-        let settings: Settings = serde_json::from_str(&content)?;
+        let stripped = json_comments::StripComments::new(content.as_bytes());
+        let settings: Settings = serde_json::from_reader(stripped)?;
         Ok(settings)
     }
 
     fn settings_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
         let home = dirs::home_dir().ok_or("HOME directory not found")?;
-        Ok(home.join(".seher").join("settings.json"))
+        let dir = home.join(".seher");
+        let jsonc_path = dir.join("settings.jsonc");
+        if jsonc_path.exists() {
+            return Ok(jsonc_path);
+        }
+        Ok(dir.join("settings.json"))
     }
 }
 
@@ -252,6 +258,23 @@ mod tests {
         );
         assert!(settings.agents[0].models.is_none());
         assert!(settings.agents[0].arg_maps.is_empty());
+    }
+
+    #[test]
+    fn test_parse_jsonc_with_comments() {
+        let jsonc = r#"{
+            // This is a comment
+            "agents": [
+                {
+                    "command": "claude", /* inline comment */
+                    "args": ["--model", "{model}"]
+                }
+            ]
+        }"#;
+        let stripped = json_comments::StripComments::new(jsonc.as_bytes());
+        let settings: Settings = serde_json::from_reader(stripped).unwrap();
+        assert_eq!(settings.agents.len(), 1);
+        assert_eq!(settings.agents[0].command, "claude");
     }
 
     #[test]
