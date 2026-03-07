@@ -197,17 +197,15 @@ impl Agent {
     }
 
     pub fn mapped_args(&self, args: &[String]) -> Vec<String> {
-        let mut mapped_args = Vec::new();
-
-        for arg in args {
-            if let Some(replacement) = self.config.arg_maps.get(arg) {
-                mapped_args.extend(replacement.iter().cloned());
-            } else {
-                mapped_args.push(arg.clone());
-            }
-        }
-
-        mapped_args
+        args.iter()
+            .flat_map(|arg| {
+                self.config
+                    .arg_maps
+                    .get(arg.as_str())
+                    .map_or_else(|| std::slice::from_ref(arg), Vec::as_slice)
+            })
+            .cloned()
+            .collect()
     }
 }
 

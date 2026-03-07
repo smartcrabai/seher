@@ -83,10 +83,7 @@ mod tests {
 
         let claude = &settings.agents[0];
         assert_eq!(claude.command, "claude");
-        assert_eq!(
-            claude.args,
-            ["--model", "{model}"]
-        );
+        assert_eq!(claude.args, ["--model", "{model}"]);
 
         let models = claude.models.as_ref().expect("models should be present");
         assert_eq!(models.get("high").map(String::as_str), Some("opus"));
