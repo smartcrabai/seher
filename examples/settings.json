@@ -2,7 +2,7 @@
   "agents": [
     {
       "command": "claude",
-      "args": ["--permission-mode", "bypassPermissions", "--model", "{model}"],
+      "args": ["--model", "{model}"],
       "models": {
         "high": "opus",
         "low": "sonnet"
@@ -16,7 +16,7 @@
     },
     {
       "command": "copilot",
-      "args": ["--model", "{model}", "--yolo"],
+      "args": ["--model", "{model}"],
       "models": {
         "high": "claude-opus-4.5",
         "low": "claude-sonnet-4.5"

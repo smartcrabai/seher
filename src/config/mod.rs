@@ -85,12 +85,7 @@ mod tests {
         assert_eq!(claude.command, "claude");
         assert_eq!(
             claude.args,
-            [
-                "--permission-mode",
-                "bypassPermissions",
-                "--model",
-                "{model}"
-            ]
+            ["--model", "{model}"]
         );
 
         let models = claude.models.as_ref().expect("models should be present");
@@ -112,7 +107,7 @@ mod tests {
 
         let copilot = &settings.agents[1];
         assert_eq!(copilot.command, "copilot");
-        assert_eq!(copilot.args, ["--model", "{model}", "--yolo"]);
+        assert_eq!(copilot.args, ["--model", "{model}"]);
 
         let models = copilot.models.as_ref().expect("models should be present");
         assert_eq!(
