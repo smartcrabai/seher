@@ -89,7 +89,7 @@ alias shr="seher --profile 'Profile 1' --permission-mode bypassPermissions"
 ## Configuration
 
 
-You can customize seher's behavior by creating `~/.seher/settings.json` or `~/.seher/settings.jsonc` (JSONC supports `//` and `/* */` comments and trailing commas). If neither file exists, the default configuration (using `claude` with no extra arguments) is applied.
+You can customize seher's behavior by creating `~/.config/seher/settings.json` or `~/.config/seher/settings.jsonc` (JSONC supports `//` and `/* */` comments and trailing commas). If neither file exists, the default configuration (using `claude` with no extra arguments) is applied.
 
 
 ### Settings

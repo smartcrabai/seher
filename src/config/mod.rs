@@ -126,7 +126,7 @@ impl Settings {
 
     fn settings_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
         let home = dirs::home_dir().ok_or("HOME directory not found")?;
-        let dir = home.join(".seher");
+        let dir = home.join(".config").join("seher");
         let jsonc_path = dir.join("settings.jsonc");
         if jsonc_path.exists() {
             return Ok(jsonc_path);
