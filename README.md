@@ -101,6 +101,7 @@ You can customize seher's behavior by creating `~/.seher/settings.json`. If the 
 | `agents[].command` | string | Command name (`"claude"` or `"copilot"`) |
 | `agents[].args` | array of strings | Additional arguments (optional) |
 | `agents[].models` | object | Model level mapping (optional) |
+| `agents[].arg_maps` | object | Exact-match mapping from trailing CLI tokens to replacement token arrays (optional) |
 
 
 ### Example
@@ -111,18 +112,24 @@ You can customize seher's behavior by creating `~/.seher/settings.json`. If the 
   "agents": [
     {
       "command": "claude",
-      "args": ["--permission-mode", "bypassPermissions", "--model", "{model}"],
+      "args": ["--model", "{model}"],
       "models": {
         "high": "opus",
         "low": "sonnet"
+      },
+      "arg_maps": {
+        "--danger": ["--permission-mode", "bypassPermissions"]
       }
     },
     {
       "command": "copilot",
-      "args": ["--model", "{model}", "--yolo"],
+      "args": ["--model", "{model}"],
       "models": {
         "high": "claude-opus-4.5",
         "low": "claude-sonnet-4.5"
+      },
+      "arg_maps": {
+        "--danger": ["--yolo"]
       }
     }
   ]
@@ -131,5 +138,6 @@ You can customize seher's behavior by creating `~/.seher/settings.json`. If the 
 
 The `{model}` placeholder in `args` is resolved based on the value passed to `--model`. If the key exists in the `models` map, it is replaced with the mapped value; otherwise the value is used as-is. When `--model` is not specified, any argument containing `{model}` is skipped.
 
-When multiple agents are configured, seher preferentially selects agents that are not rate-limited.
+`arg_maps` rewrites each trailing CLI token independently using exact-match keys. A mapping value can expand one input token into multiple output tokens, while unmapped tokens are passed through unchanged. For example, with the sample configuration, `seher --danger "fix bugs"` adds `--permission-mode bypassPermissions` when Claude is selected, or `--yolo` when Copilot is selected.
 
+When multiple agents are configured, seher preferentially selects agents that are not rate-limited.

@@ -195,6 +195,18 @@ impl Agent {
 
         args
     }
+
+    pub fn mapped_args(&self, args: &[String]) -> Vec<String> {
+        args.iter()
+            .flat_map(|arg| {
+                self.config
+                    .arg_maps
+                    .get(arg.as_str())
+                    .map_or_else(|| std::slice::from_ref(arg), Vec::as_slice)
+            })
+            .cloned()
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -204,12 +216,16 @@ mod tests {
     use super::*;
     use crate::config::AgentConfig;
 
-    fn make_agent(models: Option<HashMap<String, String>>) -> Agent {
+    fn make_agent(
+        models: Option<HashMap<String, String>>,
+        arg_maps: HashMap<String, Vec<String>>,
+    ) -> Agent {
         Agent::new(
             AgentConfig {
                 command: "claude".to_string(),
                 args: vec![],
                 models,
+                arg_maps,
                 env: None,
                 provider: None,
             },
@@ -219,22 +235,64 @@ mod tests {
 
     #[test]
     fn has_model_returns_true_when_models_is_none() {
-        let agent = make_agent(None);
+        let agent = make_agent(None, HashMap::new());
         assert!(agent.has_model("high"));
         assert!(agent.has_model("anything"));
     }
 
     #[test]
     fn resolved_args_passthrough_when_models_is_none_with_model() {
-        let agent = make_agent(None);
+        let agent = make_agent(None, HashMap::new());
         let args = agent.resolved_args(Some("high"));
         assert_eq!(args, vec!["--model", "high"]);
     }
 
     #[test]
     fn resolved_args_no_model_flag_when_models_is_none_without_model() {
-        let agent = make_agent(None);
+        let agent = make_agent(None, HashMap::new());
         let args = agent.resolved_args(None);
         assert!(!args.contains(&"--model".to_string()));
+    }
+
+    #[test]
+    fn mapped_args_passthrough_when_arg_maps_is_empty() {
+        let agent = make_agent(None, HashMap::new());
+        let args = vec!["--danger".to_string(), "fix bugs".to_string()];
+
+        assert_eq!(agent.mapped_args(&args), args);
+    }
+
+    #[test]
+    fn mapped_args_replaces_matching_tokens() {
+        let mut arg_maps = HashMap::new();
+        arg_maps.insert("--danger".to_string(), vec!["--yolo".to_string()]);
+        let agent = make_agent(None, arg_maps);
+
+        assert_eq!(
+            agent.mapped_args(&["--danger".to_string(), "fix bugs".to_string()]),
+            vec!["--yolo".to_string(), "fix bugs".to_string()]
+        );
+    }
+
+    #[test]
+    fn mapped_args_can_expand_to_multiple_tokens() {
+        let mut arg_maps = HashMap::new();
+        arg_maps.insert(
+            "--danger".to_string(),
+            vec![
+                "--permission-mode".to_string(),
+                "bypassPermissions".to_string(),
+            ],
+        );
+        let agent = make_agent(None, arg_maps);
+
+        assert_eq!(
+            agent.mapped_args(&["--danger".to_string(), "fix bugs".to_string()]),
+            vec![
+                "--permission-mode".to_string(),
+                "bypassPermissions".to_string(),
+                "fix bugs".to_string(),
+            ]
+        );
     }
 }

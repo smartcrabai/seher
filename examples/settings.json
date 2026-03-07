@@ -8,6 +8,12 @@
         "medium": "sonnet",
         "low": "haiku",
         "sonnet": "sonnet"
+      },
+      "arg_maps": {
+        "--danger": ["--permission-mode", "bypassPermissions"]
+      },
+      "env": {
+        "CLAUDE_CODE_MAX_TURNS": "100"
       }
     },
     {

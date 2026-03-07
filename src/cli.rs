@@ -280,9 +280,9 @@ async fn execute_agent(
     quiet: bool,
 ) {
     let selected_agent = &agents[selected_index];
-    let mut final_args = agent_args;
+    let mut final_args = selected_agent.mapped_args(&agent_args);
 
-    if final_args.is_empty() && !quiet {
+    if agent_args.is_empty() && !quiet {
         match prompt_from_editor().await {
             Ok(prompt) if !prompt.is_empty() => final_args.push(prompt),
             Ok(_) => {}
