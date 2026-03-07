@@ -61,37 +61,25 @@ pub async fn run(args: Args) {
     let mut agents: Vec<Agent> = Vec::new();
 
     for config in &settings.agents {
-        let domain = match get_domain_for_command(&config.command) {
-            Some(d) => d,
-            None => {
-                eprintln!(
-                    "Warning: unrecognized command '{}', skipping",
-                    config.command
-                );
-                continue;
-            }
-        };
+        let domain = config.resolve_domain();
 
-        let cookies = match get_cookies_for_domain(
-            &detector,
-            &browsers,
-            &args.browser,
-            &args.profile,
-            domain,
-        ) {
-            Some(c) => c,
-            None => {
-                if !args.quiet {
-                    eprintln!(
-                        "No cookies found for {} (domain: {})",
-                        config.command, domain
-                    );
+        let cookies = match domain {
+            Some(d) => {
+                match get_cookies_for_domain(&detector, &browsers, &args.browser, &args.profile, d)
+                {
+                    Some(c) => c,
+                    None => {
+                        if !args.quiet {
+                            eprintln!("No cookies found for {} (domain: {})", config.command, d);
+                        }
+                        continue;
+                    }
                 }
-                continue;
             }
+            None => vec![],
         };
 
-        agents.push(Agent::new(config.clone(), cookies, domain.to_string()));
+        agents.push(Agent::new(config.clone(), cookies));
     }
 
     if agents.is_empty() {
@@ -159,6 +147,9 @@ pub async fn run(args: Args) {
         limited_indices.retain(|(i, _)| agents[*i].has_model(model_key));
     }
 
+    // Prioritize provider-aware agents (with domain) and put fallback agents last
+    available_indices.sort_by_key(|&i| agents[i].config.resolve_domain().is_none());
+
     if !available_indices.is_empty() {
         let selected_index = available_indices[0];
         if !args.quiet {
@@ -212,14 +203,6 @@ pub async fn run(args: Args) {
     }
 
     eprintln!("No available agents");
-}
-
-fn get_domain_for_command(command: &str) -> Option<&str> {
-    match command {
-        "claude" => Some("claude.ai"),
-        "copilot" => Some("github.com"),
-        _ => None,
-    }
 }
 
 fn get_cookies_for_domain(
