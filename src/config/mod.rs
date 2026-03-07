@@ -63,6 +63,46 @@ impl Default for Settings {
     }
 }
 
+fn strip_trailing_commas(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut result = String::with_capacity(s.len());
+    let mut i = 0;
+    let mut in_string = false;
+
+    while i < chars.len() {
+        let c = chars[i];
+
+        if in_string {
+            result.push(c);
+            if c == '\\' && i + 1 < chars.len() {
+                i += 1;
+                result.push(chars[i]);
+            } else if c == '"' {
+                in_string = false;
+            }
+        } else if c == '"' {
+            in_string = true;
+            result.push(c);
+        } else if c == ',' {
+            let mut j = i + 1;
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if j < chars.len() && (chars[j] == ']' || chars[j] == '}') {
+                // trailing comma: skip it
+            } else {
+                result.push(c);
+            }
+        } else {
+            result.push(c);
+        }
+
+        i += 1;
+    }
+
+    result
+}
+
 impl Settings {
     pub fn load(path: Option<&Path>) -> Result<Self, Box<dyn std::error::Error>> {
         let path = match path {
@@ -76,8 +116,11 @@ impl Settings {
             }
             Err(e) => return Err(e.into()),
         };
-        let stripped = json_comments::StripComments::new(content.as_bytes());
-        let settings: Settings = serde_json::from_reader(stripped)?;
+        let mut stripped = json_comments::StripComments::new(content.as_bytes());
+        let mut json_str = String::new();
+        std::io::Read::read_to_string(&mut stripped, &mut json_str)?;
+        let clean = strip_trailing_commas(&json_str);
+        let settings: Settings = serde_json::from_str(&clean)?;
         Ok(settings)
     }
 
@@ -273,6 +316,26 @@ mod tests {
         }"#;
         let stripped = json_comments::StripComments::new(jsonc.as_bytes());
         let settings: Settings = serde_json::from_reader(stripped).unwrap();
+        assert_eq!(settings.agents.len(), 1);
+        assert_eq!(settings.agents[0].command, "claude");
+    }
+
+    #[test]
+    fn test_parse_jsonc_with_trailing_commas() {
+        let jsonc = r#"{
+            // trailing commas
+            "agents": [
+                {
+                    "command": "claude",
+                    "args": ["--model", "{model}"],
+                },
+            ]
+        }"#;
+        let mut stripped = json_comments::StripComments::new(jsonc.as_bytes());
+        let mut json_str = String::new();
+        std::io::Read::read_to_string(&mut stripped, &mut json_str).unwrap();
+        let clean = strip_trailing_commas(&json_str);
+        let settings: Settings = serde_json::from_str(&clean).unwrap();
         assert_eq!(settings.agents.len(), 1);
         assert_eq!(settings.agents[0].command, "claude");
     }
