@@ -147,7 +147,7 @@ pub async fn run(args: Args) {
         limited_indices.retain(|(i, _)| agents[*i].has_model(model_key));
     }
 
-    // provider-aware エージェント（domain あり）を優先し、フォールバックを最後にする
+    // Prioritize provider-aware agents (with domain) and put fallback agents last
     available_indices.sort_by_key(|&i| agents[i].config.resolve_domain().is_none());
 
     if !available_indices.is_empty() {

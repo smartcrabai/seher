@@ -115,7 +115,7 @@ mod tests {
         assert_eq!(models.get("high").map(String::as_str), Some("opus"));
         assert_eq!(models.get("medium").map(String::as_str), Some("sonnet"));
 
-        // provider フィールドなし → None (コマンド名から推論)
+        // no provider field → None (inferred from command name)
         assert!(claude.provider.is_none());
         assert_eq!(claude.resolve_domain(), Some("claude.ai"));
     }
@@ -152,7 +152,7 @@ mod tests {
         let fallback = &settings.agents[2];
         assert_eq!(fallback.command, "claude");
 
-        // provider: null → Some(None) (フォールバック)
+        // provider: null → Some(None) (fallback)
         assert_eq!(fallback.provider, Some(None));
         assert_eq!(fallback.resolve_domain(), None);
     }

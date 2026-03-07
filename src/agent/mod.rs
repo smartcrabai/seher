@@ -158,7 +158,7 @@ impl Agent {
 
     pub fn has_model(&self, model_key: &str) -> bool {
         match &self.config.models {
-            None => true, // models未設定 → パススルーなので任意のモデルキーを受け入れる
+            None => true, // no models map → pass-through, accepts any model key
             Some(m) => m.contains_key(model_key),
         }
     }
@@ -185,7 +185,7 @@ impl Agent {
             })
             .collect();
 
-        // models未設定の場合、--model <value> をそのまま渡す
+        // If models map is not set, pass --model <value> through as-is
         if self.config.models.is_none()
             && let Some(model_key) = model
         {
