@@ -5,7 +5,7 @@ edition = "2024"
 license = "Apache-2.0"
 name = "sehercode"
 repository = "https://github.com/smartcrabai/seher"
-version = "0.0.17"
+version = "0.0.18"
 
 [[bin]]
 name = "seher"

@@ -1793,7 +1793,7 @@ dependencies = [
 
 [[package]]
 name = "sehercode"
-version = "0.0.17"
+version = "0.0.18"
 dependencies = [
  "aes",
  "aes-gcm",
