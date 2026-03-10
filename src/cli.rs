@@ -41,6 +41,49 @@ pub struct Args {
     pub config: Option<PathBuf>,
 }
 
+/// Normalized result of executing a child agent process.
+#[derive(Debug, PartialEq)]
+enum ChildExitKind {
+    /// Process exited with status code 0.
+    Success,
+    /// Process exited with a non-zero status (or unknown code).
+    Failure { code: Option<i32> },
+    /// Process was terminated by a signal (Unix only).
+    SignalTerminated,
+    /// Process could not be spawned (IO error before execution).
+    SpawnError,
+}
+
+impl From<std::io::Result<std::process::ExitStatus>> for ChildExitKind {
+    fn from(result: std::io::Result<std::process::ExitStatus>) -> Self {
+        match result {
+            Err(_) => ChildExitKind::SpawnError,
+            Ok(status) if status.success() => ChildExitKind::Success,
+            Ok(status) if status.code().is_none() => ChildExitKind::SignalTerminated,
+            Ok(status) => ChildExitKind::Failure {
+                code: status.code(),
+            },
+        }
+    }
+}
+
+/// Preserved invocation state that can be reused across auto-rerun attempts.
+struct InvocationInput {
+    /// Raw trailing args as received from the CLI, before agent-specific mapping.
+    pub raw_agent_args: Vec<String>,
+    /// Prompt obtained from the editor on the first attempt; reused on rerun.
+    pub cached_prompt: Option<String>,
+}
+
+/// Return `true` if an auto-rerun should be triggered.
+///
+/// Rules:
+/// - Only provider-aware agents (domain != None) trigger auto-rerun.
+/// - Only `Failure` exits trigger auto-rerun (not Success, SpawnError, or SignalTerminated).
+fn should_auto_rerun(exit_kind: &ChildExitKind, agent_is_provider_aware: bool) -> bool {
+    matches!(exit_kind, ChildExitKind::Failure { .. }) && agent_is_provider_aware
+}
+
 pub async fn run(args: Args) {
     let settings = match Settings::load(args.config.as_deref()) {
         Ok(s) => s,
@@ -150,6 +193,11 @@ pub async fn run(args: Args) {
     // Prioritize provider-aware agents (with domain) and put fallback agents last
     available_indices.sort_by_key(|&i| agents[i].config.resolve_domain().is_none());
 
+    let mut input = InvocationInput {
+        raw_agent_args: args.agent_args,
+        cached_prompt: None,
+    };
+
     if !available_indices.is_empty() {
         let selected_index = available_indices[0];
         if !args.quiet {
@@ -158,10 +206,10 @@ pub async fn run(args: Args) {
                 agents[selected_index].command()
             );
         }
-        execute_agent(
+        execute_with_auto_rerun(
             &agents,
             selected_index,
-            args.agent_args,
+            &mut input,
             args.model.as_deref(),
             args.quiet,
         )
@@ -188,14 +236,8 @@ pub async fn run(args: Args) {
                 );
             }
             sleep_until_reset(rt, args.quiet).await;
-            execute_agent(
-                &agents,
-                idx,
-                args.agent_args,
-                args.model.as_deref(),
-                args.quiet,
-            )
-            .await;
+            execute_with_auto_rerun(&agents, idx, &mut input, args.model.as_deref(), args.quiet)
+                .await;
             return;
         } else if !args.quiet {
             println!("All agents limited, no reset time available");
@@ -272,24 +314,51 @@ async fn prompt_from_editor() -> std::result::Result<String, Box<dyn std::error:
     Ok(std::fs::read_to_string(tmp.path())?.trim().to_string())
 }
 
-async fn execute_agent(
+async fn execute_with_auto_rerun(
     agents: &[Agent],
-    selected_index: usize,
-    agent_args: Vec<String>,
+    idx: usize,
+    input: &mut InvocationInput,
     model: Option<&str>,
     quiet: bool,
 ) {
-    let selected_agent = &agents[selected_index];
-    let mut final_args = selected_agent.mapped_args(&agent_args);
+    let exit_kind = execute_agent(agents, idx, input, model, quiet).await;
+    let provider_aware = agents[idx].config.resolve_domain().is_some();
+    if should_auto_rerun(&exit_kind, provider_aware) {
+        if !quiet {
+            eprintln!("Agent failed, retrying...");
+        }
+        execute_agent(agents, idx, input, model, quiet).await;
+    }
+}
 
-    if agent_args.is_empty() && !quiet {
-        match prompt_from_editor().await {
-            Ok(prompt) if !prompt.is_empty() => final_args.push(prompt),
-            Ok(_) => {}
-            Err(e) => {
-                eprintln!("Editor error: {}", e);
-                return;
+async fn execute_agent(
+    agents: &[Agent],
+    selected_index: usize,
+    input: &mut InvocationInput,
+    model: Option<&str>,
+    quiet: bool,
+) -> ChildExitKind {
+    let selected_agent = &agents[selected_index];
+    let mut final_args = selected_agent.mapped_args(&input.raw_agent_args);
+
+    if input.raw_agent_args.is_empty() && !quiet {
+        if input.cached_prompt.is_none() {
+            match prompt_from_editor().await {
+                Ok(prompt) => input.cached_prompt = Some(prompt),
+                Err(e) => {
+                    eprintln!("Editor error: {}", e);
+                    // SpawnError prevents auto-rerun, which is correct — the agent was never started.
+                    return ChildExitKind::SpawnError;
+                }
             }
+        }
+        // cached_prompt is guaranteed Some at this point
+        let p = input
+            .cached_prompt
+            .as_deref()
+            .expect("cached_prompt was just set");
+        if !p.is_empty() {
+            final_args.push(p.to_string());
         }
     }
 
@@ -307,9 +376,7 @@ async fn execute_agent(
         );
     }
 
-    if let Err(e) = selected_agent.execute(&resolved, &final_args) {
-        eprintln!("Failed to execute agent: {}", e);
-    }
+    selected_agent.execute(&resolved, &final_args).into()
 }
 
 async fn sleep_until_reset(reset_time: DateTime<Utc>, quiet: bool) {
@@ -332,4 +399,117 @@ async fn sleep_until_reset(reset_time: DateTime<Utc>, quiet: bool) {
 
     let local_reset_time = reset_time.with_timezone(&Local);
     sleep_until(local_reset_time, quiet).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // should_auto_rerun
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn should_auto_rerun_returns_false_for_success() {
+        assert!(!should_auto_rerun(&ChildExitKind::Success, true));
+    }
+
+    #[test]
+    fn should_auto_rerun_returns_false_for_spawn_error() {
+        assert!(!should_auto_rerun(&ChildExitKind::SpawnError, true));
+    }
+
+    #[test]
+    fn should_auto_rerun_returns_false_for_signal_terminated() {
+        assert!(!should_auto_rerun(&ChildExitKind::SignalTerminated, true));
+    }
+
+    #[test]
+    fn should_auto_rerun_returns_false_for_fallback_agent_failure() {
+        assert!(!should_auto_rerun(
+            &ChildExitKind::Failure { code: Some(1) },
+            false,
+        ));
+    }
+
+    #[test]
+    fn should_auto_rerun_returns_true_for_provider_aware_failure() {
+        assert!(should_auto_rerun(
+            &ChildExitKind::Failure { code: Some(1) },
+            true,
+        ));
+    }
+
+    #[test]
+    fn should_auto_rerun_returns_true_for_provider_aware_failure_with_no_exit_code() {
+        assert!(should_auto_rerun(
+            &ChildExitKind::Failure { code: None },
+            true,
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // ChildExitKind::from (From<io::Result<ExitStatus>>)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn child_exit_kind_from_returns_spawn_error_on_io_error() {
+        // Given: an IO error representing a failed spawn (binary not found, permission denied, etc.)
+        // When:  converting to ChildExitKind
+        // Then:  returns SpawnError
+        let result: std::io::Result<std::process::ExitStatus> = Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "not found",
+        ));
+        assert_eq!(ChildExitKind::from(result), ChildExitKind::SpawnError);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn child_exit_kind_from_returns_success_for_zero_exit() {
+        // Given: a process that exits cleanly with code 0
+        // When:  converting to ChildExitKind
+        // Then:  returns Success
+        let status = std::process::Command::new("true")
+            .status()
+            .expect("`true` command must exist on Unix");
+        assert_eq!(ChildExitKind::from(Ok(status)), ChildExitKind::Success);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn child_exit_kind_from_returns_failure_for_nonzero_exit() {
+        // Given: a process that exits with code 1
+        // When:  converting to ChildExitKind
+        // Then:  returns Failure with code Some(1)
+        let status = std::process::Command::new("false")
+            .status()
+            .expect("`false` command must exist on Unix");
+        assert_eq!(
+            ChildExitKind::from(Ok(status)),
+            ChildExitKind::Failure { code: Some(1) },
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn child_exit_kind_from_returns_signal_terminated_for_signal_killed_process() {
+        // Given: a process terminated by SIGKILL (Unix signal)
+        // When:  converting to ChildExitKind
+        // Then:  returns SignalTerminated (signal termination ≠ voluntary non-zero exit)
+        use std::os::unix::process::ExitStatusExt;
+        // Spawn a long-running process and kill it with SIGKILL
+        let mut child = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .expect("`sleep` command must exist on Unix");
+        child.kill().expect("kill must succeed");
+        let status = child.wait().expect("wait must succeed");
+        // SIGKILL (signal 9) → signal() returns Some(9), code() returns None
+        assert!(status.signal().is_some());
+        assert_eq!(
+            ChildExitKind::from(Ok(status)),
+            ChildExitKind::SignalTerminated
+        );
+    }
 }
