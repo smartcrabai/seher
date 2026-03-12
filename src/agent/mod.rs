@@ -29,6 +29,50 @@ pub struct AgentStatus {
     pub usage: Vec<UsageEntry>,
 }
 
+fn codex_usage_entries(prefix: &str, limit: &crate::codex::CodexRateLimit) -> Vec<UsageEntry> {
+    let has_limited_window = [
+        limit.primary_window.as_ref(),
+        limit.secondary_window.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|window| window.is_limited());
+    let fallback_reset = if limit.is_limited() && !has_limited_window {
+        limit.next_reset_time()
+    } else {
+        None
+    };
+
+    let mut entries = Vec::new();
+
+    for (suffix, window) in [
+        ("primary", limit.primary_window.as_ref()),
+        ("secondary", limit.secondary_window.as_ref()),
+    ] {
+        if let Some(window) = window {
+            let resets_at = window.reset_at_datetime();
+            entries.push(UsageEntry {
+                entry_type: format!("{}_{}", prefix, suffix),
+                limited: window.is_limited()
+                    || (fallback_reset.is_some() && resets_at == fallback_reset),
+                utilization: window.used_percent,
+                resets_at,
+            });
+        }
+    }
+
+    if entries.is_empty() && limit.is_limited() {
+        entries.push(UsageEntry {
+            entry_type: prefix.to_string(),
+            limited: true,
+            utilization: 100.0,
+            resets_at: limit.next_reset_time(),
+        });
+    }
+
+    entries
+}
+
 impl Agent {
     pub fn new(config: AgentConfig, cookies: Vec<Cookie>) -> Self {
         Self { config, cookies }
@@ -45,6 +89,7 @@ impl Agent {
     pub async fn check_limit(&self) -> Result<AgentLimit, Box<dyn std::error::Error>> {
         match self.config.resolve_domain() {
             Some("claude.ai") => self.check_claude_limit().await,
+            Some("chatgpt.com") => self.check_codex_limit().await,
             Some("github.com") => self.check_copilot_limit().await,
             None => Ok(AgentLimit::NotLimited),
             Some(d) => Err(format!("Unknown domain: {}", d).into()),
@@ -75,6 +120,21 @@ impl Agent {
                         })
                     })
                     .collect();
+                Ok(AgentStatus {
+                    command: self.config.command.clone(),
+                    usage: entries,
+                })
+            }
+            Some("chatgpt.com") => {
+                let usage = crate::codex::CodexClient::fetch_usage(&self.cookies).await?;
+                let entries = [
+                    ("rate_limit", &usage.rate_limit),
+                    ("code_review_rate_limit", &usage.code_review_rate_limit),
+                ]
+                .into_iter()
+                .flat_map(|(prefix, limit)| codex_usage_entries(prefix, limit))
+                .collect();
+
                 Ok(AgentStatus {
                     command: self.config.command.clone(),
                     usage: entries,
@@ -136,6 +196,18 @@ impl Agent {
         if quota.is_limited() {
             Ok(AgentLimit::Limited {
                 reset_time: quota.reset_time,
+            })
+        } else {
+            Ok(AgentLimit::NotLimited)
+        }
+    }
+
+    async fn check_codex_limit(&self) -> Result<AgentLimit, Box<dyn std::error::Error>> {
+        let usage = crate::codex::CodexClient::fetch_usage(&self.cookies).await?;
+
+        if usage.rate_limit.is_limited() {
+            Ok(AgentLimit::Limited {
+                reset_time: usage.rate_limit.next_reset_time(),
             })
         } else {
             Ok(AgentLimit::NotLimited)
@@ -214,6 +286,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+    use crate::codex::{CodexRateLimit, CodexWindow};
     use crate::config::AgentConfig;
 
     fn make_agent(
@@ -294,5 +367,51 @@ mod tests {
                 "fix bugs".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn codex_usage_entries_marks_blocking_window_when_only_top_level_limit_is_set() {
+        let limit = CodexRateLimit {
+            allowed: false,
+            limit_reached: false,
+            primary_window: Some(CodexWindow {
+                used_percent: 55.0,
+                limit_window_seconds: 60,
+                reset_after_seconds: 30,
+                reset_at: 100,
+            }),
+            secondary_window: Some(CodexWindow {
+                used_percent: 40.0,
+                limit_window_seconds: 120,
+                reset_after_seconds: 90,
+                reset_at: 200,
+            }),
+        };
+
+        let entries = codex_usage_entries("rate_limit", &limit);
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].entry_type, "rate_limit_primary");
+        assert!(!entries[0].limited);
+        assert_eq!(entries[1].entry_type, "rate_limit_secondary");
+        assert!(entries[1].limited);
+    }
+
+    #[test]
+    fn codex_usage_entries_adds_summary_when_limit_has_no_windows() {
+        let limit = CodexRateLimit {
+            allowed: false,
+            limit_reached: true,
+            primary_window: None,
+            secondary_window: None,
+        };
+
+        let entries = codex_usage_entries("code_review_rate_limit", &limit);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].entry_type, "code_review_rate_limit");
+        assert!(entries[0].limited);
+        assert_eq!(entries[0].utilization, 100.0);
+        assert_eq!(entries[0].resets_at, None);
     }
 }

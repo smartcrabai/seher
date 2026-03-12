@@ -9,7 +9,7 @@ use zzsleep::sleep_until;
 #[command(
     name = "seher",
     version,
-    about = "CLI tool for Claude.ai and Copilot rate limit monitoring"
+    about = "CLI tool for Claude.ai, Codex, and Copilot rate limit monitoring"
 )]
 pub struct Args {
     /// Browser to use (chrome, edge, brave, firefox, safari, etc.)
@@ -298,6 +298,7 @@ fn get_cookies_for_domain(
 fn has_session_cookie(domain: &str, cookie: &seher::Cookie) -> bool {
     match domain {
         "claude.ai" => cookie.name == "sessionKey",
+        "chatgpt.com" => cookie.name.starts_with("__Secure-next-auth.session-token"),
         "github.com" => {
             cookie.name == "user_session" || cookie.name == "__Host-user_session_same_site"
         }
@@ -405,6 +406,19 @@ async fn sleep_until_reset(reset_time: DateTime<Utc>, quiet: bool) {
 mod tests {
     use super::*;
 
+    fn sample_cookie(name: &str) -> seher::Cookie {
+        seher::Cookie {
+            name: name.to_string(),
+            value: "value".to_string(),
+            domain: ".chatgpt.com".to_string(),
+            path: "/".to_string(),
+            expires_utc: 0,
+            is_secure: true,
+            is_httponly: true,
+            same_site: 0,
+        }
+    }
+
     // -----------------------------------------------------------------------
     // should_auto_rerun
     // -----------------------------------------------------------------------
@@ -445,6 +459,22 @@ mod tests {
         assert!(should_auto_rerun(
             &ChildExitKind::Failure { code: None },
             true,
+        ));
+    }
+
+    #[test]
+    fn has_session_cookie_recognizes_codex_session_cookie_fragments() {
+        assert!(has_session_cookie(
+            "chatgpt.com",
+            &sample_cookie("__Secure-next-auth.session-token.0"),
+        ));
+        assert!(has_session_cookie(
+            "chatgpt.com",
+            &sample_cookie("__Secure-next-auth.session-token"),
+        ));
+        assert!(!has_session_cookie(
+            "chatgpt.com",
+            &sample_cookie("cf_clearance"),
         ));
     }
 

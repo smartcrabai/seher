@@ -1,7 +1,7 @@
 # Seher
 
 
-Seher is a CLI tool that waits for Claude's Rate Limit to reset, then executes a specified prompt using Claude Code.
+Seher is a CLI tool that waits for an agent's Rate Limit to reset, then executes a specified prompt using Claude Code, Codex, or other compatible CLIs.
 
 
 ## How it works
@@ -98,7 +98,7 @@ You can customize seher's behavior by creating `~/.config/seher/settings.json` o
 | Field | Type | Description |
 |-------|------|-------------|
 | `agents` | array | List of agents to use |
-| `agents[].command` | string | Command name (`"claude"` or `"copilot"`) |
+| `agents[].command` | string | Executable name (e.g. `"claude"`, `"codex"`, `"opencode"`) |
 | `agents[].args` | array of strings | Additional arguments (optional) |
 | `agents[].models` | object | Model level mapping (optional) |
 | `agents[].arg_maps` | object | Exact-match mapping from trailing CLI tokens to replacement token arrays (optional) |
@@ -159,6 +159,8 @@ The `{model}` placeholder in `args` is resolved based on the value passed to `--
 
 `arg_maps` rewrites each trailing CLI token independently using exact-match keys. A mapping value can expand one input token into multiple output tokens, while unmapped tokens are passed through unchanged. For example, with the sample configuration, `seher --danger "fix bugs"` adds `--permission-mode bypassPermissions` when Claude is selected, or `--yolo` when Copilot is selected.
 
-The `provider` field controls rate limit tracking. If omitted, the provider is inferred from the command name (`claude` → claude.ai, `copilot` → github.com). Setting it to `null` disables rate limit checking for that agent, making it act as an unconditional fallback. Setting it to a string (e.g. `"copilot"`) uses that provider's rate limit regardless of the command name. When multiple agents are configured, seher preferentially selects agents that are not rate-limited; agents with `provider: null` are used as a last resort.
+The `provider` field controls rate limit tracking. If omitted, the provider is inferred from the command name (`claude` → claude.ai, `codex` → chatgpt.com, `copilot` → github.com). Setting it to `null` disables rate limit checking for that agent, making it act as an unconditional fallback. Setting it to a string (e.g. `"codex"` or `"copilot"`) uses that provider's rate limit regardless of the command name. When multiple agents are configured, seher preferentially selects agents that are not rate-limited; agents with `provider: null` are used as a last resort.
+
+For Codex, seher reads `chatgpt.com` browser cookies, fetches an access token from `https://chatgpt.com/api/auth/session`, and then calls `https://chatgpt.com/backend-api/wham/usage`. The request intentionally keeps headers minimal and does not require hard-coding a bearer token in your config.
 
 The `env` field specifies environment variables to inject when launching the agent. This is useful for switching API keys or base URLs to route a standard command (e.g. `claude`) to a different backend.

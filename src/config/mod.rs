@@ -33,6 +33,7 @@ pub struct AgentConfig {
 fn provider_to_domain(provider: &str) -> Option<&str> {
     match provider {
         "claude" => Some("claude.ai"),
+        "codex" => Some("chatgpt.com"),
         "copilot" => Some("github.com"),
         _ => None,
     }
@@ -151,7 +152,7 @@ mod tests {
             .expect("examples/settings.json not found");
         let settings: Settings = serde_json::from_str(&content).expect("failed to parse settings");
 
-        assert_eq!(settings.agents.len(), 3);
+        assert_eq!(settings.agents.len(), 4);
     }
 
     #[test]
@@ -208,12 +209,25 @@ mod tests {
         let content = std::fs::read_to_string(sample_settings_path()).unwrap();
         let settings: Settings = serde_json::from_str(&content).unwrap();
 
-        let fallback = &settings.agents[2];
+        let fallback = &settings.agents[3];
         assert_eq!(fallback.command, "claude");
 
         // provider: null → Some(None) (fallback)
         assert_eq!(fallback.provider, Some(None));
         assert_eq!(fallback.resolve_domain(), None);
+    }
+
+    #[test]
+    fn test_sample_settings_codex_agent() {
+        let content = std::fs::read_to_string(sample_settings_path()).unwrap();
+        let settings: Settings = serde_json::from_str(&content).unwrap();
+
+        let codex = &settings.agents[2];
+        assert_eq!(codex.command, "codex");
+        assert!(codex.args.is_empty());
+        assert!(codex.models.is_none());
+        assert!(codex.provider.is_none());
+        assert_eq!(codex.resolve_domain(), Some("chatgpt.com"));
     }
 
     #[test]
@@ -244,6 +258,24 @@ mod tests {
             Some(Some("copilot".to_string()))
         );
         assert_eq!(settings.agents[0].resolve_domain(), Some("github.com"));
+    }
+
+    #[test]
+    fn test_command_codex_resolves_chatgpt_domain() {
+        let json = r#"{"agents": [{"command": "codex"}]}"#;
+        let settings: Settings = serde_json::from_str(json).unwrap();
+
+        assert!(settings.agents[0].provider.is_none());
+        assert_eq!(settings.agents[0].resolve_domain(), Some("chatgpt.com"));
+    }
+
+    #[test]
+    fn test_provider_field_codex_string() {
+        let json = r#"{"agents": [{"command": "opencode", "provider": "codex"}]}"#;
+        let settings: Settings = serde_json::from_str(json).unwrap();
+
+        assert_eq!(settings.agents[0].provider, Some(Some("codex".to_string())));
+        assert_eq!(settings.agents[0].resolve_domain(), Some("chatgpt.com"));
     }
 
     #[test]
