@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Settings {
+    #[serde(default)]
+    pub priority: Vec<PriorityRule>,
     pub agents: Vec<AgentConfig>,
 }
 
@@ -30,6 +32,33 @@ pub struct AgentConfig {
     pub provider: Option<Option<String>>,
 }
 
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+pub struct PriorityRule {
+    pub command: String,
+    #[serde(default, deserialize_with = "deserialize_provider")]
+    pub provider: Option<Option<String>>,
+    #[serde(default)]
+    pub model: Option<String>,
+    pub priority: i32,
+}
+
+fn command_to_provider(command: &str) -> Option<&str> {
+    match command {
+        "claude" => Some("claude"),
+        "codex" => Some("codex"),
+        "copilot" => Some("copilot"),
+        _ => None,
+    }
+}
+
+fn resolve_provider<'a>(command: &'a str, provider: &'a Option<Option<String>>) -> Option<&'a str> {
+    match provider {
+        Some(Some(provider)) => Some(provider.as_str()),
+        Some(None) => None,
+        None => command_to_provider(command),
+    }
+}
+
 fn provider_to_domain(provider: &str) -> Option<&str> {
     match provider {
         "claude" => Some("claude.ai"),
@@ -40,18 +69,31 @@ fn provider_to_domain(provider: &str) -> Option<&str> {
 }
 
 impl AgentConfig {
+    pub fn resolve_provider(&self) -> Option<&str> {
+        resolve_provider(&self.command, &self.provider)
+    }
+
     pub fn resolve_domain(&self) -> Option<&str> {
-        match &self.provider {
-            Some(Some(p)) => provider_to_domain(p),
-            Some(None) => None,
-            None => provider_to_domain(&self.command),
-        }
+        self.resolve_provider().and_then(provider_to_domain)
+    }
+}
+
+impl PriorityRule {
+    pub fn resolve_provider(&self) -> Option<&str> {
+        resolve_provider(&self.command, &self.provider)
+    }
+
+    pub fn matches(&self, command: &str, provider: Option<&str>, model: Option<&str>) -> bool {
+        self.command == command
+            && self.resolve_provider() == provider
+            && self.model.as_deref() == model
     }
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            priority: vec![],
             agents: vec![AgentConfig {
                 command: "claude".to_string(),
                 args: vec![],
@@ -105,6 +147,22 @@ fn strip_trailing_commas(s: &str) -> String {
 }
 
 impl Settings {
+    pub fn priority_for(&self, agent: &AgentConfig, model: Option<&str>) -> i32 {
+        self.priority_for_components(&agent.command, agent.resolve_provider(), model)
+    }
+
+    pub fn priority_for_components(
+        &self,
+        command: &str,
+        provider: Option<&str>,
+        model: Option<&str>,
+    ) -> i32 {
+        self.priority
+            .iter()
+            .find(|rule| rule.matches(command, provider, model))
+            .map_or(0, |rule| rule.priority)
+    }
+
     pub fn load(path: Option<&Path>) -> Result<Self, Box<dyn std::error::Error>> {
         let path = match path {
             Some(p) => p.to_path_buf(),
@@ -152,7 +210,33 @@ mod tests {
             .expect("examples/settings.json not found");
         let settings: Settings = serde_json::from_str(&content).expect("failed to parse settings");
 
+        assert_eq!(settings.priority.len(), 4);
         assert_eq!(settings.agents.len(), 4);
+    }
+
+    #[test]
+    fn test_sample_settings_priority_rules() {
+        let content = std::fs::read_to_string(sample_settings_path()).unwrap();
+        let settings: Settings = serde_json::from_str(&content).unwrap();
+
+        assert_eq!(
+            settings.priority[0],
+            PriorityRule {
+                command: "opencode".to_string(),
+                provider: Some(Some("copilot".to_string())),
+                model: Some("high".to_string()),
+                priority: 100,
+            }
+        );
+        assert_eq!(
+            settings.priority[2],
+            PriorityRule {
+                command: "claude".to_string(),
+                provider: Some(None),
+                model: Some("medium".to_string()),
+                priority: 25,
+            }
+        );
     }
 
     #[test]
@@ -236,6 +320,7 @@ mod tests {
         let settings: Settings = serde_json::from_str(json).unwrap();
 
         assert!(settings.agents[0].provider.is_none());
+        assert_eq!(settings.agents[0].resolve_provider(), Some("claude"));
         assert_eq!(settings.agents[0].resolve_domain(), Some("claude.ai"));
     }
 
@@ -245,6 +330,7 @@ mod tests {
         let settings: Settings = serde_json::from_str(json).unwrap();
 
         assert_eq!(settings.agents[0].provider, Some(None));
+        assert_eq!(settings.agents[0].resolve_provider(), None);
         assert_eq!(settings.agents[0].resolve_domain(), None);
     }
 
@@ -257,7 +343,77 @@ mod tests {
             settings.agents[0].provider,
             Some(Some("copilot".to_string()))
         );
+        assert_eq!(settings.agents[0].resolve_provider(), Some("copilot"));
         assert_eq!(settings.agents[0].resolve_domain(), Some("github.com"));
+    }
+
+    #[test]
+    fn test_priority_defaults_to_empty() {
+        let settings = Settings::default();
+
+        assert!(settings.priority.is_empty());
+    }
+
+    #[test]
+    fn test_priority_defaults_to_zero_when_no_rule_matches() {
+        let json = r#"{"priority": [{"command": "claude", "model": "high", "priority": 10}], "agents": [{"command": "codex"}]}"#;
+        let settings: Settings = serde_json::from_str(json).unwrap();
+
+        assert_eq!(settings.priority_for(&settings.agents[0], Some("high")), 0);
+        assert_eq!(
+            settings.priority_for_components("claude", Some("claude"), None),
+            0
+        );
+    }
+
+    #[test]
+    fn test_priority_matches_inferred_provider_and_model() {
+        let json = r#"{
+            "priority": [
+                {"command": "claude", "model": "high", "priority": 42}
+            ],
+            "agents": [{"command": "claude"}]
+        }"#;
+        let settings: Settings = serde_json::from_str(json).unwrap();
+
+        assert_eq!(settings.priority_for(&settings.agents[0], Some("high")), 42);
+    }
+
+    #[test]
+    fn test_priority_matches_null_provider_for_fallback_agent() {
+        let json = r#"{
+            "priority": [
+                {"command": "claude", "provider": null, "model": "medium", "priority": 25}
+            ],
+            "agents": [{"command": "claude", "provider": null}]
+        }"#;
+        let settings: Settings = serde_json::from_str(json).unwrap();
+
+        assert_eq!(
+            settings.priority_for(&settings.agents[0], Some("medium")),
+            25
+        );
+    }
+
+    #[test]
+    fn test_priority_supports_full_i32_range() {
+        let json = r#"{
+            "priority": [
+                {"command": "claude", "model": "high", "priority": 2147483647},
+                {"command": "claude", "provider": null, "priority": -2147483648}
+            ],
+            "agents": [
+                {"command": "claude"},
+                {"command": "claude", "provider": null}
+            ]
+        }"#;
+        let settings: Settings = serde_json::from_str(json).unwrap();
+
+        assert_eq!(
+            settings.priority_for(&settings.agents[0], Some("high")),
+            i32::MAX
+        );
+        assert_eq!(settings.priority_for(&settings.agents[1], None), i32::MIN);
     }
 
     #[test]

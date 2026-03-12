@@ -4,6 +4,7 @@ use seher::{
     Agent, AgentLimit, AgentStatus, BrowserDetector, BrowserType, CodexClient, CookieReader,
     Settings,
 };
+use std::cmp::Reverse;
 use std::future::Future;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -86,6 +87,18 @@ struct InvocationInput {
 /// - Only `Failure` exits trigger auto-rerun (not Success, SpawnError, or SignalTerminated).
 fn should_auto_rerun(exit_kind: &ChildExitKind, agent_is_provider_aware: bool) -> bool {
     matches!(exit_kind, ChildExitKind::Failure { .. }) && agent_is_provider_aware
+}
+
+fn select_best_available_agent(
+    settings: &Settings,
+    agents: &[Agent],
+    available_indices: &[usize],
+    model: Option<&str>,
+) -> Option<usize> {
+    available_indices
+        .iter()
+        .copied()
+        .min_by_key(|&i| (Reverse(settings.priority_for(&agents[i].config, model)), i))
 }
 
 pub async fn run(args: Args) {
@@ -195,16 +208,17 @@ pub async fn run(args: Args) {
         limited_indices.retain(|(i, _)| agents[*i].has_model(model_key));
     }
 
-    // Prioritize provider-aware agents (with domain) and put fallback agents last
-    available_indices.sort_by_key(|&i| agents[i].config.resolve_domain().is_none());
-
     let mut input = InvocationInput {
         raw_agent_args: args.agent_args,
         cached_prompt: None,
     };
 
-    if !available_indices.is_empty() {
-        let selected_index = available_indices[0];
+    if let Some(selected_index) = select_best_available_agent(
+        &settings,
+        &agents,
+        &available_indices,
+        args.model.as_deref(),
+    ) {
         if !args.quiet {
             println!(
                 "Agent {} is available (not limited)",
@@ -491,6 +505,8 @@ async fn sleep_until_reset(reset_time: DateTime<Utc>, quiet: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use seher::{AgentConfig, PriorityRule};
+    use std::collections::HashMap;
 
     fn sample_cookie(name: &str) -> seher::Cookie {
         sample_cookie_with_value(name, "value", i64::MAX)
@@ -515,6 +531,27 @@ mod tests {
             PathBuf::from(format!("/tmp/{}/{}", browser_type.name(), name)),
             browser_type,
         )
+    }
+
+    fn sample_agent(command: &str, provider: Option<Option<&str>>) -> Agent {
+        Agent::new(
+            AgentConfig {
+                command: command.to_string(),
+                args: vec![],
+                models: None,
+                arg_maps: HashMap::new(),
+                env: None,
+                provider: provider.map(|provider| provider.map(str::to_string)),
+            },
+            vec![],
+        )
+    }
+
+    fn sample_settings_with_priority(priority: Vec<PriorityRule>) -> Settings {
+        Settings {
+            priority,
+            agents: vec![],
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -558,6 +595,92 @@ mod tests {
             &ChildExitKind::Failure { code: None },
             true,
         ));
+    }
+
+    #[test]
+    fn select_best_available_agent_prefers_higher_priority() {
+        let settings = sample_settings_with_priority(vec![
+            PriorityRule {
+                command: "claude".to_string(),
+                provider: None,
+                model: Some("high".to_string()),
+                priority: 10,
+            },
+            PriorityRule {
+                command: "codex".to_string(),
+                provider: None,
+                model: Some("high".to_string()),
+                priority: 100,
+            },
+        ]);
+        let agents = vec![sample_agent("claude", None), sample_agent("codex", None)];
+
+        let selected = select_best_available_agent(&settings, &agents, &[0, 1], Some("high"));
+
+        assert_eq!(selected, Some(1));
+    }
+
+    #[test]
+    fn select_best_available_agent_keeps_agent_order_when_priority_is_equal() {
+        let settings = sample_settings_with_priority(vec![]);
+        let agents = vec![sample_agent("claude", None), sample_agent("codex", None)];
+
+        let selected = select_best_available_agent(&settings, &agents, &[1, 0], Some("high"));
+
+        assert_eq!(selected, Some(0));
+    }
+
+    #[test]
+    fn select_best_available_agent_uses_model_specific_priority() {
+        let settings = sample_settings_with_priority(vec![
+            PriorityRule {
+                command: "claude".to_string(),
+                provider: None,
+                model: Some("high".to_string()),
+                priority: 100,
+            },
+            PriorityRule {
+                command: "claude".to_string(),
+                provider: None,
+                model: Some("low".to_string()),
+                priority: -50,
+            },
+        ]);
+        let agents = vec![sample_agent("claude", None)];
+
+        let selected_high = select_best_available_agent(&settings, &agents, &[0], Some("high"));
+        let selected_low = select_best_available_agent(&settings, &agents, &[0], Some("low"));
+
+        assert_eq!(selected_high, Some(0));
+        assert_eq!(selected_low, Some(0));
+        assert_eq!(settings.priority_for(&agents[0].config, Some("high")), 100);
+        assert_eq!(settings.priority_for(&agents[0].config, Some("low")), -50);
+    }
+
+    #[test]
+    fn select_best_available_agent_allows_fallback_to_win_on_priority() {
+        let settings = sample_settings_with_priority(vec![
+            PriorityRule {
+                command: "claude".to_string(),
+                provider: None,
+                model: Some("medium".to_string()),
+                priority: 10,
+            },
+            PriorityRule {
+                command: "claude".to_string(),
+                provider: Some(None),
+                model: Some("medium".to_string()),
+                priority: 20,
+            },
+        ]);
+        let agents = vec![
+            sample_agent("claude", None),
+            sample_agent("claude", Some(None)),
+        ];
+
+        let selected = select_best_available_agent(&settings, &agents, &[0, 1], Some("medium"));
+
+        assert_eq!(selected, Some(1));
     }
 
     #[test]
