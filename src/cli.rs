@@ -1,6 +1,10 @@
 use chrono::{DateTime, Local, Utc};
 use clap::Parser;
-use seher::{Agent, AgentLimit, AgentStatus, BrowserDetector, BrowserType, CookieReader, Settings};
+use seher::{
+    Agent, AgentLimit, AgentStatus, BrowserDetector, BrowserType, CodexClient, CookieReader,
+    Settings,
+};
+use std::future::Future;
 use std::path::PathBuf;
 use std::str::FromStr;
 use zzsleep::sleep_until;
@@ -109,6 +113,7 @@ pub async fn run(args: Args) {
         let cookies = match domain {
             Some(d) => {
                 match get_cookies_for_domain(&detector, &browsers, &args.browser, &args.profile, d)
+                    .await
                 {
                     Some(c) => c,
                     None => {
@@ -247,52 +252,133 @@ pub async fn run(args: Args) {
     eprintln!("No available agents");
 }
 
-fn get_cookies_for_domain(
+fn collect_candidate_profiles_with<GetProfile, ListProfiles>(
+    browsers: &[BrowserType],
+    browser_arg: Option<&str>,
+    profile_arg: Option<&str>,
+    mut get_profile: GetProfile,
+    mut list_profiles: ListProfiles,
+) -> Vec<seher::Profile>
+where
+    GetProfile: FnMut(BrowserType, &str) -> Option<seher::Profile>,
+    ListProfiles: FnMut(BrowserType) -> Vec<seher::Profile>,
+{
+    if let Some(browser_name) = browser_arg {
+        let Ok(browser_type) = BrowserType::from_str(browser_name) else {
+            return Vec::new();
+        };
+
+        if !browsers.contains(&browser_type) {
+            return Vec::new();
+        }
+
+        return match profile_arg {
+            Some(profile_name) => get_profile(browser_type, profile_name)
+                .into_iter()
+                .collect(),
+            None => list_profiles(browser_type),
+        };
+    }
+
+    let mut profiles = Vec::new();
+    for browser in browsers {
+        if !browser.is_chromium_based() {
+            continue;
+        }
+
+        match profile_arg {
+            Some(profile_name) => {
+                if let Some(profile) = get_profile(*browser, profile_name) {
+                    profiles.push(profile);
+                }
+            }
+            None => profiles.extend(list_profiles(*browser)),
+        }
+    }
+
+    profiles
+}
+
+fn collect_candidate_profiles(
+    detector: &BrowserDetector,
+    browsers: &[BrowserType],
+    browser_arg: &Option<String>,
+    profile_arg: &Option<String>,
+) -> Vec<seher::Profile> {
+    collect_candidate_profiles_with(
+        browsers,
+        browser_arg.as_deref(),
+        profile_arg.as_deref(),
+        |browser_type, profile_name| detector.get_profile(browser_type, Some(profile_name)),
+        |browser_type| detector.list_profiles(browser_type),
+    )
+}
+
+fn collect_cookie_candidates(
+    detector: &BrowserDetector,
+    browsers: &[BrowserType],
+    browser_arg: &Option<String>,
+    profile_arg: &Option<String>,
+    domain: &str,
+) -> Vec<Vec<seher::Cookie>> {
+    collect_candidate_profiles(detector, browsers, browser_arg, profile_arg)
+        .into_iter()
+        .filter_map(|profile| CookieReader::read_cookies(&profile, domain).ok())
+        .collect()
+}
+
+fn has_valid_session_cookie(domain: &str, cookie: &seher::Cookie) -> bool {
+    has_session_cookie(domain, cookie) && !cookie.is_expired()
+}
+
+async fn select_cookie_candidate<F, Fut>(
+    domain: &str,
+    candidates: Vec<Vec<seher::Cookie>>,
+    mut codex_validator: F,
+) -> Option<Vec<seher::Cookie>>
+where
+    F: FnMut(Vec<seher::Cookie>) -> Fut,
+    Fut: Future<Output = (Vec<seher::Cookie>, bool)>,
+{
+    for cookies in candidates {
+        if !cookies
+            .iter()
+            .any(|cookie| has_valid_session_cookie(domain, cookie))
+        {
+            continue;
+        }
+
+        if domain == "chatgpt.com" {
+            let (cookies, is_valid) = codex_validator(cookies).await;
+            if !is_valid {
+                continue;
+            }
+            return Some(cookies);
+        }
+
+        return Some(cookies);
+    }
+
+    None
+}
+
+async fn get_cookies_for_domain(
     detector: &BrowserDetector,
     browsers: &[BrowserType],
     browser_arg: &Option<String>,
     profile_arg: &Option<String>,
     domain: &str,
 ) -> Option<Vec<seher::Cookie>> {
-    if let Some(browser_name) = browser_arg {
-        let browser_type = BrowserType::from_str(browser_name).ok()?;
-        if !browsers.contains(&browser_type) {
-            return None;
-        }
+    let candidates =
+        collect_cookie_candidates(detector, browsers, browser_arg, profile_arg, domain);
 
-        if let Some(profile_name) = profile_arg {
-            let prof = detector.get_profile(browser_type, Some(profile_name))?;
-            let cookies = CookieReader::read_cookies(&prof, domain).ok()?;
-            if cookies.iter().any(|c| has_session_cookie(domain, c)) {
-                return Some(cookies);
-            }
-            return None;
-        }
-
-        for prof in detector.list_profiles(browser_type) {
-            if let Ok(cookies) = CookieReader::read_cookies(&prof, domain)
-                && cookies.iter().any(|c| has_session_cookie(domain, c))
-            {
-                return Some(cookies);
-            }
-        }
-        return None;
-    }
-
-    for browser in browsers {
-        if !browser.is_chromium_based() {
-            continue;
-        }
-        for prof in detector.list_profiles(*browser) {
-            if let Ok(cookies) = CookieReader::read_cookies(&prof, domain)
-                && cookies.iter().any(|c| has_session_cookie(domain, c))
-            {
-                return Some(cookies);
-            }
-        }
-    }
-
-    None
+    select_cookie_candidate(domain, candidates, |cookies| async move {
+        let is_valid = CodexClient::session_has_access_token(&cookies)
+            .await
+            .unwrap_or(true);
+        (cookies, is_valid)
+    })
+    .await
 }
 
 fn has_session_cookie(domain: &str, cookie: &seher::Cookie) -> bool {
@@ -407,16 +493,28 @@ mod tests {
     use super::*;
 
     fn sample_cookie(name: &str) -> seher::Cookie {
+        sample_cookie_with_value(name, "value", i64::MAX)
+    }
+
+    fn sample_cookie_with_value(name: &str, value: &str, expires_utc: i64) -> seher::Cookie {
         seher::Cookie {
             name: name.to_string(),
-            value: "value".to_string(),
+            value: value.to_string(),
             domain: ".chatgpt.com".to_string(),
             path: "/".to_string(),
-            expires_utc: 0,
+            expires_utc,
             is_secure: true,
             is_httponly: true,
             same_site: 0,
         }
+    }
+
+    fn sample_profile(name: &str, browser_type: BrowserType) -> seher::Profile {
+        seher::Profile::new(
+            name.to_string(),
+            PathBuf::from(format!("/tmp/{}/{}", browser_type.name(), name)),
+            browser_type,
+        )
     }
 
     // -----------------------------------------------------------------------
@@ -476,6 +574,87 @@ mod tests {
             "chatgpt.com",
             &sample_cookie("cf_clearance"),
         ));
+    }
+
+    #[test]
+    fn collect_candidate_profiles_filters_named_profiles_without_browser_arg() {
+        let chrome_default = sample_profile("Default", BrowserType::Chrome);
+        let chrome_profile = sample_profile("Profile 17", BrowserType::Chrome);
+        let edge_profile = sample_profile("Profile 17", BrowserType::Edge);
+        let firefox_profile = sample_profile("Profile 17", BrowserType::Firefox);
+
+        let profiles = collect_candidate_profiles_with(
+            &[BrowserType::Chrome, BrowserType::Edge, BrowserType::Firefox],
+            None,
+            Some("Profile 17"),
+            |browser_type, profile_name| match (browser_type, profile_name) {
+                (BrowserType::Chrome, "Profile 17") => Some(chrome_profile.clone()),
+                (BrowserType::Edge, "Profile 17") => Some(edge_profile.clone()),
+                (BrowserType::Firefox, "Profile 17") => Some(firefox_profile.clone()),
+                _ => None,
+            },
+            |browser_type| match browser_type {
+                BrowserType::Chrome => vec![chrome_default.clone(), chrome_profile.clone()],
+                BrowserType::Edge => vec![edge_profile.clone()],
+                BrowserType::Firefox => vec![firefox_profile.clone()],
+                _ => vec![],
+            },
+        );
+
+        assert_eq!(profiles.len(), 2);
+        assert_eq!(profiles[0].browser_type, BrowserType::Chrome);
+        assert_eq!(profiles[0].name, "Profile 17");
+        assert_eq!(profiles[1].browser_type, BrowserType::Edge);
+        assert_eq!(profiles[1].name, "Profile 17");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn select_cookie_candidate_skips_codex_profiles_without_access_token() {
+        let invalid = vec![sample_cookie_with_value(
+            "__Secure-next-auth.session-token.0",
+            "invalid",
+            i64::MAX,
+        )];
+        let valid = vec![sample_cookie_with_value(
+            "__Secure-next-auth.session-token.0",
+            "valid",
+            i64::MAX,
+        )];
+
+        let selected = select_cookie_candidate(
+            "chatgpt.com",
+            vec![invalid, valid.clone()],
+            |cookies| async move {
+                let is_valid = cookies.iter().any(|cookie| cookie.value == "valid");
+                (cookies, is_valid)
+            },
+        )
+        .await;
+
+        assert_eq!(selected.unwrap()[0].value, valid[0].value);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn select_cookie_candidate_ignores_expired_session_cookies() {
+        let expired = vec![sample_cookie_with_value(
+            "__Secure-next-auth.session-token.0",
+            "expired",
+            11_644_473_601_000_000,
+        )];
+        let valid = vec![sample_cookie_with_value(
+            "__Secure-next-auth.session-token.0",
+            "valid",
+            i64::MAX,
+        )];
+
+        let selected = select_cookie_candidate(
+            "chatgpt.com",
+            vec![expired, valid.clone()],
+            |cookies| async move { (cookies, true) },
+        )
+        .await;
+
+        assert_eq!(selected.unwrap()[0].value, valid[0].value);
     }
 
     // -----------------------------------------------------------------------

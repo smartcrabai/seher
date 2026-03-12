@@ -23,10 +23,7 @@ impl CodexClient {
         cookies: &[Cookie],
     ) -> Result<CodexUsageResponse, Box<dyn std::error::Error>> {
         let cookie_header = Self::build_cookie_header(cookies);
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .user_agent(USER_AGENT)
-            .build()?;
+        let client = Self::build_client()?;
 
         let access_token = Self::fetch_access_token(&client, &cookie_header).await?;
 
@@ -49,10 +46,38 @@ impl CodexClient {
         Ok(response.json().await?)
     }
 
+    pub async fn session_has_access_token(
+        cookies: &[Cookie],
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        let cookie_header = Self::build_cookie_header(cookies);
+        let client = Self::build_client()?;
+        let session = Self::fetch_session(&client, &cookie_header).await?;
+
+        Ok(Self::extract_access_token(session).is_ok())
+    }
+
+    fn build_client() -> Result<reqwest::Client, reqwest::Error> {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .user_agent(USER_AGENT)
+            .build()
+    }
+
     async fn fetch_access_token(
         client: &reqwest::Client,
         cookie_header: &str,
     ) -> Result<String, Box<dyn std::error::Error>> {
+        let session = Self::fetch_session(client, cookie_header).await?;
+
+        Self::extract_access_token(session).map_err(|detail| {
+            format!("Codex session did not return an access token: {}", detail).into()
+        })
+    }
+
+    async fn fetch_session(
+        client: &reqwest::Client,
+        cookie_header: &str,
+    ) -> Result<SessionResponse, Box<dyn std::error::Error>> {
         let response = client
             .get(SESSION_URL)
             .header("Cookie", cookie_header)
@@ -67,15 +92,15 @@ impl CodexClient {
             return Err(format!("Codex session API error: {} - {}", status, body).into());
         }
 
-        let session: SessionResponse = response.json().await?;
+        Ok(response.json().await?)
+    }
+
+    fn extract_access_token(session: SessionResponse) -> Result<String, String> {
         match session.access_token {
             Some(token) if !token.is_empty() => Ok(token),
-            _ => {
-                let detail = session
-                    .error
-                    .unwrap_or_else(|| "missing access token".to_string());
-                Err(format!("Codex session did not return an access token: {}", detail).into())
-            }
+            _ => Err(session
+                .error
+                .unwrap_or_else(|| "missing access token".to_string())),
         }
     }
 
@@ -101,7 +126,43 @@ impl CodexClient {
 
 #[cfg(test)]
 mod tests {
-    use super::CodexClient;
+    use super::{CodexClient, SessionResponse};
+
+    #[test]
+    fn extract_access_token_returns_token_when_present() {
+        let session = SessionResponse {
+            access_token: Some("token-123".to_string()),
+            error: Some("ignored".to_string()),
+        };
+
+        let token = CodexClient::extract_access_token(session).unwrap();
+
+        assert_eq!(token, "token-123");
+    }
+
+    #[test]
+    fn extract_access_token_returns_missing_when_absent() {
+        let session = SessionResponse {
+            access_token: None,
+            error: None,
+        };
+
+        let error = CodexClient::extract_access_token(session).unwrap_err();
+
+        assert_eq!(error, "missing access token");
+    }
+
+    #[test]
+    fn extract_access_token_prefers_server_error_when_present() {
+        let session = SessionResponse {
+            access_token: None,
+            error: Some("session expired".to_string()),
+        };
+
+        let error = CodexClient::extract_access_token(session).unwrap_err();
+
+        assert_eq!(error, "session expired");
+    }
 
     #[test]
     fn truncate_body_preserves_utf8_boundaries() {
