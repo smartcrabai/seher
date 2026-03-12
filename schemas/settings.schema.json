@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/smartcrabai/seher/main/schemas/settings.schema.json",
+  "title": "seher settings",
+  "description": "Configuration for seher. The loader accepts both settings.json and settings.jsonc, and it supports comments and trailing commas even though those are outside standard JSON.",
+  "type": "object",
+  "required": ["agents"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Optional JSON Schema URI for editor validation and completion."
+    },
+    "priority": {
+      "type": "array",
+      "description": "Priority rules used to choose among non-limited agents.",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/priorityRule"
+      }
+    },
+    "agents": {
+      "type": "array",
+      "description": "List of agents to use.",
+      "items": {
+        "$ref": "#/$defs/agentConfig"
+      }
+    }
+  },
+  "$defs": {
+    "provider": {
+      "description": "Provider used for rate-limit tracking. Omit to infer from command, use null to disable provider-based checks, or use any string to override the provider name.",
+      "type": ["string", "null"],
+      "examples": ["claude", "codex", "copilot", null]
+    },
+    "agentConfig": {
+      "type": "object",
+      "required": ["command"],
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "Executable name to run.",
+          "examples": ["claude", "codex", "opencode"]
+        },
+        "args": {
+          "type": "array",
+          "description": "Additional arguments. Entries containing {model} are omitted when --model is not set.",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "models": {
+          "description": "Optional mapping from user-facing model keys to backend model identifiers.",
+          "default": null,
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "arg_maps": {
+          "type": "object",
+          "description": "Exact-match mapping from trailing CLI tokens to replacement token arrays.",
+          "default": {},
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "env": {
+          "description": "Optional environment variables injected when launching the agent.",
+          "default": null,
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "provider": {
+          "$ref": "#/$defs/provider"
+        }
+      }
+    },
+    "priorityRule": {
+      "type": "object",
+      "required": ["command", "priority"],
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "Executable name to match.",
+          "examples": ["claude", "codex", "opencode"]
+        },
+        "provider": {
+          "$ref": "#/$defs/provider"
+        },
+        "model": {
+          "type": ["string", "null"],
+          "description": "Model key to match. Omit or set to null to match runs without --model."
+        },
+        "priority": {
+          "type": "integer",
+          "description": "Priority value. Higher values win when multiple agents are available.",
+          "minimum": -2147483648,
+          "maximum": 2147483647
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "$schema": "https://raw.githubusercontent.com/smartcrabai/seher/main/schemas/settings.schema.json",
+      "priority": [
+        {
+          "command": "claude",
+          "model": "high",
+          "priority": 100
+        }
+      ],
+      "agents": [
+        {
+          "command": "claude",
+          "args": ["--model", "{model}"],
+          "models": {
+            "high": "opus",
+            "medium": "sonnet",
+            "low": "haiku"
+          }
+        }
+      ]
+    }
+  ]
+}

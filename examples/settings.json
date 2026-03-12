@@ -1,4 +1,5 @@
 {
+  "$schema": "https://raw.githubusercontent.com/smartcrabai/seher/main/schemas/settings.schema.json",
   "priority": [
     {
       "command": "opencode",

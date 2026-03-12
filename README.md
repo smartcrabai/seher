@@ -89,7 +89,7 @@ alias shr="seher --profile 'Profile 1' --permission-mode bypassPermissions"
 ## Configuration
 
 
-You can customize seher's behavior by creating `~/.config/seher/settings.json` or `~/.config/seher/settings.jsonc` (JSONC supports `//` and `/* */` comments and trailing commas). If neither file exists, the default configuration (using `claude` with no extra arguments) is applied.
+You can customize seher's behavior by creating `~/.config/seher/settings.json` or `~/.config/seher/settings.jsonc`. If both files exist, seher loads `settings.jsonc` first. The loader accepts `//` and `/* */` comments plus trailing commas in either file, but `settings.jsonc` is the recommended filename when you rely on those JSONC features. If neither file exists, the default configuration (using `claude` with no extra arguments) is applied.
 
 
 ### Settings
@@ -100,15 +100,35 @@ You can customize seher's behavior by creating `~/.config/seher/settings.json` o
 | `priority` | array | Priority rules used to choose among non-limited agents |
 | `priority[].command` | string | Executable name to match (e.g. `"claude"`, `"codex"`, `"opencode"`) |
 | `priority[].provider` | string or null | Provider to match; omitted infers from `command`, `null` matches fallback agents |
-| `priority[].model` | string | Model key to match; omitted matches runs without `--model` |
+| `priority[].model` | string or null | Model key to match; omitted or `null` matches runs without `--model` |
 | `priority[].priority` | integer | Priority value (`i32`); higher wins, unmatched combinations default to `0` |
-| `agents` | array | List of agents to use |
+| `agents` | array | List of agents to use (required) |
 | `agents[].command` | string | Executable name (e.g. `"claude"`, `"codex"`, `"opencode"`) |
-| `agents[].args` | array of strings | Additional arguments (optional) |
-| `agents[].models` | object | Model level mapping (optional) |
-| `agents[].arg_maps` | object | Exact-match mapping from trailing CLI tokens to replacement token arrays (optional) |
-| `agents[].env` | object | Environment variables to set when running the agent (optional) |
+| `agents[].args` | array of strings | Additional arguments (optional; defaults to `[]`) |
+| `agents[].models` | object or null | Model level mapping (optional) |
+| `agents[].arg_maps` | object | Exact-match mapping from trailing CLI tokens to replacement token arrays (optional; defaults to `{}`) |
+| `agents[].env` | object or null | Environment variables to set when running the agent (optional) |
 | `agents[].provider` | string or null | Rate limit provider override (optional, see below) |
+
+
+### JSON Schema
+
+
+The repository ships a schema at `schemas/settings.schema.json`. To enable editor validation and completion for your local config, add `$schema` like this:
+
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/smartcrabai/seher/main/schemas/settings.schema.json",
+  "agents": [
+    {
+      "command": "claude"
+    }
+  ]
+}
+```
+
+The checked-in sample at `examples/settings.json` also references this schema.
 
 
 ### Example
@@ -116,6 +136,7 @@ You can customize seher's behavior by creating `~/.config/seher/settings.json` o
 
 ```json
 {
+  "$schema": "https://raw.githubusercontent.com/smartcrabai/seher/main/schemas/settings.schema.json",
   "priority": [
     {
       "command": "opencode",
@@ -180,7 +201,7 @@ You can customize seher's behavior by creating `~/.config/seher/settings.json` o
 
 The `{model}` placeholder in `args` is resolved based on the value passed to `--model`. If the key exists in the `models` map, it is replaced with the mapped value; otherwise the value is used as-is. When `--model` is not specified, any argument containing `{model}` is skipped.
 
-`arg_maps` rewrites each trailing CLI token independently using exact-match keys. A mapping value can expand one input token into multiple output tokens, while unmapped tokens are passed through unchanged. For example, with the sample configuration, `seher --danger "fix bugs"` adds `--permission-mode bypassPermissions` when Claude is selected, or `--yolo` when Copilot is selected.
+`arg_maps` rewrites each trailing CLI token independently using exact-match keys. A mapping value can expand one input token into multiple output tokens, while unmapped tokens are passed through unchanged. For example, with the sample configuration, `seher --danger "fix bugs"` adds `--permission-mode bypassPermissions` when Claude is selected.
 
 `priority` matches the combination of `command`, resolved `provider`, and `--model` key. If a rule's `provider` is omitted, it is inferred from `command` using the same logic as agents (`claude` → `claude`, `codex` → `codex`, `copilot` → `copilot`). Setting `provider` to `null` matches fallback agents. When multiple agents are not rate-limited, seher selects the one with the highest `priority`; if priorities are equal, the earlier entry in `agents` wins.
 
