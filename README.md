@@ -97,6 +97,11 @@ You can customize seher's behavior by creating `~/.config/seher/settings.json` o
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `priority` | array | Priority rules used to choose among non-limited agents |
+| `priority[].command` | string | Executable name to match (e.g. `"claude"`, `"codex"`, `"opencode"`) |
+| `priority[].provider` | string or null | Provider to match; omitted infers from `command`, `null` matches fallback agents |
+| `priority[].model` | string | Model key to match; omitted matches runs without `--model` |
+| `priority[].priority` | integer | Priority value (`i32`); higher wins, unmatched combinations default to `0` |
 | `agents` | array | List of agents to use |
 | `agents[].command` | string | Executable name (e.g. `"claude"`, `"codex"`, `"opencode"`) |
 | `agents[].args` | array of strings | Additional arguments (optional) |
@@ -111,6 +116,24 @@ You can customize seher's behavior by creating `~/.config/seher/settings.json` o
 
 ```json
 {
+  "priority": [
+    {
+      "command": "opencode",
+      "provider": "copilot",
+      "model": "high",
+      "priority": 100
+    },
+    {
+      "command": "codex",
+      "priority": 50
+    },
+    {
+      "command": "claude",
+      "provider": null,
+      "model": "medium",
+      "priority": 25
+    }
+  ],
   "agents": [
     {
       "command": "claude",
@@ -159,7 +182,9 @@ The `{model}` placeholder in `args` is resolved based on the value passed to `--
 
 `arg_maps` rewrites each trailing CLI token independently using exact-match keys. A mapping value can expand one input token into multiple output tokens, while unmapped tokens are passed through unchanged. For example, with the sample configuration, `seher --danger "fix bugs"` adds `--permission-mode bypassPermissions` when Claude is selected, or `--yolo` when Copilot is selected.
 
-The `provider` field controls rate limit tracking. If omitted, the provider is inferred from the command name (`claude` → claude.ai, `codex` → chatgpt.com, `copilot` → github.com). Setting it to `null` disables rate limit checking for that agent, making it act as an unconditional fallback. Setting it to a string (e.g. `"codex"` or `"copilot"`) uses that provider's rate limit regardless of the command name. When multiple agents are configured, seher preferentially selects agents that are not rate-limited; agents with `provider: null` are used as a last resort.
+`priority` matches the combination of `command`, resolved `provider`, and `--model` key. If a rule's `provider` is omitted, it is inferred from `command` using the same logic as agents (`claude` → `claude`, `codex` → `codex`, `copilot` → `copilot`). Setting `provider` to `null` matches fallback agents. When multiple agents are not rate-limited, seher selects the one with the highest `priority`; if priorities are equal, the earlier entry in `agents` wins.
+
+The `provider` field controls rate limit tracking. If omitted, the provider is inferred from the command name (`claude` → claude.ai, `codex` → chatgpt.com, `copilot` → github.com). Setting it to `null` disables rate limit checking for that agent. Setting it to a string (e.g. `"codex"` or `"copilot"`) uses that provider's rate limit regardless of the command name.
 
 For Codex, seher reads `chatgpt.com` browser cookies, fetches an access token from `https://chatgpt.com/api/auth/session`, and then calls `https://chatgpt.com/backend-api/wham/usage`. The request intentionally keeps headers minimal and does not require hard-coding a bearer token in your config.
 

@@ -1,4 +1,27 @@
 {
+  "priority": [
+    {
+      "command": "opencode",
+      "provider": "copilot",
+      "model": "high",
+      "priority": 100
+    },
+    {
+      "command": "codex",
+      "priority": 50
+    },
+    {
+      "command": "claude",
+      "provider": null,
+      "model": "medium",
+      "priority": 25
+    },
+    {
+      "command": "claude",
+      "model": "low",
+      "priority": 10
+    }
+  ],
   "agents": [
     {
       "command": "claude",

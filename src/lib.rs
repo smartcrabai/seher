@@ -10,4 +10,4 @@ pub use agent::{Agent, AgentLimit, AgentStatus, UsageEntry};
 pub use browser::{BrowserDetector, BrowserType, Cookie, CookieReader, Profile};
 pub use claude::{ClaudeClient, UsageResponse, UsageWindow};
 pub use codex::{CodexClient, CodexRateLimit, CodexUsageResponse, CodexWindow};
-pub use config::{AgentConfig, Settings};
+pub use config::{AgentConfig, PriorityRule, Settings};
