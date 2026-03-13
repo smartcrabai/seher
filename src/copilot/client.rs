@@ -30,10 +30,12 @@ pub struct CopilotQuota {
 }
 
 impl CopilotQuota {
+    #[must_use]
     pub fn is_limited(&self) -> bool {
         self.chat_utilization >= 100.0 || self.premium_utilization >= 100.0
     }
 
+    #[must_use]
     pub fn next_reset_time(&self) -> Option<DateTime<Utc>> {
         self.reset_time
     }
@@ -45,6 +47,9 @@ const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
 pub struct CopilotClient;
 
 impl CopilotClient {
+    /// # Errors
+    ///
+    /// Returns an error if the GitHub Copilot API request fails or the response cannot be parsed.
     pub async fn fetch_quota(
         cookies: &[Cookie],
     ) -> Result<CopilotQuota, Box<dyn std::error::Error>> {
@@ -67,7 +72,7 @@ impl CopilotClient {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await?;
-            return Err(format!("GitHub Copilot API error: {} - {}", status, body).into());
+            return Err(format!("GitHub Copilot API error: {status} - {body}").into());
         }
 
         let quota_response: CopilotQuotaResponse = response.json().await?;

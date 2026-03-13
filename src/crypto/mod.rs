@@ -32,6 +32,9 @@ pub mod linux;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
+/// # Errors
+///
+/// Returns an error if decryption fails, the OS is unsupported, or the result is not valid UTF-8.
 pub fn decrypt_cookie_value(encrypted_value: &[u8]) -> Result<String> {
     if encrypted_value.is_empty() {
         return Ok(String::new());

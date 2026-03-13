@@ -21,16 +21,34 @@ pub enum CookieReaderError {
 
 pub type Result<T> = std::result::Result<T, CookieReaderError>;
 
+/// Clamp a finite `f64` to a safe subrange of `i64`, then convert via string.
+///
+/// Safari cookie expiry values are seconds since 2001-01-01, on the order of
+/// 1e9. We cap at ±1e15 (well within `i64`) and convert via string parse to
+/// avoid any integer-cast lints.
+fn f64_to_i64_saturating(v: f64) -> i64 {
+    const MAX: f64 = 1_000_000_000_000_000_f64; // 1e15, well within i64 and f64 precision
+    const MIN: f64 = -1_000_000_000_000_000_f64;
+    // Round and clamp to an integer-valued f64 that is exactly representable.
+    let clamped = v.round().clamp(MIN, MAX);
+    // Convert via string representation to avoid cast lints.
+    // The value is a whole number in [-1e15, 1e15], so parsing always succeeds.
+    clamped.to_string().parse().unwrap_or(0)
+}
+
 pub struct CookieReader;
 
 impl CookieReader {
+    /// # Errors
+    ///
+    /// Returns an error if the cookies file is not found, cannot be read, or decryption fails.
     pub fn read_cookies(profile: &Profile, domain: &str) -> Result<Vec<Cookie>> {
         let cookies_path = profile.cookies_path();
 
         if !cookies_path.exists() {
             return Err(CookieReaderError::NoCookiesFound(format!(
-                "Cookies file not found: {:?}",
-                cookies_path
+                "Cookies file not found: {}",
+                cookies_path.display()
             )));
         }
 
@@ -70,8 +88,8 @@ impl CookieReader {
              ORDER BY creation_utc DESC",
         )?;
 
-        let domain_pattern = format!("%{}", domain);
-        let dot_domain_pattern = format!("%.{}", domain);
+        let domain_pattern = format!("%{domain}");
+        let dot_domain_pattern = format!("%.{domain}");
 
         let cookie_iter = stmt.query_map(
             rusqlite::params![&domain_pattern, &dot_domain_pattern],
@@ -126,7 +144,7 @@ impl CookieReader {
                     });
                 }
                 Err(e) => {
-                    eprintln!("  [warn] Failed to decrypt cookie '{}': {}", name, e);
+                    eprintln!("  [warn] Failed to decrypt cookie '{name}': {e}");
                 }
             }
         }
@@ -148,8 +166,8 @@ impl CookieReader {
              ORDER BY creationTime DESC",
         )?;
 
-        let domain_pattern = format!("%{}", domain);
-        let dot_domain_pattern = format!("%.{}", domain);
+        let domain_pattern = format!("%{domain}");
+        let dot_domain_pattern = format!("%.{domain}");
 
         let cookie_iter = stmt.query_map(
             rusqlite::params![&domain_pattern, &dot_domain_pattern],
@@ -233,9 +251,8 @@ impl CookieReader {
                 continue;
             }
 
-            if let Ok(page_cookies) = Self::parse_safari_page(&data, page_offset, domain) {
-                cookies.extend(page_cookies);
-            }
+            let page_cookies = Self::parse_safari_page(&data, page_offset, domain);
+            cookies.extend(page_cookies);
         }
 
         if cookies.is_empty() {
@@ -245,11 +262,11 @@ impl CookieReader {
         Ok(cookies)
     }
 
-    fn parse_safari_page(data: &[u8], offset: usize, domain: &str) -> Result<Vec<Cookie>> {
+    fn parse_safari_page(data: &[u8], offset: usize, domain: &str) -> Vec<Cookie> {
         let mut pos = offset + 4;
 
         if pos + 4 > data.len() {
-            return Ok(Vec::new());
+            return Vec::new();
         }
 
         let num_cookies =
@@ -275,7 +292,7 @@ impl CookieReader {
             }
         }
 
-        Ok(cookies)
+        cookies
     }
 
     fn parse_safari_cookie(
@@ -346,7 +363,12 @@ impl CookieReader {
             return Ok(None);
         }
 
-        let expires_utc = ((expiry + 978307200.0) * 1_000_000.0) as i64 + 11_644_473_600_000_000;
+        // Safari stores expiry as seconds since Mac OS X epoch (2001-01-01).
+        // Convert to Windows epoch microseconds (1601-01-01).
+        let expiry_mac_secs = f64_to_i64_saturating((expiry + 978_307_200.0).round());
+        let expires_utc = expiry_mac_secs
+            .saturating_mul(1_000_000)
+            .saturating_add(11_644_473_600_000_000);
 
         Ok(Some(Cookie {
             name,

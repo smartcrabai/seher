@@ -27,7 +27,7 @@ pub struct Args {
 
     /// Additional arguments to pass to the agent command
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    pub agent_args: Vec<String>,
+    pub extra: Vec<String>,
 
     /// Model level to use (e.g. "high", "low"), resolved via agent's models map
     #[arg(long, short)]
@@ -88,7 +88,7 @@ struct InvocationInput {
 ///
 /// Rules:
 /// - Only provider-aware agents (domain != None) trigger auto-rerun.
-/// - Only `Failure` exits trigger auto-rerun (not Success, SpawnError, or SignalTerminated).
+/// - Only `Failure` exits trigger auto-rerun (not `Success`, `SpawnError`, or `SignalTerminated`).
 fn should_auto_rerun(exit_kind: &ChildExitKind, agent_is_provider_aware: bool) -> bool {
     matches!(exit_kind, ChildExitKind::Failure { .. }) && agent_is_provider_aware
 }
@@ -109,7 +109,7 @@ pub async fn run(args: Args) {
     let settings = match Settings::load(args.config.as_deref()) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("Failed to load settings: {}", e);
+            eprintln!("Failed to load settings: {e}");
             return;
         }
     };
@@ -127,30 +127,7 @@ pub async fn run(args: Args) {
         return;
     }
 
-    let mut agents: Vec<Agent> = Vec::new();
-
-    for config in &settings.agents {
-        let domain = config.resolve_domain();
-
-        let cookies = match domain {
-            Some(d) => {
-                match get_cookies_for_domain(&detector, &browsers, &args.browser, &args.profile, d)
-                    .await
-                {
-                    Some(c) => c,
-                    None => {
-                        if !args.quiet {
-                            eprintln!("No cookies found for {} (domain: {})", config.command, d);
-                        }
-                        continue;
-                    }
-                }
-            }
-            None => vec![],
-        };
-
-        agents.push(Agent::new(config.clone(), cookies));
-    }
+    let agents = build_agents(&settings, &detector, &browsers, &args).await;
 
     if agents.is_empty() {
         eprintln!("No agents with valid cookies found");
@@ -158,20 +135,63 @@ pub async fn run(args: Args) {
     }
 
     if args.json {
-        let mut statuses: Vec<AgentStatus> = Vec::new();
-        for agent in &agents {
-            match agent.fetch_status().await {
-                Ok(status) => statuses.push(status),
-                Err(e) => eprintln!("Failed to fetch status for {}: {}", agent.command(), e),
-            }
-        }
-        match serde_json::to_string_pretty(&statuses) {
-            Ok(json) => println!("{}", json),
-            Err(e) => eprintln!("Failed to serialize status: {}", e),
-        }
+        print_json_status(&agents).await;
         return;
     }
 
+    run_with_limit_check(&settings, agents, &args).await;
+}
+
+async fn build_agents(
+    settings: &Settings,
+    detector: &BrowserDetector,
+    browsers: &[BrowserType],
+    args: &Args,
+) -> Vec<Agent> {
+    let mut agents: Vec<Agent> = Vec::new();
+    for config in &settings.agents {
+        let domain = config.resolve_domain();
+        let cookies = match domain {
+            Some(d) => {
+                if let Some(c) = get_cookies_for_domain(
+                    detector,
+                    browsers,
+                    args.browser.as_ref(),
+                    args.profile.as_ref(),
+                    d,
+                )
+                .await
+                {
+                    c
+                } else {
+                    if !args.quiet {
+                        eprintln!("No cookies found for {} (domain: {d})", config.command);
+                    }
+                    continue;
+                }
+            }
+            None => vec![],
+        };
+        agents.push(Agent::new(config.clone(), cookies));
+    }
+    agents
+}
+
+async fn print_json_status(agents: &[Agent]) {
+    let mut statuses: Vec<AgentStatus> = Vec::new();
+    for agent in agents {
+        match agent.fetch_status().await {
+            Ok(status) => statuses.push(status),
+            Err(e) => eprintln!("Failed to fetch status for {}: {e}", agent.command()),
+        }
+    }
+    match serde_json::to_string_pretty(&statuses) {
+        Ok(json) => println!("{json}"),
+        Err(e) => eprintln!("Failed to serialize status: {e}"),
+    }
+}
+
+async fn run_with_limit_check(settings: &Settings, agents: Vec<Agent>, args: &Args) {
     type LimitResult = (usize, Result<seher::AgentLimit, Box<dyn std::error::Error>>);
     let mut limit_results: Vec<LimitResult> = Vec::new();
 
@@ -183,7 +203,6 @@ pub async fn run(args: Args) {
                 agent.resolved_args(args.model.as_deref()).join(" ")
             );
         }
-
         let result = agent.check_limit().await;
         limit_results.push((i, result));
     }
@@ -193,15 +212,11 @@ pub async fn run(args: Args) {
 
     for (i, result) in &limit_results {
         match result {
-            Ok(AgentLimit::NotLimited) => {
-                available_indices.push(*i);
-            }
-            Ok(AgentLimit::Limited { reset_time }) => {
-                limited_indices.push((*i, *reset_time));
-            }
+            Ok(AgentLimit::NotLimited) => available_indices.push(*i),
+            Ok(AgentLimit::Limited { reset_time }) => limited_indices.push((*i, *reset_time)),
             Err(e) => {
                 if !args.quiet {
-                    eprintln!("Failed to check limit for agent {}: {}", i, e);
+                    eprintln!("Failed to check limit for agent {i}: {e}");
                 }
             }
         }
@@ -209,25 +224,21 @@ pub async fn run(args: Args) {
 
     if let Some(model_key) = args.model.as_deref() {
         if !agents.iter().any(|a| a.has_model(model_key)) {
-            eprintln!("No agents found with model '{}'", model_key);
+            eprintln!("No agents found with model '{model_key}'");
             return;
         }
-
         available_indices.retain(|&i| agents[i].has_model(model_key));
         limited_indices.retain(|(i, _)| agents[*i].has_model(model_key));
     }
 
     let mut input = InvocationInput {
-        raw_agent_args: args.agent_args,
+        raw_agent_args: args.extra.clone(),
         cached_prompt: None,
     };
 
-    if let Some(selected_index) = select_best_available_agent(
-        &settings,
-        &agents,
-        &available_indices,
-        args.model.as_deref(),
-    ) {
+    if let Some(selected_index) =
+        select_best_available_agent(settings, &agents, &available_indices, args.model.as_deref())
+    {
         if !args.quiet {
             println!(
                 "Agent {} is available (not limited)",
@@ -240,20 +251,15 @@ pub async fn run(args: Args) {
             &mut input,
             args.model.as_deref(),
             args.quiet,
-        )
-        .await;
+        );
         return;
     }
 
     if !limited_indices.is_empty() {
-        let mut earliest: Option<(usize, DateTime<Utc>)> = None;
-        for (i, reset_time) in &limited_indices {
-            if let Some(rt) = reset_time
-                && (earliest.is_none() || *rt < earliest.unwrap().1)
-            {
-                earliest = Some((*i, *rt));
-            }
-        }
+        let earliest = limited_indices
+            .iter()
+            .filter_map(|(i, rt)| rt.map(|t| (*i, t)))
+            .min_by_key(|(_, t)| *t);
 
         if let Some((idx, rt)) = earliest {
             if !args.quiet {
@@ -264,8 +270,7 @@ pub async fn run(args: Args) {
                 );
             }
             sleep_until_reset(rt, args.quiet).await;
-            execute_with_auto_rerun(&agents, idx, &mut input, args.model.as_deref(), args.quiet)
-                .await;
+            execute_with_auto_rerun(&agents, idx, &mut input, args.model.as_deref(), args.quiet);
             return;
         } else if !args.quiet {
             println!("All agents limited, no reset time available");
@@ -325,13 +330,13 @@ where
 fn collect_candidate_profiles(
     detector: &BrowserDetector,
     browsers: &[BrowserType],
-    browser_arg: &Option<String>,
-    profile_arg: &Option<String>,
+    browser_arg: Option<&String>,
+    profile_arg: Option<&String>,
 ) -> Vec<seher::Profile> {
     collect_candidate_profiles_with(
         browsers,
-        browser_arg.as_deref(),
-        profile_arg.as_deref(),
+        browser_arg.map(String::as_str),
+        profile_arg.map(String::as_str),
         |browser_type, profile_name| detector.get_profile(browser_type, Some(profile_name)),
         |browser_type| detector.list_profiles(browser_type),
     )
@@ -340,8 +345,8 @@ fn collect_candidate_profiles(
 fn collect_cookie_candidates(
     detector: &BrowserDetector,
     browsers: &[BrowserType],
-    browser_arg: &Option<String>,
-    profile_arg: &Option<String>,
+    browser_arg: Option<&String>,
+    profile_arg: Option<&String>,
     domain: &str,
 ) -> Vec<Vec<seher::Cookie>> {
     collect_candidate_profiles(detector, browsers, browser_arg, profile_arg)
@@ -388,8 +393,8 @@ where
 async fn get_cookies_for_domain(
     detector: &BrowserDetector,
     browsers: &[BrowserType],
-    browser_arg: &Option<String>,
-    profile_arg: &Option<String>,
+    browser_arg: Option<&String>,
+    profile_arg: Option<&String>,
     domain: &str,
 ) -> Option<Vec<seher::Cookie>> {
     let candidates =
@@ -415,7 +420,7 @@ fn has_session_cookie(domain: &str, cookie: &seher::Cookie) -> bool {
     }
 }
 
-async fn prompt_from_editor() -> std::result::Result<String, Box<dyn std::error::Error>> {
+fn prompt_from_editor() -> std::result::Result<String, Box<dyn std::error::Error>> {
     let tmp = tempfile::NamedTempFile::new()?;
     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
     std::process::Command::new(&editor)
@@ -424,24 +429,24 @@ async fn prompt_from_editor() -> std::result::Result<String, Box<dyn std::error:
     Ok(std::fs::read_to_string(tmp.path())?.trim().to_string())
 }
 
-async fn execute_with_auto_rerun(
+fn execute_with_auto_rerun(
     agents: &[Agent],
     idx: usize,
     input: &mut InvocationInput,
     model: Option<&str>,
     quiet: bool,
 ) {
-    let exit_kind = execute_agent(agents, idx, input, model, quiet).await;
+    let exit_kind = execute_agent(agents, idx, input, model, quiet);
     let provider_aware = agents[idx].config.resolve_domain().is_some();
     if should_auto_rerun(&exit_kind, provider_aware) {
         if !quiet {
             eprintln!("Agent failed, retrying...");
         }
-        execute_agent(agents, idx, input, model, quiet).await;
+        execute_agent(agents, idx, input, model, quiet);
     }
 }
 
-async fn execute_agent(
+fn execute_agent(
     agents: &[Agent],
     selected_index: usize,
     input: &mut InvocationInput,
@@ -453,21 +458,19 @@ async fn execute_agent(
 
     if input.raw_agent_args.is_empty() && !quiet {
         if input.cached_prompt.is_none() {
-            match prompt_from_editor().await {
+            match prompt_from_editor() {
                 Ok(prompt) => input.cached_prompt = Some(prompt),
                 Err(e) => {
-                    eprintln!("Editor error: {}", e);
+                    eprintln!("Editor error: {e}");
                     // SpawnError prevents auto-rerun, which is correct — the agent was never started.
                     return ChildExitKind::SpawnError;
                 }
             }
         }
         // cached_prompt is guaranteed Some at this point
-        let p = input
-            .cached_prompt
-            .as_deref()
-            .expect("cached_prompt was just set");
-        if !p.is_empty() {
+        if let Some(p) = input.cached_prompt.as_deref()
+            && !p.is_empty()
+        {
             final_args.push(p.to_string());
         }
     }
@@ -499,8 +502,8 @@ fn format_priority_entry<W: std::io::Write>(
     let env_display = match &config.env {
         None => String::new(),
         Some(env) => {
-            let mut keys: Vec<&str> = env.keys().map(|s| s.as_str()).collect();
-            keys.sort();
+            let mut keys: Vec<&str> = env.keys().map(String::as_str).collect();
+            keys.sort_unstable();
             keys.join(", ")
         }
     };
@@ -564,7 +567,7 @@ async fn sleep_until_reset(reset_time: DateTime<Utc>, quiet: bool) {
         return;
     }
 
-    let total_secs = (reset_time - now).num_seconds().max(0) as u64;
+    let total_secs = (reset_time - now).num_seconds().max(0).cast_unsigned();
     if !quiet {
         println!(
             "\nSleeping until {} ({} seconds)...",
@@ -580,7 +583,7 @@ async fn sleep_until_reset(reset_time: DateTime<Utc>, quiet: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use seher::{AgentConfig, PriorityRule};
+    use seher::{AgentConfig, PriorityRule, config::ProviderConfig};
     use std::collections::HashMap;
 
     fn sample_cookie(name: &str) -> seher::Cookie {
@@ -608,7 +611,7 @@ mod tests {
         )
     }
 
-    fn sample_agent(command: &str, provider: Option<Option<&str>>) -> Agent {
+    fn sample_agent(command: &str, provider: Option<ProviderConfig>) -> Agent {
         Agent::new(
             AgentConfig {
                 command: command.to_string(),
@@ -616,7 +619,7 @@ mod tests {
                 models: None,
                 arg_maps: HashMap::new(),
                 env: None,
-                provider: provider.map(|provider| provider.map(str::to_string)),
+                provider,
             },
             vec![],
         )
@@ -743,14 +746,14 @@ mod tests {
             },
             PriorityRule {
                 command: "claude".to_string(),
-                provider: Some(None),
+                provider: Some(ProviderConfig::None),
                 model: Some("medium".to_string()),
                 priority: 20,
             },
         ]);
         let agents = vec![
             sample_agent("claude", None),
-            sample_agent("claude", Some(None)),
+            sample_agent("claude", Some(ProviderConfig::None)),
         ];
 
         let selected = select_best_available_agent(&settings, &agents, &[0, 1], Some("medium"));
@@ -807,7 +810,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn select_cookie_candidate_skips_codex_profiles_without_access_token() {
+    async fn select_cookie_candidate_skips_codex_profiles_without_access_token() -> TestResult {
         let invalid = vec![sample_cookie_with_value(
             "__Secure-next-auth.session-token.0",
             "invalid",
@@ -829,11 +832,13 @@ mod tests {
         )
         .await;
 
-        assert_eq!(selected.unwrap()[0].value, valid[0].value);
+        let selected = selected.ok_or("expected Some")?;
+        assert_eq!(selected[0].value, valid[0].value);
+        Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn select_cookie_candidate_ignores_expired_session_cookies() {
+    async fn select_cookie_candidate_ignores_expired_session_cookies() -> TestResult {
         let expired = vec![sample_cookie_with_value(
             "__Secure-next-auth.session-token.0",
             "expired",
@@ -852,7 +857,9 @@ mod tests {
         )
         .await;
 
-        assert_eq!(selected.unwrap()[0].value, valid[0].value);
+        let selected = selected.ok_or("expected Some")?;
+        assert_eq!(selected[0].value, valid[0].value);
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -904,12 +911,14 @@ mod tests {
         }
     }
 
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
     #[test]
-    fn write_priority_contains_model_sections() {
+    fn write_priority_contains_model_sections() -> TestResult {
         let settings = make_priority_settings();
         let mut output = Vec::new();
         write_priority(&mut output, &settings);
-        let output = String::from_utf8(output).unwrap();
+        let output = String::from_utf8(output)?;
 
         assert!(
             output.contains("Model: high"),
@@ -923,35 +932,43 @@ mod tests {
             output.contains("Model: (none)"),
             "should have Model: (none) section"
         );
+        Ok(())
     }
 
     #[test]
-    fn write_priority_sorts_by_priority_descending_in_none_section() {
+    fn write_priority_sorts_by_priority_descending_in_none_section() -> TestResult {
         let settings = make_priority_settings();
         let mut output = Vec::new();
         write_priority(&mut output, &settings);
-        let output = String::from_utf8(output).unwrap();
+        let output = String::from_utf8(output)?;
 
         // In Model: (none): codex (priority=50) should come before claude (priority=0)
-        let none_start = output.find("Model: (none)").unwrap();
+        let none_start = output
+            .find("Model: (none)")
+            .ok_or("Model: (none) not found")?;
         let none_section = &output[none_start..];
-        let codex_pos = none_section.find("command=codex").unwrap();
-        let claude_pos = none_section.find("command=claude").unwrap();
+        let codex_pos = none_section
+            .find("command=codex")
+            .ok_or("command=codex not found")?;
+        let claude_pos = none_section
+            .find("command=claude")
+            .ok_or("command=claude not found")?;
         assert!(
             codex_pos < claude_pos,
             "codex (priority=50) should precede claude (priority=0)"
         );
+        Ok(())
     }
 
     #[test]
-    fn write_priority_includes_passthrough_agent_in_model_sections() {
+    fn write_priority_includes_passthrough_agent_in_model_sections() -> TestResult {
         let settings = make_priority_settings();
         let mut output = Vec::new();
         write_priority(&mut output, &settings);
-        let output = String::from_utf8(output).unwrap();
+        let output = String::from_utf8(output)?;
 
         // In Model: high: claude (priority=10) should come before codex (priority=0, pass-through)
-        let high_start = output.find("Model: high").unwrap();
+        let high_start = output.find("Model: high").ok_or("Model: high not found")?;
         let high_end = output[high_start..]
             .find("\nModel:")
             .map_or(output.len(), |p| high_start + p);
@@ -966,26 +983,32 @@ mod tests {
             "codex (pass-through) should be in Model: high"
         );
 
-        let claude_pos = high_section.find("command=claude").unwrap();
-        let codex_pos = high_section.find("command=codex").unwrap();
+        let claude_pos = high_section
+            .find("command=claude")
+            .ok_or("command=claude not found")?;
+        let codex_pos = high_section
+            .find("command=codex")
+            .ok_or("command=codex not found")?;
         assert!(
             claude_pos < codex_pos,
             "claude (priority=10) should precede codex (priority=0) in high section"
         );
+        Ok(())
     }
 
     #[test]
-    fn write_priority_formats_env_keys_sorted() {
+    fn write_priority_formats_env_keys_sorted() -> TestResult {
         let settings = make_priority_settings();
         let mut output = Vec::new();
         write_priority(&mut output, &settings);
-        let output = String::from_utf8(output).unwrap();
+        let output = String::from_utf8(output)?;
 
         assert!(
             output.contains("env={ANTHROPIC_API_KEY}"),
             "should show env key for claude"
         );
         assert!(output.contains("env={}"), "should show empty env for codex");
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -1006,50 +1029,46 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn child_exit_kind_from_returns_success_for_zero_exit() {
+    fn child_exit_kind_from_returns_success_for_zero_exit() -> TestResult {
         // Given: a process that exits cleanly with code 0
         // When:  converting to ChildExitKind
         // Then:  returns Success
-        let status = std::process::Command::new("true")
-            .status()
-            .expect("`true` command must exist on Unix");
+        let status = std::process::Command::new("true").status()?;
         assert_eq!(ChildExitKind::from(Ok(status)), ChildExitKind::Success);
+        Ok(())
     }
 
     #[test]
     #[cfg(unix)]
-    fn child_exit_kind_from_returns_failure_for_nonzero_exit() {
+    fn child_exit_kind_from_returns_failure_for_nonzero_exit() -> TestResult {
         // Given: a process that exits with code 1
         // When:  converting to ChildExitKind
         // Then:  returns Failure with code Some(1)
-        let status = std::process::Command::new("false")
-            .status()
-            .expect("`false` command must exist on Unix");
+        let status = std::process::Command::new("false").status()?;
         assert_eq!(
             ChildExitKind::from(Ok(status)),
             ChildExitKind::Failure { code: Some(1) },
         );
+        Ok(())
     }
 
     #[test]
     #[cfg(unix)]
-    fn child_exit_kind_from_returns_signal_terminated_for_signal_killed_process() {
+    fn child_exit_kind_from_returns_signal_terminated_for_signal_killed_process() -> TestResult {
         // Given: a process terminated by SIGKILL (Unix signal)
         // When:  converting to ChildExitKind
         // Then:  returns SignalTerminated (signal termination ≠ voluntary non-zero exit)
         use std::os::unix::process::ExitStatusExt;
         // Spawn a long-running process and kill it with SIGKILL
-        let mut child = std::process::Command::new("sleep")
-            .arg("60")
-            .spawn()
-            .expect("`sleep` command must exist on Unix");
-        child.kill().expect("kill must succeed");
-        let status = child.wait().expect("wait must succeed");
+        let mut child = std::process::Command::new("sleep").arg("60").spawn()?;
+        child.kill()?;
+        let status = child.wait()?;
         // SIGKILL (signal 9) → signal() returns Some(9), code() returns None
         assert!(status.signal().is_some());
         assert_eq!(
             ChildExitKind::from(Ok(status)),
             ChildExitKind::SignalTerminated
         );
+        Ok(())
     }
 }

@@ -42,7 +42,7 @@ async fn main() {
                         return;
                     }
                     Err(e) => {
-                        println!("\nFailed to fetch Codex usage: {}", e);
+                        println!("\nFailed to fetch Codex usage: {e}");
                     }
                 }
             }

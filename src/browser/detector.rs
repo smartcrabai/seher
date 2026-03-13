@@ -6,11 +6,13 @@ pub struct BrowserDetector {
 }
 
 impl BrowserDetector {
+    #[must_use]
     pub fn new() -> Self {
         let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         Self { home_dir }
     }
 
+    #[must_use]
     pub fn detect_browsers(&self) -> Vec<BrowserType> {
         let mut browsers = Vec::new();
 
@@ -36,10 +38,10 @@ impl BrowserDetector {
 
     fn is_browser_installed(&self, browser_type: BrowserType) -> bool {
         self.get_browser_base_path(browser_type)
-            .map(|p| p.exists())
-            .unwrap_or(false)
+            .is_some_and(|p| p.exists())
     }
 
+    #[must_use]
     pub fn get_browser_base_path(&self, browser_type: BrowserType) -> Option<PathBuf> {
         #[cfg(target_os = "macos")]
         {
@@ -121,6 +123,7 @@ impl BrowserDetector {
         None
     }
 
+    #[must_use]
     pub fn list_profiles(&self, browser_type: BrowserType) -> Vec<Profile> {
         let base_path = match self.get_browser_base_path(browser_type) {
             Some(p) if p.exists() => p,
@@ -128,7 +131,7 @@ impl BrowserDetector {
         };
 
         if browser_type == BrowserType::Firefox {
-            return self.list_firefox_profiles(&base_path);
+            return Self::list_firefox_profiles(&base_path);
         }
 
         if browser_type == BrowserType::Safari {
@@ -178,7 +181,7 @@ impl BrowserDetector {
         profiles
     }
 
-    fn list_firefox_profiles(&self, base_path: &Path) -> Vec<Profile> {
+    fn list_firefox_profiles(base_path: &Path) -> Vec<Profile> {
         let profiles_ini = base_path.join("profiles.ini");
         if !profiles_ini.exists() {
             return Vec::new();
@@ -234,6 +237,7 @@ impl BrowserDetector {
         profiles
     }
 
+    #[must_use]
     pub fn get_profile(
         &self,
         browser_type: BrowserType,

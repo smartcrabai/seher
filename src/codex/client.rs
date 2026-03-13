@@ -19,6 +19,10 @@ struct SessionResponse {
 pub struct CodexClient;
 
 impl CodexClient {
+    /// # Errors
+    ///
+    /// Returns an error if fetching the session or usage API fails, or the response cannot be
+    /// parsed.
     pub async fn fetch_usage(
         cookies: &[Cookie],
     ) -> Result<CodexUsageResponse, Box<dyn std::error::Error>> {
@@ -31,7 +35,7 @@ impl CodexClient {
             .get(USAGE_URL)
             .header("Cookie", &cookie_header)
             .header("Accept", "application/json")
-            .header("Authorization", format!("Bearer {}", access_token))
+            .header("Authorization", format!("Bearer {access_token}"))
             .header("Referer", USAGE_REFERER)
             .send()
             .await?;
@@ -40,12 +44,15 @@ impl CodexClient {
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             let body = Self::truncate_body(&body);
-            return Err(format!("Codex usage API error: {} - {}", status, body).into());
+            return Err(format!("Codex usage API error: {status} - {body}").into());
         }
 
         Ok(response.json().await?)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the session API request fails or the response cannot be parsed.
     pub async fn session_has_access_token(
         cookies: &[Cookie],
     ) -> Result<bool, Box<dyn std::error::Error>> {
@@ -70,7 +77,7 @@ impl CodexClient {
         let session = Self::fetch_session(client, cookie_header).await?;
 
         Self::extract_access_token(session).map_err(|detail| {
-            format!("Codex session did not return an access token: {}", detail).into()
+            format!("Codex session did not return an access token: {detail}").into()
         })
     }
 
@@ -89,7 +96,7 @@ impl CodexClient {
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             let body = Self::truncate_body(&body);
-            return Err(format!("Codex session API error: {} - {}", status, body).into());
+            return Err(format!("Codex session API error: {status} - {body}").into());
         }
 
         Ok(response.json().await?)
@@ -117,7 +124,7 @@ impl CodexClient {
         let mut chars = body.chars();
         let preview: String = chars.by_ref().take(200).collect();
         if chars.next().is_some() {
-            format!("{}...", preview)
+            format!("{preview}...")
         } else {
             preview
         }
@@ -135,9 +142,10 @@ mod tests {
             error: Some("ignored".to_string()),
         };
 
-        let token = CodexClient::extract_access_token(session).unwrap();
+        let result = CodexClient::extract_access_token(session);
 
-        assert_eq!(token, "token-123");
+        assert!(result.is_ok());
+        assert_eq!(result.ok().as_deref(), Some("token-123"));
     }
 
     #[test]
@@ -147,9 +155,10 @@ mod tests {
             error: None,
         };
 
-        let error = CodexClient::extract_access_token(session).unwrap_err();
+        let result = CodexClient::extract_access_token(session);
 
-        assert_eq!(error, "missing access token");
+        assert!(result.is_err());
+        assert_eq!(result.err().as_deref(), Some("missing access token"));
     }
 
     #[test]
@@ -159,9 +168,10 @@ mod tests {
             error: Some("session expired".to_string()),
         };
 
-        let error = CodexClient::extract_access_token(session).unwrap_err();
+        let result = CodexClient::extract_access_token(session);
 
-        assert_eq!(error, "session expired");
+        assert!(result.is_err());
+        assert_eq!(result.err().as_deref(), Some("session expired"));
     }
 
     #[test]

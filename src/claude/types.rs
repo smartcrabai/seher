@@ -15,6 +15,7 @@ pub struct UsageResponse {
 }
 
 impl UsageResponse {
+    #[must_use]
     pub fn next_reset_time(&self) -> Option<chrono::DateTime<Utc>> {
         [
             self.five_hour.as_ref(),

@@ -9,12 +9,36 @@ pub struct Settings {
     pub agents: Vec<AgentConfig>,
 }
 
-fn deserialize_provider<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+/// Represents the three possible states of the `provider` field:
+/// - `Inferred`: field absent → provider is inferred from the command name
+/// - `Explicit(name)`: field has a string value → use that provider name
+/// - `None`: field is `null` → no provider (fallback agent)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderConfig {
+    Inferred,
+    Explicit(String),
+    None,
+}
+
+impl<'de> serde::Deserialize<'de> for ProviderConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let opt: Option<String> = serde::Deserialize::deserialize(deserializer)?;
+        Ok(match opt {
+            Some(s) => ProviderConfig::Explicit(s),
+            Option::None => ProviderConfig::None,
+        })
+    }
+}
+
+fn deserialize_provider_config<'de, D>(deserializer: D) -> Result<Option<ProviderConfig>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let opt: Option<String> = serde::Deserialize::deserialize(deserializer)?;
-    Ok(Some(opt))
+    let config = ProviderConfig::deserialize(deserializer)?;
+    Ok(Some(config))
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -28,15 +52,15 @@ pub struct AgentConfig {
     pub arg_maps: HashMap<String, Vec<String>>,
     #[serde(default)]
     pub env: Option<HashMap<String, String>>,
-    #[serde(default, deserialize_with = "deserialize_provider")]
-    pub provider: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_provider_config")]
+    pub provider: Option<ProviderConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 pub struct PriorityRule {
     pub command: String,
-    #[serde(default, deserialize_with = "deserialize_provider")]
-    pub provider: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_provider_config")]
+    pub provider: Option<ProviderConfig>,
     #[serde(default)]
     pub model: Option<String>,
     pub priority: i32,
@@ -51,11 +75,11 @@ fn command_to_provider(command: &str) -> Option<&str> {
     }
 }
 
-fn resolve_provider<'a>(command: &'a str, provider: &'a Option<Option<String>>) -> Option<&'a str> {
+fn resolve_provider<'a>(command: &'a str, provider: Option<&'a ProviderConfig>) -> Option<&'a str> {
     match provider {
-        Some(Some(provider)) => Some(provider.as_str()),
-        Some(None) => None,
-        None => command_to_provider(command),
+        Some(ProviderConfig::Explicit(name)) => Some(name.as_str()),
+        Some(ProviderConfig::None) => Option::None,
+        Some(ProviderConfig::Inferred) | Option::None => command_to_provider(command),
     }
 }
 
@@ -69,20 +93,24 @@ fn provider_to_domain(provider: &str) -> Option<&str> {
 }
 
 impl AgentConfig {
+    #[must_use]
     pub fn resolve_provider(&self) -> Option<&str> {
-        resolve_provider(&self.command, &self.provider)
+        resolve_provider(&self.command, self.provider.as_ref())
     }
 
+    #[must_use]
     pub fn resolve_domain(&self) -> Option<&str> {
         self.resolve_provider().and_then(provider_to_domain)
     }
 }
 
 impl PriorityRule {
+    #[must_use]
     pub fn resolve_provider(&self) -> Option<&str> {
-        resolve_provider(&self.command, &self.provider)
+        resolve_provider(&self.command, self.provider.as_ref())
     }
 
+    #[must_use]
     pub fn matches(&self, command: &str, provider: Option<&str>, model: Option<&str>) -> bool {
         self.command == command
             && self.resolve_provider() == provider
@@ -147,10 +175,12 @@ fn strip_trailing_commas(s: &str) -> String {
 }
 
 impl Settings {
+    #[must_use]
     pub fn priority_for(&self, agent: &AgentConfig, model: Option<&str>) -> i32 {
         self.priority_for_components(&agent.command, agent.resolve_provider(), model)
     }
 
+    #[must_use]
     pub fn priority_for_components(
         &self,
         command: &str,
@@ -163,6 +193,9 @@ impl Settings {
             .map_or(0, |rule| rule.priority)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the settings file cannot be read or parsed.
     pub fn load(path: Option<&Path>) -> Result<Self, Box<dyn std::error::Error>> {
         let path = match path {
             Some(p) => p.to_path_buf(),
@@ -198,32 +231,38 @@ impl Settings {
 mod tests {
     use super::*;
 
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
     fn sample_settings_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("examples")
             .join("settings.json")
     }
 
-    #[test]
-    fn test_parse_sample_settings() {
-        let content = std::fs::read_to_string(sample_settings_path())
-            .expect("examples/settings.json not found");
-        let settings: Settings = serde_json::from_str(&content).expect("failed to parse settings");
-
-        assert_eq!(settings.priority.len(), 4);
-        assert_eq!(settings.agents.len(), 4);
+    fn load_sample() -> Result<Settings, Box<dyn std::error::Error>> {
+        let content = std::fs::read_to_string(sample_settings_path())?;
+        let settings: Settings = serde_json::from_str(&content)?;
+        Ok(settings)
     }
 
     #[test]
-    fn test_sample_settings_priority_rules() {
-        let content = std::fs::read_to_string(sample_settings_path()).unwrap();
-        let settings: Settings = serde_json::from_str(&content).unwrap();
+    fn test_parse_sample_settings() -> TestResult {
+        let settings = load_sample()?;
+
+        assert_eq!(settings.priority.len(), 4);
+        assert_eq!(settings.agents.len(), 4);
+        Ok(())
+    }
+
+    #[test]
+    fn test_sample_settings_priority_rules() -> TestResult {
+        let settings = load_sample()?;
 
         assert_eq!(
             settings.priority[0],
             PriorityRule {
                 command: "opencode".to_string(),
-                provider: Some(Some("copilot".to_string())),
+                provider: Some(ProviderConfig::Explicit("copilot".to_string())),
                 model: Some("high".to_string()),
                 priority: 100,
             }
@@ -232,23 +271,25 @@ mod tests {
             settings.priority[2],
             PriorityRule {
                 command: "claude".to_string(),
-                provider: Some(None),
+                provider: Some(ProviderConfig::None),
                 model: Some("medium".to_string()),
                 priority: 25,
             }
         );
+        Ok(())
     }
 
     #[test]
-    fn test_sample_settings_claude_agent() {
-        let content = std::fs::read_to_string(sample_settings_path()).unwrap();
-        let settings: Settings = serde_json::from_str(&content).unwrap();
+    fn test_sample_settings_claude_agent() -> TestResult {
+        let settings = load_sample()?;
 
         let claude = &settings.agents[0];
         assert_eq!(claude.command, "claude");
         assert_eq!(claude.args, ["--model", "{model}"]);
 
-        let models = claude.models.as_ref().expect("models should be present");
+        let models = claude.models.as_ref();
+        assert!(models.is_some());
+        let models = models.ok_or("models should be present")?;
         assert_eq!(models.get("high").map(String::as_str), Some("opus"));
         assert_eq!(models.get("medium").map(String::as_str), Some("sonnet"));
         assert_eq!(
@@ -262,18 +303,18 @@ mod tests {
         // no provider field → None (inferred from command name)
         assert!(claude.provider.is_none());
         assert_eq!(claude.resolve_domain(), Some("claude.ai"));
+        Ok(())
     }
 
     #[test]
-    fn test_sample_settings_copilot_agent() {
-        let content = std::fs::read_to_string(sample_settings_path()).unwrap();
-        let settings: Settings = serde_json::from_str(&content).unwrap();
+    fn test_sample_settings_copilot_agent() -> TestResult {
+        let settings = load_sample()?;
 
         let opencode = &settings.agents[1];
         assert_eq!(opencode.command, "opencode");
         assert_eq!(opencode.args, ["--model", "{model}", "--yolo"]);
 
-        let models = opencode.models.as_ref().expect("models should be present");
+        let models = opencode.models.as_ref().ok_or("models should be present")?;
         assert_eq!(
             models.get("high").map(String::as_str),
             Some("github-copilot/gpt-5.4")
@@ -283,28 +324,31 @@ mod tests {
             Some("github-copilot/claude-haiku-4.5")
         );
 
-        // provider: "copilot" → Some(Some("copilot"))
-        assert_eq!(opencode.provider, Some(Some("copilot".to_string())));
+        // provider: "copilot" → Some(Explicit("copilot"))
+        assert_eq!(
+            opencode.provider,
+            Some(ProviderConfig::Explicit("copilot".to_string()))
+        );
         assert_eq!(opencode.resolve_domain(), Some("github.com"));
+        Ok(())
     }
 
     #[test]
-    fn test_sample_settings_fallback_agent() {
-        let content = std::fs::read_to_string(sample_settings_path()).unwrap();
-        let settings: Settings = serde_json::from_str(&content).unwrap();
+    fn test_sample_settings_fallback_agent() -> TestResult {
+        let settings = load_sample()?;
 
         let fallback = &settings.agents[3];
         assert_eq!(fallback.command, "claude");
 
-        // provider: null → Some(None) (fallback)
-        assert_eq!(fallback.provider, Some(None));
+        // provider: null → Some(ProviderConfig::None) (fallback)
+        assert_eq!(fallback.provider, Some(ProviderConfig::None));
         assert_eq!(fallback.resolve_domain(), None);
+        Ok(())
     }
 
     #[test]
-    fn test_sample_settings_codex_agent() {
-        let content = std::fs::read_to_string(sample_settings_path()).unwrap();
-        let settings: Settings = serde_json::from_str(&content).unwrap();
+    fn test_sample_settings_codex_agent() -> TestResult {
+        let settings = load_sample()?;
 
         let codex = &settings.agents[2];
         assert_eq!(codex.command, "codex");
@@ -312,39 +356,43 @@ mod tests {
         assert!(codex.models.is_none());
         assert!(codex.provider.is_none());
         assert_eq!(codex.resolve_domain(), Some("chatgpt.com"));
+        Ok(())
     }
 
     #[test]
-    fn test_provider_field_absent() {
+    fn test_provider_field_absent() -> TestResult {
         let json = r#"{"agents": [{"command": "claude"}]}"#;
-        let settings: Settings = serde_json::from_str(json).unwrap();
+        let settings: Settings = serde_json::from_str(json)?;
 
         assert!(settings.agents[0].provider.is_none());
         assert_eq!(settings.agents[0].resolve_provider(), Some("claude"));
         assert_eq!(settings.agents[0].resolve_domain(), Some("claude.ai"));
+        Ok(())
     }
 
     #[test]
-    fn test_provider_field_null() {
+    fn test_provider_field_null() -> TestResult {
         let json = r#"{"agents": [{"command": "claude", "provider": null}]}"#;
-        let settings: Settings = serde_json::from_str(json).unwrap();
+        let settings: Settings = serde_json::from_str(json)?;
 
-        assert_eq!(settings.agents[0].provider, Some(None));
+        assert_eq!(settings.agents[0].provider, Some(ProviderConfig::None));
         assert_eq!(settings.agents[0].resolve_provider(), None);
         assert_eq!(settings.agents[0].resolve_domain(), None);
+        Ok(())
     }
 
     #[test]
-    fn test_provider_field_string() {
+    fn test_provider_field_string() -> TestResult {
         let json = r#"{"agents": [{"command": "opencode", "provider": "copilot"}]}"#;
-        let settings: Settings = serde_json::from_str(json).unwrap();
+        let settings: Settings = serde_json::from_str(json)?;
 
         assert_eq!(
             settings.agents[0].provider,
-            Some(Some("copilot".to_string()))
+            Some(ProviderConfig::Explicit("copilot".to_string()))
         );
         assert_eq!(settings.agents[0].resolve_provider(), Some("copilot"));
         assert_eq!(settings.agents[0].resolve_domain(), Some("github.com"));
+        Ok(())
     }
 
     #[test]
@@ -355,48 +403,51 @@ mod tests {
     }
 
     #[test]
-    fn test_priority_defaults_to_zero_when_no_rule_matches() {
+    fn test_priority_defaults_to_zero_when_no_rule_matches() -> TestResult {
         let json = r#"{"priority": [{"command": "claude", "model": "high", "priority": 10}], "agents": [{"command": "codex"}]}"#;
-        let settings: Settings = serde_json::from_str(json).unwrap();
+        let settings: Settings = serde_json::from_str(json)?;
 
         assert_eq!(settings.priority_for(&settings.agents[0], Some("high")), 0);
         assert_eq!(
             settings.priority_for_components("claude", Some("claude"), None),
             0
         );
+        Ok(())
     }
 
     #[test]
-    fn test_priority_matches_inferred_provider_and_model() {
+    fn test_priority_matches_inferred_provider_and_model() -> TestResult {
         let json = r#"{
             "priority": [
                 {"command": "claude", "model": "high", "priority": 42}
             ],
             "agents": [{"command": "claude"}]
         }"#;
-        let settings: Settings = serde_json::from_str(json).unwrap();
+        let settings: Settings = serde_json::from_str(json)?;
 
         assert_eq!(settings.priority_for(&settings.agents[0], Some("high")), 42);
+        Ok(())
     }
 
     #[test]
-    fn test_priority_matches_null_provider_for_fallback_agent() {
+    fn test_priority_matches_null_provider_for_fallback_agent() -> TestResult {
         let json = r#"{
             "priority": [
                 {"command": "claude", "provider": null, "model": "medium", "priority": 25}
             ],
             "agents": [{"command": "claude", "provider": null}]
         }"#;
-        let settings: Settings = serde_json::from_str(json).unwrap();
+        let settings: Settings = serde_json::from_str(json)?;
 
         assert_eq!(
             settings.priority_for(&settings.agents[0], Some("medium")),
             25
         );
+        Ok(())
     }
 
     #[test]
-    fn test_priority_supports_full_i32_range() {
+    fn test_priority_supports_full_i32_range() -> TestResult {
         let json = r#"{
             "priority": [
                 {"command": "claude", "model": "high", "priority": 2147483647},
@@ -407,81 +458,90 @@ mod tests {
                 {"command": "claude", "provider": null}
             ]
         }"#;
-        let settings: Settings = serde_json::from_str(json).unwrap();
+        let settings: Settings = serde_json::from_str(json)?;
 
         assert_eq!(
             settings.priority_for(&settings.agents[0], Some("high")),
             i32::MAX
         );
         assert_eq!(settings.priority_for(&settings.agents[1], None), i32::MIN);
+        Ok(())
     }
 
     #[test]
-    fn test_command_codex_resolves_chatgpt_domain() {
+    fn test_command_codex_resolves_chatgpt_domain() -> TestResult {
         let json = r#"{"agents": [{"command": "codex"}]}"#;
-        let settings: Settings = serde_json::from_str(json).unwrap();
+        let settings: Settings = serde_json::from_str(json)?;
 
         assert!(settings.agents[0].provider.is_none());
         assert_eq!(settings.agents[0].resolve_domain(), Some("chatgpt.com"));
+        Ok(())
     }
 
     #[test]
-    fn test_provider_field_codex_string() {
+    fn test_provider_field_codex_string() -> TestResult {
         let json = r#"{"agents": [{"command": "opencode", "provider": "codex"}]}"#;
-        let settings: Settings = serde_json::from_str(json).unwrap();
-
-        assert_eq!(settings.agents[0].provider, Some(Some("codex".to_string())));
-        assert_eq!(settings.agents[0].resolve_domain(), Some("chatgpt.com"));
-    }
-
-    #[test]
-    fn test_provider_unknown_string() {
-        let json = r#"{"agents": [{"command": "someai", "provider": "unknown"}]}"#;
-        let settings: Settings = serde_json::from_str(json).unwrap();
+        let settings: Settings = serde_json::from_str(json)?;
 
         assert_eq!(
             settings.agents[0].provider,
-            Some(Some("unknown".to_string()))
+            Some(ProviderConfig::Explicit("codex".to_string()))
         );
-        assert_eq!(settings.agents[0].resolve_domain(), None);
+        assert_eq!(settings.agents[0].resolve_domain(), Some("chatgpt.com"));
+        Ok(())
     }
 
     #[test]
-    fn test_parse_minimal_settings_without_models() {
+    fn test_provider_unknown_string() -> TestResult {
+        let json = r#"{"agents": [{"command": "someai", "provider": "unknown"}]}"#;
+        let settings: Settings = serde_json::from_str(json)?;
+
+        assert_eq!(
+            settings.agents[0].provider,
+            Some(ProviderConfig::Explicit("unknown".to_string()))
+        );
+        assert_eq!(settings.agents[0].resolve_domain(), None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_minimal_settings_without_models() -> TestResult {
         let json = r#"{"agents": [{"command": "claude"}]}"#;
-        let settings: Settings =
-            serde_json::from_str(json).expect("failed to parse minimal settings");
+        let settings: Settings = serde_json::from_str(json)?;
 
         assert_eq!(settings.agents.len(), 1);
         assert_eq!(settings.agents[0].command, "claude");
         assert!(settings.agents[0].args.is_empty());
         assert!(settings.agents[0].models.is_none());
         assert!(settings.agents[0].arg_maps.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn test_parse_settings_with_env() {
+    fn test_parse_settings_with_env() -> TestResult {
         let json = r#"{"agents": [{"command": "claude", "env": {"ANTHROPIC_API_KEY": "sk-test", "CLAUDE_CODE_MAX_TURNS": "100"}}]}"#;
-        let settings: Settings = serde_json::from_str(json).unwrap();
+        let settings: Settings = serde_json::from_str(json)?;
 
         let env = settings.agents[0]
             .env
             .as_ref()
-            .expect("env should be present");
+            .ok_or("env should be present")?;
         assert_eq!(
             env.get("ANTHROPIC_API_KEY").map(String::as_str),
             Some("sk-test")
         );
+        assert_eq!(env.get("CLAUDE_CODE_MAX_HOURS").map(String::as_str), None);
         assert_eq!(
             env.get("CLAUDE_CODE_MAX_TURNS").map(String::as_str),
             Some("100")
         );
+        Ok(())
     }
 
     #[test]
-    fn test_parse_settings_with_args_no_models() {
+    fn test_parse_settings_with_args_no_models() -> TestResult {
         let json = r#"{"agents": [{"command": "claude", "args": ["--permission-mode", "bypassPermissions"]}]}"#;
-        let settings: Settings = serde_json::from_str(json).unwrap();
+        let settings: Settings = serde_json::from_str(json)?;
 
         assert_eq!(
             settings.agents[0].args,
@@ -489,10 +549,11 @@ mod tests {
         );
         assert!(settings.agents[0].models.is_none());
         assert!(settings.agents[0].arg_maps.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn test_parse_jsonc_with_comments() {
+    fn test_parse_jsonc_with_comments() -> TestResult {
         let jsonc = r#"{
             // This is a comment
             "agents": [
@@ -503,13 +564,14 @@ mod tests {
             ]
         }"#;
         let stripped = json_comments::StripComments::new(jsonc.as_bytes());
-        let settings: Settings = serde_json::from_reader(stripped).unwrap();
+        let settings: Settings = serde_json::from_reader(stripped)?;
         assert_eq!(settings.agents.len(), 1);
         assert_eq!(settings.agents[0].command, "claude");
+        Ok(())
     }
 
     #[test]
-    fn test_parse_jsonc_with_trailing_commas() {
+    fn test_parse_jsonc_with_trailing_commas() -> TestResult {
         let jsonc = r#"{
             // trailing commas
             "agents": [
@@ -521,17 +583,18 @@ mod tests {
         }"#;
         let mut stripped = json_comments::StripComments::new(jsonc.as_bytes());
         let mut json_str = String::new();
-        std::io::Read::read_to_string(&mut stripped, &mut json_str).unwrap();
+        std::io::Read::read_to_string(&mut stripped, &mut json_str)?;
         let clean = strip_trailing_commas(&json_str);
-        let settings: Settings = serde_json::from_str(&clean).unwrap();
+        let settings: Settings = serde_json::from_str(&clean)?;
         assert_eq!(settings.agents.len(), 1);
         assert_eq!(settings.agents[0].command, "claude");
+        Ok(())
     }
 
     #[test]
-    fn test_parse_settings_with_arg_maps() {
+    fn test_parse_settings_with_arg_maps() -> TestResult {
         let json = r#"{"agents": [{"command": "claude", "arg_maps": {"--danger": ["--permission-mode", "bypassPermissions"]}}]}"#;
-        let settings: Settings = serde_json::from_str(json).unwrap();
+        let settings: Settings = serde_json::from_str(json)?;
 
         assert_eq!(
             settings.agents[0].arg_maps.get("--danger").cloned(),
@@ -540,5 +603,6 @@ mod tests {
                 "bypassPermissions".to_string(),
             ])
         );
+        Ok(())
     }
 }
