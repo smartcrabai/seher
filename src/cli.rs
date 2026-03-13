@@ -522,9 +522,7 @@ fn write_model_section<W: std::io::Write>(
         .iter()
         .enumerate()
         .filter(|(_, config)| {
-            model.map_or(true, |key| {
-                config.models.as_ref().map_or(true, |m| m.contains_key(key))
-            })
+            model.is_none_or(|key| config.models.as_ref().is_none_or(|m| m.contains_key(key)))
         })
         .map(|(i, config)| (i, config, settings.priority_for(config, model)))
         .collect();
