@@ -29,7 +29,7 @@ reqwest = { version = "0.13", default-features = false, features = [
   "rustls",
   "json",
 ] }
-rusqlite = "0.38"
+rusqlite = "0.39"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha1 = "0.10"
