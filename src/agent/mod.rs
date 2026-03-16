@@ -160,8 +160,7 @@ impl Agent {
             }
             Some("openrouter") => {
                 let management_key = self.openrouter_management_key()?;
-                let credits =
-                    crate::openrouter::OpenRouterClient::fetch_credits(management_key)?;
+                let credits = crate::openrouter::OpenRouterClient::fetch_credits(management_key)?;
                 vec![UsageEntry {
                     entry_type: "credits".to_string(),
                     limited: credits.data.is_limited(),
@@ -471,7 +470,9 @@ mod tests {
                 models: None,
                 arg_maps: HashMap::new(),
                 env: None,
-                provider: Some(crate::config::ProviderConfig::Explicit("openrouter".to_string())),
+                provider: Some(crate::config::ProviderConfig::Explicit(
+                    "openrouter".to_string(),
+                )),
                 openrouter_management_key: management_key.map(str::to_string),
             },
             vec![],
