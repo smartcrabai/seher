@@ -98,7 +98,7 @@ impl Agent {
             Some("claude") => self.check_claude_limit().await,
             Some("codex") => self.check_codex_limit().await,
             Some("copilot") => self.check_copilot_limit().await,
-            Some("openrouter") => self.check_openrouter_limit(),
+            Some("openrouter") => self.check_openrouter_limit().await,
             None => Ok(AgentLimit::NotLimited),
             Some(p) => Err(format!("Unknown provider: {p}").into()),
         }
@@ -160,7 +160,8 @@ impl Agent {
             }
             Some("openrouter") => {
                 let management_key = self.openrouter_management_key()?;
-                let credits = crate::openrouter::OpenRouterClient::fetch_credits(management_key)?;
+                let credits =
+                    crate::openrouter::OpenRouterClient::fetch_credits(management_key).await?;
                 vec![UsageEntry {
                     entry_type: "credits".to_string(),
                     limited: credits.data.is_limited(),
@@ -225,9 +226,9 @@ impl Agent {
             })
     }
 
-    fn check_openrouter_limit(&self) -> Result<AgentLimit, Box<dyn std::error::Error>> {
+    async fn check_openrouter_limit(&self) -> Result<AgentLimit, Box<dyn std::error::Error>> {
         let management_key = self.openrouter_management_key()?;
-        let credits = crate::openrouter::OpenRouterClient::fetch_credits(management_key)?;
+        let credits = crate::openrouter::OpenRouterClient::fetch_credits(management_key).await?;
         if credits.data.is_limited() {
             Ok(AgentLimit::Limited { reset_time: None })
         } else {
