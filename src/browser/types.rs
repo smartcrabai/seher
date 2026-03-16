@@ -15,6 +15,7 @@ pub enum BrowserType {
 }
 
 impl BrowserType {
+    #[must_use]
     pub fn name(&self) -> &str {
         match self {
             BrowserType::Chrome => "Chrome",
@@ -30,6 +31,7 @@ impl BrowserType {
         }
     }
 
+    #[must_use]
     pub fn is_chromium_based(&self) -> bool {
         matches!(
             self,
@@ -59,7 +61,7 @@ impl std::str::FromStr for BrowserType {
             "atlas" => Ok(BrowserType::Atlas),
             "firefox" => Ok(BrowserType::Firefox),
             "safari" => Ok(BrowserType::Safari),
-            other => Err(format!("Unknown browser: {}", other)),
+            other => Err(format!("Unknown browser: {other}")),
         }
     }
 }
@@ -72,6 +74,7 @@ pub struct Profile {
 }
 
 impl Profile {
+    #[must_use]
     pub fn new(name: String, path: PathBuf, browser_type: BrowserType) -> Self {
         Self {
             name,
@@ -80,6 +83,7 @@ impl Profile {
         }
     }
 
+    #[must_use]
     pub fn cookies_path(&self) -> PathBuf {
         match self.browser_type {
             BrowserType::Firefox => self.path.join("cookies.sqlite"),
@@ -88,11 +92,11 @@ impl Profile {
         }
     }
 
+    #[must_use]
     pub fn local_state_path(&self) -> PathBuf {
         self.path
             .parent()
-            .map(|p| p.join("Local State"))
-            .unwrap_or_else(|| PathBuf::from("Local State"))
+            .map_or_else(|| PathBuf::from("Local State"), |p| p.join("Local State"))
     }
 }
 
@@ -109,16 +113,18 @@ pub struct Cookie {
 }
 
 impl Cookie {
+    #[must_use]
     pub fn is_expired(&self) -> bool {
         use std::time::{SystemTime, UNIX_EPOCH};
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+            .unwrap_or_default()
+            .as_secs()
+            .cast_signed();
 
         // Chrome uses microseconds since Windows epoch (1601-01-01)
         // Convert to Unix timestamp
-        let unix_timestamp = (self.expires_utc / 1_000_000) - 11644473600;
+        let unix_timestamp = (self.expires_utc / 1_000_000) - 11_644_473_600;
         unix_timestamp > 0 && unix_timestamp < now
     }
 }

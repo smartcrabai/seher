@@ -29,7 +29,7 @@ reqwest = { version = "0.13", default-features = false, features = [
   "rustls",
   "json",
 ] }
-rusqlite = "0.38"
+rusqlite = "0.39"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha1 = "0.10"
@@ -46,6 +46,13 @@ secret-service = { version = "5.0", features = ["rt-tokio-crypto-rust"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = ["Win32_Security_Cryptography"] }
+
+[lints.clippy]
+allow_attributes = "deny"
+dbg_macro = "deny"
+expect_used = "deny"
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
 
 [profile.release]
 codegen-units = 1

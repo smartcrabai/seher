@@ -22,8 +22,7 @@ async fn main() {
                 let dotcom_user = cookies
                     .iter()
                     .find(|c| c.name == "dotcom_user")
-                    .map(|c| c.value.as_str())
-                    .unwrap_or("unknown");
+                    .map_or("unknown", |c| c.value.as_str());
                 println!(
                     "Using {} - {} ({} cookies, user={})",
                     browser.name(),
@@ -42,7 +41,7 @@ async fn main() {
                         return;
                     }
                     Err(e) => {
-                        println!("\nFailed to fetch Copilot quota: {}", e);
+                        println!("\nFailed to fetch Copilot quota: {e}");
                     }
                 }
             }

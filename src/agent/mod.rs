@@ -37,7 +37,7 @@ fn codex_usage_entries(prefix: &str, limit: &crate::codex::CodexRateLimit) -> Ve
     ]
     .into_iter()
     .flatten()
-    .any(|window| window.is_limited());
+    .any(crate::codex::types::CodexWindow::is_limited);
     let fallback_reset = if limit.is_limited() && !has_limited_window {
         limit.next_reset_time()
     } else {
@@ -53,7 +53,7 @@ fn codex_usage_entries(prefix: &str, limit: &crate::codex::CodexRateLimit) -> Ve
         if let Some(window) = window {
             let resets_at = window.reset_at_datetime();
             entries.push(UsageEntry {
-                entry_type: format!("{}_{}", prefix, suffix),
+                entry_type: format!("{prefix}_{suffix}"),
                 limited: window.is_limited()
                     || (fallback_reset.is_some() && resets_at == fallback_reset),
                 utilization: window.used_percent,
@@ -75,18 +75,24 @@ fn codex_usage_entries(prefix: &str, limit: &crate::codex::CodexRateLimit) -> Ve
 }
 
 impl Agent {
+    #[must_use]
     pub fn new(config: AgentConfig, cookies: Vec<Cookie>) -> Self {
         Self { config, cookies }
     }
 
+    #[must_use]
     pub fn command(&self) -> &str {
         &self.config.command
     }
 
+    #[must_use]
     pub fn args(&self) -> &[String] {
         &self.config.args
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if fetching usage from the provider API fails or the domain is unknown.
     pub async fn check_limit(&self) -> Result<AgentLimit, Box<dyn std::error::Error>> {
         match self.config.resolve_provider() {
             Some("claude") => self.check_claude_limit().await,
@@ -94,13 +100,16 @@ impl Agent {
             Some("copilot") => self.check_copilot_limit().await,
             Some("openrouter") => self.check_openrouter_limit().await,
             None => Ok(AgentLimit::NotLimited),
-            Some(p) => Err(format!("Unknown provider: {}", p).into()),
+            Some(p) => Err(format!("Unknown provider: {p}").into()),
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if fetching usage from the provider API fails or the domain is unknown.
     pub async fn fetch_status(&self) -> Result<AgentStatus, Box<dyn std::error::Error>> {
         let command = self.config.command.clone();
-        let provider = self.config.resolve_provider().map(|s| s.to_string());
+        let provider = self.config.resolve_provider().map(ToString::to_string);
         let usage = match provider.as_deref() {
             None => vec![],
             Some("claude") => {
@@ -160,7 +169,7 @@ impl Agent {
                     resets_at: None,
                 }]
             }
-            Some(p) => return Err(format!("Unknown provider: {}", p).into()),
+            Some(p) => return Err(format!("Unknown provider: {p}").into()),
         };
         Ok(AgentStatus {
             command,
@@ -239,6 +248,9 @@ impl Agent {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if spawning or waiting on the child process fails.
     pub fn execute(
         &self,
         resolved_args: &[String],
@@ -253,6 +265,7 @@ impl Agent {
         cmd.status()
     }
 
+    #[must_use]
     pub fn has_model(&self, model_key: &str) -> bool {
         match &self.config.models {
             None => true, // no models map → pass-through, accepts any model key
@@ -260,6 +273,7 @@ impl Agent {
         }
     }
 
+    #[must_use]
     pub fn resolved_args(&self, model: Option<&str>) -> Vec<String> {
         const MODEL_PLACEHOLDER: &str = "{model}";
         let mut args: Vec<String> = self
@@ -293,6 +307,7 @@ impl Agent {
         args
     }
 
+    #[must_use]
     pub fn mapped_args(&self, args: &[String]) -> Vec<String> {
         args.iter()
             .flat_map(|arg| {
@@ -437,7 +452,7 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].entry_type, "code_review_rate_limit");
         assert!(entries[0].limited);
-        assert_eq!(entries[0].utilization, 100.0);
+        assert!((entries[0].utilization - 100.0).abs() < f64::EPSILON);
         assert_eq!(entries[0].resets_at, None);
     }
 
@@ -456,7 +471,7 @@ mod tests {
                 models: None,
                 arg_maps: HashMap::new(),
                 env: None,
-                provider: Some(Some("openrouter".to_string())),
+                provider: Some(crate::config::ProviderConfig::Explicit("openrouter".to_string())),
                 openrouter_management_key: management_key.map(str::to_string),
             },
             vec![],

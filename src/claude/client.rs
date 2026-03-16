@@ -9,8 +9,10 @@ fn urldecode(s: &str) -> String {
         if b == b'%' {
             let hi = chars.next().and_then(|c| (c as char).to_digit(16));
             let lo = chars.next().and_then(|c| (c as char).to_digit(16));
-            if let (Some(h), Some(l)) = (hi, lo) {
-                result.push((h * 16 + l) as u8 as char);
+            if let (Some(h), Some(l)) = (hi, lo)
+                && let Ok(byte) = u8::try_from(h * 16 + l)
+            {
+                result.push(byte as char);
             }
         } else {
             result.push(b as char);
@@ -50,11 +52,15 @@ const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
     AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
 
 impl ClaudeClient {
+    /// # Errors
+    ///
+    /// Returns an error if the org ID cookie is missing, the API request fails, or the response
+    /// cannot be parsed.
     pub async fn fetch_usage(cookies: &[Cookie]) -> Result<UsageResponse> {
         let org_id = Self::find_org_id(cookies)?;
         let cookie_header = Self::build_cookie_header(cookies);
 
-        let url = format!("https://claude.ai/api/organizations/{}/usage", org_id);
+        let url = format!("https://claude.ai/api/organizations/{org_id}/usage");
 
         let client = reqwest::Client::builder().user_agent(USER_AGENT).build()?;
 
@@ -105,8 +111,7 @@ impl ClaudeClient {
         let decoded = urldecode(&raw);
         extract_uuid(&decoded).ok_or_else(|| {
             ClaudeApiError::CookieNotFound(format!(
-                "lastActiveOrg does not contain a valid UUID: {}",
-                decoded
+                "lastActiveOrg does not contain a valid UUID: {decoded}"
             ))
         })
     }

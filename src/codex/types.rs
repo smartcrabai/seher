@@ -10,10 +10,12 @@ pub struct CodexWindow {
 }
 
 impl CodexWindow {
+    #[must_use]
     pub fn is_limited(&self) -> bool {
         self.used_percent >= 100.0
     }
 
+    #[must_use]
     pub fn reset_at_datetime(&self) -> Option<DateTime<Utc>> {
         Utc.timestamp_opt(self.reset_at, 0).single()
     }
@@ -28,6 +30,7 @@ pub struct CodexRateLimit {
 }
 
 impl CodexRateLimit {
+    #[must_use]
     pub fn is_limited(&self) -> bool {
         !self.allowed
             || self.limit_reached
@@ -37,6 +40,7 @@ impl CodexRateLimit {
                 .any(CodexWindow::is_limited)
     }
 
+    #[must_use]
     pub fn next_reset_time(&self) -> Option<DateTime<Utc>> {
         [self.primary_window.as_ref(), self.secondary_window.as_ref()]
             .into_iter()
@@ -74,7 +78,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_usage_response_and_keeps_unlimited_state() {
+    fn parses_usage_response_and_keeps_unlimited_state() -> Result<(), serde_json::Error> {
         let json = r#"
         {
           "user_id": "user-1",
@@ -119,18 +123,17 @@ mod tests {
           "promo": null
         }"#;
 
-        let usage: CodexUsageResponse = serde_json::from_str(json).unwrap();
+        let usage: CodexUsageResponse = serde_json::from_str(json)?;
 
         assert!(!usage.rate_limit.is_limited());
         assert_eq!(usage.rate_limit.next_reset_time(), None);
-        assert_eq!(
-            usage
-                .code_review_rate_limit
-                .primary_window
-                .unwrap()
-                .used_percent,
-            0.0
-        );
+        let primary_used = usage
+            .code_review_rate_limit
+            .primary_window
+            .as_ref()
+            .map(|w| w.used_percent);
+        assert_eq!(primary_used, Some(0.0));
+        Ok(())
     }
 
     #[test]
@@ -146,7 +149,7 @@ mod tests {
             }),
             secondary_window: Some(CodexWindow {
                 used_percent: 100.0,
-                limit_window_seconds: 604800,
+                limit_window_seconds: 604_800,
                 reset_after_seconds: 200,
                 reset_at: 1_773_787_419,
             }),
@@ -172,7 +175,7 @@ mod tests {
             }),
             secondary_window: Some(CodexWindow {
                 used_percent: 20.0,
-                limit_window_seconds: 604800,
+                limit_window_seconds: 604_800,
                 reset_after_seconds: 200,
                 reset_at: 1_773_787_419,
             }),
