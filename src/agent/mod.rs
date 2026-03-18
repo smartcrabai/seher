@@ -511,20 +511,22 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn execute_runs_main_command_when_pre_command_succeeds() {
+    fn execute_runs_main_command_when_pre_command_succeeds() -> TestResult {
         // pre_command: true (always exits 0), main: true
         let agent = make_agent_with_pre_command(vec!["true".to_string()], "true");
-        let status = agent.execute(&[], &[]).expect("execute should not error");
+        let status = agent.execute(&[], &[])?;
         assert!(status.success());
+        Ok(())
     }
 
     #[test]
     #[cfg(unix)]
-    fn execute_skips_main_command_when_pre_command_fails() {
+    fn execute_skips_main_command_when_pre_command_fails() -> TestResult {
         // pre_command: false (always exits non-0), main: true
         let agent = make_agent_with_pre_command(vec!["false".to_string()], "true");
-        let status = agent.execute(&[], &[]).expect("execute should not error");
+        let status = agent.execute(&[], &[])?;
         assert!(!status.success());
+        Ok(())
     }
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
