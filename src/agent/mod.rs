@@ -256,6 +256,17 @@ impl Agent {
         resolved_args: &[String],
         extra_args: &[String],
     ) -> std::io::Result<std::process::ExitStatus> {
+        if let Some((cmd, args)) = self.config.pre_command.split_first() {
+            let mut pre_cmd = std::process::Command::new(cmd);
+            pre_cmd.args(args);
+            if let Some(env) = &self.config.env {
+                pre_cmd.envs(env);
+            }
+            let status = pre_cmd.status()?;
+            if !status.success() {
+                return Ok(status);
+            }
+        }
         let mut cmd = std::process::Command::new(self.command());
         cmd.args(resolved_args);
         cmd.args(extra_args);
@@ -342,6 +353,7 @@ mod tests {
                 env: None,
                 provider: None,
                 openrouter_management_key: None,
+                pre_command: vec![],
             },
             vec![],
         )
@@ -475,9 +487,44 @@ mod tests {
                     "openrouter".to_string(),
                 )),
                 openrouter_management_key: management_key.map(str::to_string),
+                pre_command: vec![],
             },
             vec![],
         )
+    }
+
+    fn make_agent_with_pre_command(pre_command: Vec<String>, main_command: &str) -> Agent {
+        Agent::new(
+            AgentConfig {
+                command: main_command.to_string(),
+                args: vec![],
+                models: None,
+                arg_maps: HashMap::new(),
+                env: None,
+                provider: None,
+                openrouter_management_key: None,
+                pre_command,
+            },
+            vec![],
+        )
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn execute_runs_main_command_when_pre_command_succeeds() {
+        // pre_command: true (always exits 0), main: true
+        let agent = make_agent_with_pre_command(vec!["true".to_string()], "true");
+        let status = agent.execute(&[], &[]).expect("execute should not error");
+        assert!(status.success());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn execute_skips_main_command_when_pre_command_fails() {
+        // pre_command: false (always exits non-0), main: true
+        let agent = make_agent_with_pre_command(vec!["false".to_string()], "true");
+        let status = agent.execute(&[], &[]).expect("execute should not error");
+        assert!(!status.success());
     }
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;

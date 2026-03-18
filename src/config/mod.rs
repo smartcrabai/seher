@@ -56,6 +56,8 @@ pub struct AgentConfig {
     pub provider: Option<ProviderConfig>,
     #[serde(default)]
     pub openrouter_management_key: Option<String>,
+    #[serde(default)]
+    pub pre_command: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
@@ -132,6 +134,7 @@ impl Default for Settings {
                 env: None,
                 provider: None,
                 openrouter_management_key: None,
+                pre_command: vec![],
             }],
         }
     }
@@ -359,6 +362,7 @@ mod tests {
         assert!(codex.models.is_none());
         assert!(codex.provider.is_none());
         assert_eq!(codex.resolve_domain(), Some("chatgpt.com"));
+        assert_eq!(codex.pre_command, ["git", "pull", "--rebase"]);
         Ok(())
     }
 
@@ -650,6 +654,25 @@ mod tests {
         // (OpenRouter does not use browser cookies)
         assert_eq!(settings.agents[0].resolve_provider(), Some("openrouter"));
         assert_eq!(settings.agents[0].resolve_domain(), None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_settings_with_pre_command() -> TestResult {
+        let json =
+            r#"{"agents": [{"command": "claude", "pre_command": ["git", "pull", "--rebase"]}]}"#;
+        let settings: Settings = serde_json::from_str(json)?;
+
+        assert_eq!(settings.agents[0].pre_command, ["git", "pull", "--rebase"]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_pre_command_defaults_to_empty_when_absent() -> TestResult {
+        let json = r#"{"agents": [{"command": "claude"}]}"#;
+        let settings: Settings = serde_json::from_str(json)?;
+
+        assert!(settings.agents[0].pre_command.is_empty());
         Ok(())
     }
 

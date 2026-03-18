@@ -51,7 +51,8 @@
       }
     },
     {
-      "command": "codex"
+      "command": "codex",
+      "pre_command": ["git", "pull", "--rebase"]
     },
     {
       "command": "claude",

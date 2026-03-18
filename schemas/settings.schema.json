@@ -49,6 +49,14 @@
             "type": "string"
           }
         },
+        "pre_command": {
+          "type": "array",
+          "description": "Command to run before the agent. First element is the executable, remaining elements are arguments.",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
         "models": {
           "description": "Optional mapping from user-facing model keys to backend model identifiers.",
           "default": null,

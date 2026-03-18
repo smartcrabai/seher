@@ -621,6 +621,7 @@ mod tests {
                 env: None,
                 provider,
                 openrouter_management_key: None,
+                pre_command: vec![],
             },
             vec![],
         )
@@ -900,6 +901,7 @@ mod tests {
                     }),
                     provider: None,
                     openrouter_management_key: None,
+                    pre_command: vec![],
                 },
                 AgentConfig {
                     command: "codex".to_string(),
@@ -909,6 +911,7 @@ mod tests {
                     env: None,
                     provider: None,
                     openrouter_management_key: None,
+                    pre_command: vec![],
                 },
             ],
         }
