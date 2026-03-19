@@ -7,14 +7,31 @@ name = "sehercode"
 repository = "https://github.com/smartcrabai/seher"
 version = "0.0.25"
 
-[[bin]]
-name = "seher"
-path = "src/main.rs"
-required-features = ["browser"]
+[package.metadata.dist]
+formula = "seher"
+
+[workspace.metadata.dist]
+allow-dirty = ["ci"]
+cargo-dist-version = "0.31.0"
+ci = ["github"]
+installers = ["shell", "homebrew"]
+publish-jobs = ["homebrew"]
+tap = "smartcrabai/homebrew-tap"
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+]
 
 [lib]
 name = "seher"
 path = "src/lib.rs"
+
+[[bin]]
+name = "seher"
+path = "src/main.rs"
+required-features = ["browser"]
 
 [features]
 browser = [
@@ -55,11 +72,11 @@ thiserror = "2.0"
 tokio = { version = "1.49.0", features = ["rt", "macros", "time", "net"] }
 zzsleep = "0.0.7"
 
-[target.'cfg(target_os = "macos")'.dependencies]
-security-framework = "3.0"
-
 [target.'cfg(target_os = "linux")'.dependencies]
 secret-service = { version = "5.0", features = ["rt-tokio-crypto-rust"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3.0"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = ["Win32_Security_Cryptography"] }
@@ -87,20 +104,3 @@ strip = true
 [profile.dist]
 inherits = "release"
 lto = "thin"
-
-[package.metadata.dist]
-formula = "seher"
-
-[workspace.metadata.dist]
-allow-dirty = ["ci"]
-cargo-dist-version = "0.31.0"
-ci = ["github"]
-installers = ["shell", "homebrew"]
-publish-jobs = ["homebrew"]
-tap = "smartcrabai/homebrew-tap"
-targets = [
-  "x86_64-unknown-linux-gnu",
-  "aarch64-unknown-linux-gnu",
-  "aarch64-apple-darwin",
-  "x86_64-apple-darwin",
-]
