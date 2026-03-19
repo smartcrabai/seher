@@ -1,4 +1,6 @@
-use jsonc_parser::cst::{CstInputValue, CstRootNode};
+use jsonc_parser::cst::{
+    CstArray, CstContainerNode, CstInputValue, CstLeafNode, CstNode, CstObject, CstRootNode,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -193,6 +195,143 @@ impl Default for Settings {
     }
 }
 
+fn merge_cst_node(cst_node: &CstNode, new_val: &serde_json::Value) {
+    match new_val {
+        serde_json::Value::Object(obj) => {
+            if let Some(cst_obj) = cst_node.as_object() {
+                merge_cst_object(&cst_obj, obj);
+                return;
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            if let Some(cst_arr) = cst_node.as_array() {
+                merge_cst_array(&cst_arr, arr);
+                return;
+            }
+        }
+        serde_json::Value::String(s) => {
+            if let Some(lit) = cst_node.as_string_lit() {
+                if lit.decoded_value().ok().as_deref() != Some(s.as_str())
+                    && let Ok(raw) = serde_json::to_string(s)
+                {
+                    lit.set_raw_value(raw);
+                }
+                return;
+            }
+        }
+        serde_json::Value::Number(n) => {
+            if let Some(lit) = cst_node.as_number_lit() {
+                let new_text = n.to_string();
+                if lit.to_string() != new_text {
+                    lit.set_raw_value(new_text);
+                }
+                return;
+            }
+        }
+        serde_json::Value::Bool(b) => {
+            if let Some(lit) = cst_node.as_boolean_lit() {
+                if lit.value() != *b {
+                    lit.set_value(*b);
+                }
+                return;
+            }
+        }
+        serde_json::Value::Null => {
+            if cst_node.as_null_keyword().is_some() {
+                return;
+            }
+        }
+    }
+    // Type mismatch: replace the node entirely
+    let replacement = serde_value_to_cst_input(new_val);
+    if let Some(prop) = cst_node.parent().and_then(|p| p.as_object_prop()) {
+        prop.set_value(replacement);
+    } else {
+        // Array element or other context: use type-specific replace_with
+        replace_cst_node(cst_node.clone(), replacement);
+    }
+}
+
+fn replace_cst_node(node: CstNode, replacement: CstInputValue) {
+    match node {
+        CstNode::Leaf(leaf) => match leaf {
+            CstLeafNode::StringLit(n) => {
+                n.replace_with(replacement);
+            }
+            CstLeafNode::NumberLit(n) => {
+                n.replace_with(replacement);
+            }
+            CstLeafNode::BooleanLit(n) => {
+                n.replace_with(replacement);
+            }
+            CstLeafNode::NullKeyword(n) => {
+                n.replace_with(replacement);
+            }
+            CstLeafNode::WordLit(_)
+            | CstLeafNode::Token(_)
+            | CstLeafNode::Whitespace(_)
+            | CstLeafNode::Newline(_)
+            | CstLeafNode::Comment(_) => {}
+        },
+        CstNode::Container(container) => match container {
+            CstContainerNode::Object(n) => {
+                n.replace_with(replacement);
+            }
+            CstContainerNode::Array(n) => {
+                n.replace_with(replacement);
+            }
+            CstContainerNode::Root(_) | CstContainerNode::ObjectProp(_) => {}
+        },
+    }
+}
+
+fn merge_cst_object(cst_obj: &CstObject, new_obj: &serde_json::Map<String, serde_json::Value>) {
+    for (key, val) in new_obj {
+        if let Some(prop) = cst_obj.get(key) {
+            if let Some(existing) = prop.value() {
+                merge_cst_node(&existing, val);
+            } else {
+                prop.set_value(serde_value_to_cst_input(val));
+            }
+        } else {
+            cst_obj.append(key, serde_value_to_cst_input(val));
+        }
+    }
+    let props_to_remove: Vec<_> = cst_obj
+        .properties()
+        .into_iter()
+        .filter(|prop| {
+            prop.name()
+                .and_then(|n| n.decoded_value().ok())
+                .is_some_and(|name| !new_obj.contains_key(&name))
+        })
+        .collect();
+    for prop in props_to_remove {
+        prop.remove();
+    }
+}
+
+fn merge_cst_array(cst_arr: &CstArray, new_arr: &[serde_json::Value]) {
+    let elements = cst_arr.elements();
+    let existing_len = elements.len();
+    let new_len = new_arr.len();
+
+    // Update existing elements in place
+    for (i, new_val) in new_arr.iter().enumerate().take(existing_len) {
+        merge_cst_node(&elements[i], new_val);
+    }
+
+    // Remove extra elements from the end (in reverse to keep indices stable)
+    for element in elements.into_iter().skip(new_len).rev() {
+        element.remove();
+    }
+
+    // Append new elements
+    for new_val in new_arr.iter().skip(existing_len) {
+        cst_arr.append(serde_value_to_cst_input(new_val));
+    }
+}
+
 fn serde_value_to_cst_input(val: &serde_json::Value) -> CstInputValue {
     match val {
         serde_json::Value::Null => CstInputValue::Null,
@@ -303,27 +442,7 @@ impl Settings {
             .as_object()
             .ok_or("settings serialized to non-object")?;
 
-        for (key, val) in obj {
-            let cst_input = serde_value_to_cst_input(val);
-            if let Some(prop) = root_obj.get(key) {
-                prop.set_value(cst_input);
-            } else {
-                root_obj.append(key, cst_input);
-            }
-        }
-
-        let props_to_remove: Vec<_> = root_obj
-            .properties()
-            .into_iter()
-            .filter(|prop| {
-                prop.name()
-                    .and_then(|n| n.decoded_value().ok())
-                    .is_some_and(|name| !obj.contains_key(&name))
-            })
-            .collect();
-        for prop in props_to_remove {
-            prop.remove();
-        }
+        merge_cst_object(&root_obj, obj);
 
         Ok(root.to_string())
     }
@@ -1014,6 +1133,180 @@ mod tests {
         let content = std::fs::read_to_string(tmp.path())?;
         assert!(content.contains("// Top comment"));
         assert!(content.contains("codex"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_save_preserves_inline_comments_inside_agents_array() -> TestResult {
+        let jsonc = r#"{
+    "agents": [
+        // Claude agent configuration
+        {
+            "command": "claude",
+            "args": ["--model", "{model}"],
+            // Model name mapping
+            "models": {
+                "high": "opus",
+                "medium": "sonnet"
+            }
+        },
+        // Codex agent
+        {"command": "codex"}
+    ]
+}"#;
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), jsonc)?;
+
+        let settings = Settings::load(Some(tmp.path()))?;
+        settings.save(Some(tmp.path()))?;
+
+        let content = std::fs::read_to_string(tmp.path())?;
+        assert!(
+            content.contains("// Claude agent configuration"),
+            "comment before first agent lost:\n{content}"
+        );
+        assert!(
+            content.contains("// Model name mapping"),
+            "comment inside agent object lost:\n{content}"
+        );
+        assert!(
+            content.contains("// Codex agent"),
+            "comment before second agent lost:\n{content}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_save_preserves_comments_after_modifying_agent() -> TestResult {
+        let jsonc = r#"{
+    "agents": [
+        // My main agent
+        {
+            "command": "claude",
+            // important args
+            "args": ["--model", "{model}"]
+        }
+    ]
+}"#;
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), jsonc)?;
+
+        let mut settings = Settings::load(Some(tmp.path()))?;
+        settings.agents[0].command = "opencode".to_string();
+        settings.save(Some(tmp.path()))?;
+
+        let content = std::fs::read_to_string(tmp.path())?;
+        assert!(
+            content.contains("// My main agent"),
+            "comment before agent lost:\n{content}"
+        );
+        assert!(
+            content.contains("// important args"),
+            "comment inside agent lost:\n{content}"
+        );
+        assert!(
+            content.contains("opencode"),
+            "command not updated:\n{content}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_save_preserves_comments_when_removing_agent() -> TestResult {
+        let jsonc = r#"{
+    // top-level comment
+    "agents": [
+        // first agent
+        {"command": "claude"},
+        // second agent
+        {"command": "codex"}
+    ]
+}"#;
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), jsonc)?;
+
+        let mut settings = Settings::load(Some(tmp.path()))?;
+        settings.agents.remove(1); // remove codex
+        settings.save(Some(tmp.path()))?;
+
+        let content = std::fs::read_to_string(tmp.path())?;
+        assert!(
+            content.contains("// top-level comment"),
+            "top-level comment lost:\n{content}"
+        );
+        assert!(
+            content.contains("// first agent"),
+            "first agent comment lost:\n{content}"
+        );
+        assert!(
+            content.contains("claude"),
+            "claude not preserved:\n{content}"
+        );
+        // codex should be gone
+        assert!(
+            !content.contains("codex"),
+            "codex should be removed:\n{content}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_save_preserves_comments_with_priority_and_agent_change() -> TestResult {
+        let jsonc = r#"{
+    // Global priority rules
+    "priority": [
+        {"command": "claude", "model": "high", "priority": 50}
+    ],
+    // Agent configurations
+    "agents": [
+        // Claude Code agent - primary
+        {
+            "command": "claude",
+            "args": ["--model", "{model}"],
+            // Model name mapping
+            "models": {
+                "high": "opus",
+                "medium": "sonnet"
+            }
+        },
+        // Codex agent - secondary
+        {"command": "codex"}
+    ]
+}"#;
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), jsonc)?;
+
+        let mut settings = Settings::load(Some(tmp.path()))?;
+        // Simulate GUI: change agent command and add a priority rule
+        settings.agents[0].command = "opencode".to_string();
+        settings.upsert_priority("opencode", None, Some("high".to_string()), 50);
+        settings.save(Some(tmp.path()))?;
+
+        let content = std::fs::read_to_string(tmp.path())?;
+        assert!(
+            content.contains("// Global priority rules"),
+            "top-level priority comment lost:\n{content}"
+        );
+        assert!(
+            content.contains("// Agent configurations"),
+            "top-level agents comment lost:\n{content}"
+        );
+        assert!(
+            content.contains("// Claude Code agent - primary"),
+            "comment before first agent lost:\n{content}"
+        );
+        assert!(
+            content.contains("// Model name mapping"),
+            "comment inside agent object lost:\n{content}"
+        );
+        assert!(
+            content.contains("// Codex agent - secondary"),
+            "comment before second agent lost:\n{content}"
+        );
+        assert!(
+            content.contains("opencode"),
+            "command not updated:\n{content}"
+        );
         Ok(())
     }
 
