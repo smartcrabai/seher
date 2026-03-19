@@ -17,7 +17,6 @@ name = "seher"
 path = "src/lib.rs"
 
 [features]
-default = ["browser"]
 browser = [
   "dep:rusqlite",
   "dep:aes",
@@ -28,6 +27,7 @@ browser = [
   "dep:tempfile",
   "dep:dirs",
 ]
+default = ["browser"]
 
 [dependencies]
 aes = { version = "0.8", optional = true }
