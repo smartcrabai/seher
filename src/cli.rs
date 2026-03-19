@@ -157,9 +157,10 @@ pub async fn run(args: Args) {
         return;
     }
 
-    let agents = filter_agents(agents, &args);
+    let agents = filter_agents(agents, args.command.as_deref(), args.provider.as_deref());
 
     if agents.is_empty() {
+        eprintln!("No agents match the specified filters");
         return;
     }
 
@@ -171,15 +172,16 @@ pub async fn run(args: Args) {
     run_with_limit_check(&settings, agents, &args).await;
 }
 
-fn filter_agents(mut agents: Vec<Agent>, args: &Args) -> Vec<Agent> {
-    if let Some(ref cmd) = args.command {
-        agents.retain(|a| a.command() == cmd.as_str());
+fn filter_agents(
+    mut agents: Vec<Agent>,
+    command: Option<&str>,
+    provider: Option<&str>,
+) -> Vec<Agent> {
+    if let Some(cmd) = command {
+        agents.retain(|a| a.command() == cmd);
     }
-    if let Some(ref provider) = args.provider {
-        agents.retain(|a| a.config.resolve_provider() == Some(provider.as_str()));
-    }
-    if agents.is_empty() && (args.command.is_some() || args.provider.is_some()) {
-        eprintln!("No agents match the specified filters");
+    if let Some(p) = provider {
+        agents.retain(|a| a.config.resolve_provider() == Some(p));
     }
     agents
 }
@@ -676,22 +678,6 @@ mod tests {
         s
     }
 
-    fn args_with_filters(command: Option<&str>, provider: Option<&str>) -> Args {
-        Args {
-            browser: None,
-            profile: None,
-            extra: vec![],
-            command: command.map(str::to_string),
-            provider: provider.map(str::to_string),
-            model: None,
-            quiet: true,
-            json: false,
-            config: None,
-            priority: false,
-            gui_config: false,
-        }
-    }
-
     // -----------------------------------------------------------------------
     // filter_agents
     // -----------------------------------------------------------------------
@@ -699,8 +685,7 @@ mod tests {
     #[test]
     fn filter_agents_by_command() {
         let agents = vec![sample_agent("claude", None), sample_agent("codex", None)];
-        let args = args_with_filters(Some("claude"), None);
-        let result = filter_agents(agents, &args);
+        let result = filter_agents(agents, Some("claude"), None);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].command(), "claude");
     }
@@ -714,8 +699,7 @@ mod tests {
             ),
             sample_agent("codex", None),
         ];
-        let args = args_with_filters(None, Some("copilot"));
-        let result = filter_agents(agents, &args);
+        let result = filter_agents(agents, None, Some("copilot"));
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].command(), "opencode");
     }
@@ -733,8 +717,7 @@ mod tests {
                 Some(ProviderConfig::Explicit("copilot".to_string())),
             ),
         ];
-        let args = args_with_filters(Some("opencode"), Some("copilot"));
-        let result = filter_agents(agents, &args);
+        let result = filter_agents(agents, Some("opencode"), Some("copilot"));
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].command(), "opencode");
     }
@@ -742,8 +725,7 @@ mod tests {
     #[test]
     fn filter_agents_no_match_returns_empty() {
         let agents = vec![sample_agent("claude", None), sample_agent("codex", None)];
-        let args = args_with_filters(Some("nonexistent"), None);
-        let result = filter_agents(agents, &args);
+        let result = filter_agents(agents, Some("nonexistent"), None);
         assert!(result.is_empty());
     }
 
