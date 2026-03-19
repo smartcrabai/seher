@@ -1,3 +1,4 @@
+use jsonc_parser::cst::{CstInputValue, CstRootNode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -7,6 +8,8 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub priority: Vec<PriorityRule>,
     pub agents: Vec<AgentConfig>,
+    #[serde(skip)]
+    original_text: Option<String>,
 }
 
 /// Represents the three possible states of the `provider` field:
@@ -185,7 +188,25 @@ impl Default for Settings {
                 openrouter_management_key: None,
                 pre_command: vec![],
             }],
+            original_text: None,
         }
+    }
+}
+
+fn serde_value_to_cst_input(val: &serde_json::Value) -> CstInputValue {
+    match val {
+        serde_json::Value::Null => CstInputValue::Null,
+        serde_json::Value::Bool(b) => CstInputValue::Bool(*b),
+        serde_json::Value::Number(n) => CstInputValue::Number(n.to_string()),
+        serde_json::Value::String(s) => CstInputValue::String(s.clone()),
+        serde_json::Value::Array(arr) => {
+            CstInputValue::Array(arr.iter().map(serde_value_to_cst_input).collect())
+        }
+        serde_json::Value::Object(obj) => CstInputValue::Object(
+            obj.iter()
+                .map(|(k, v)| (k.clone(), serde_value_to_cst_input(v)))
+                .collect(),
+        ),
     }
 }
 
@@ -267,8 +288,44 @@ impl Settings {
         let mut json_str = String::new();
         std::io::Read::read_to_string(&mut stripped, &mut json_str)?;
         let clean = strip_trailing_commas(&json_str);
-        let settings: Settings = serde_json::from_str(&clean)?;
+        let mut settings: Settings = serde_json::from_str(&clean)?;
+        settings.original_text = Some(content);
         Ok(settings)
+    }
+
+    fn save_with_cst(&self, original: &str) -> Result<String, Box<dyn std::error::Error>> {
+        let root = CstRootNode::parse(original, &jsonc_parser::ParseOptions::default())
+            .map_err(|e| e.to_string())?;
+        let root_obj = root.object_value_or_set();
+
+        let value = serde_json::to_value(self)?;
+        let obj = value
+            .as_object()
+            .ok_or("settings serialized to non-object")?;
+
+        for (key, val) in obj {
+            let cst_input = serde_value_to_cst_input(val);
+            if let Some(prop) = root_obj.get(key) {
+                prop.set_value(cst_input);
+            } else {
+                root_obj.append(key, cst_input);
+            }
+        }
+
+        let props_to_remove: Vec<_> = root_obj
+            .properties()
+            .into_iter()
+            .filter(|prop| {
+                prop.name()
+                    .and_then(|n| n.decoded_value().ok())
+                    .is_some_and(|name| !obj.contains_key(&name))
+            })
+            .collect();
+        for prop in props_to_remove {
+            prop.remove();
+        }
+
+        Ok(root.to_string())
     }
 
     /// # Errors
@@ -279,11 +336,16 @@ impl Settings {
             Some(p) => p.to_path_buf(),
             None => Self::settings_path()?,
         };
-        let json = serde_json::to_string_pretty(self)?;
+        let output = match &self.original_text {
+            Some(original) => self
+                .save_with_cst(original)
+                .or_else(|_| serde_json::to_string_pretty(self))?,
+            None => serde_json::to_string_pretty(self)?,
+        };
         let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
         std::fs::create_dir_all(parent)?;
         let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
-        std::io::Write::write_all(&mut tmp, json.as_bytes())?;
+        std::io::Write::write_all(&mut tmp, output.as_bytes())?;
         std::io::Write::flush(&mut tmp)?;
         tmp.persist(&path).map_err(|e| e.error)?;
         Ok(())
@@ -885,5 +947,103 @@ mod tests {
         assert_eq!(reloaded.agents.len(), settings.agents.len());
         assert_eq!(reloaded.priority.len(), settings.priority.len());
         Ok(())
+    }
+
+    #[test]
+    fn test_save_preserves_comments() -> TestResult {
+        let jsonc = r#"{
+    // This is a top-level comment
+    "agents": [
+        {"command": "claude"}
+    ]
+}"#;
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), jsonc)?;
+
+        let settings = Settings::load(Some(tmp.path()))?;
+        settings.save(Some(tmp.path()))?;
+
+        let content = std::fs::read_to_string(tmp.path())?;
+        assert!(content.contains("// This is a top-level comment"));
+        assert!(content.contains("claude"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_save_plain_json_roundtrip_via_load() -> TestResult {
+        let json = r#"{"agents": [{"command": "claude"}]}"#;
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), json)?;
+
+        let settings = Settings::load(Some(tmp.path()))?;
+        settings.save(Some(tmp.path()))?;
+
+        let content = std::fs::read_to_string(tmp.path())?;
+        let reloaded = Settings::load(Some(tmp.path()))?;
+        assert_eq!(reloaded.agents.len(), 1);
+        assert_eq!(reloaded.agents[0].command, "claude");
+        // Should be valid JSON (parseable)
+        let _: serde_json::Value = serde_json::from_str(&content)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_save_with_added_agent_preserves_comments() -> TestResult {
+        let jsonc = r#"{
+    // Top comment
+    "agents": [
+        {"command": "claude"}
+    ]
+}"#;
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), jsonc)?;
+
+        let mut settings = Settings::load(Some(tmp.path()))?;
+        settings.agents.push(AgentConfig {
+            command: "codex".to_string(),
+            args: vec![],
+            models: None,
+            arg_maps: HashMap::new(),
+            env: None,
+            provider: None,
+            openrouter_management_key: None,
+            pre_command: vec![],
+        });
+        settings.save(Some(tmp.path()))?;
+
+        let content = std::fs::read_to_string(tmp.path())?;
+        assert!(content.contains("// Top comment"));
+        assert!(content.contains("codex"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_serde_value_to_cst_input_variants() {
+        use jsonc_parser::cst::CstInputValue;
+
+        assert!(matches!(
+            serde_value_to_cst_input(&serde_json::Value::Null),
+            CstInputValue::Null
+        ));
+        assert!(matches!(
+            serde_value_to_cst_input(&serde_json::Value::Bool(true)),
+            CstInputValue::Bool(true)
+        ));
+        assert!(matches!(
+            serde_value_to_cst_input(&serde_json::Value::String("hi".to_string())),
+            CstInputValue::String(s) if s == "hi"
+        ));
+        assert!(matches!(
+            serde_value_to_cst_input(&serde_json::json!(42)),
+            CstInputValue::Number(n) if n == "42"
+        ));
+        assert!(matches!(
+            serde_value_to_cst_input(&serde_json::json!([])),
+            CstInputValue::Array(v) if v.is_empty()
+        ));
+        assert!(matches!(
+            serde_value_to_cst_input(&serde_json::json!({})),
+            CstInputValue::Object(v) if v.is_empty()
+        ));
     }
 }
