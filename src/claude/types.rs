@@ -12,20 +12,38 @@ pub struct UsageResponse {
     pub five_hour: Option<UsageWindow>,
     pub seven_day: Option<UsageWindow>,
     pub seven_day_sonnet: Option<UsageWindow>,
+    pub seven_day_oauth_apps: Option<UsageWindow>,
+    pub seven_day_opus: Option<UsageWindow>,
+    pub seven_day_cowork: Option<UsageWindow>,
+    pub iguana_necktie: Option<UsageWindow>,
+    pub extra_usage: Option<UsageWindow>,
 }
 
 impl UsageResponse {
+    /// Returns all present windows as `(name, &UsageWindow)` pairs.
     #[must_use]
-    pub fn next_reset_time(&self) -> Option<chrono::DateTime<Utc>> {
+    pub fn all_windows(&self) -> Vec<(&str, &UsageWindow)> {
         [
-            self.five_hour.as_ref(),
-            self.seven_day.as_ref(),
-            self.seven_day_sonnet.as_ref(),
+            ("five_hour", self.five_hour.as_ref()),
+            ("seven_day", self.seven_day.as_ref()),
+            ("seven_day_sonnet", self.seven_day_sonnet.as_ref()),
+            ("seven_day_oauth_apps", self.seven_day_oauth_apps.as_ref()),
+            ("seven_day_opus", self.seven_day_opus.as_ref()),
+            ("seven_day_cowork", self.seven_day_cowork.as_ref()),
+            ("iguana_necktie", self.iguana_necktie.as_ref()),
+            ("extra_usage", self.extra_usage.as_ref()),
         ]
         .into_iter()
-        .flatten()
-        .filter(|w| w.utilization >= 100.0)
-        .filter_map(|w| w.resets_at)
-        .max()
+        .filter_map(|(name, w)| w.map(|w| (name, w)))
+        .collect()
+    }
+
+    #[must_use]
+    pub fn next_reset_time(&self) -> Option<chrono::DateTime<Utc>> {
+        self.all_windows()
+            .into_iter()
+            .filter(|(_, w)| w.utilization >= 100.0)
+            .filter_map(|(_, w)| w.resets_at)
+            .max()
     }
 }

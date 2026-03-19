@@ -1,4 +1,5 @@
-mod client;
-mod types;
+pub mod client;
+pub mod types;
 
 pub use client::OpenRouterClient;
+pub use types::{CreditsData, CreditsResponse};

@@ -10,30 +10,44 @@ version = "0.0.22"
 [[bin]]
 name = "seher"
 path = "src/main.rs"
+required-features = ["browser"]
 
 [lib]
 name = "seher"
 path = "src/lib.rs"
 
+[features]
+default = ["browser"]
+browser = [
+  "dep:rusqlite",
+  "dep:aes",
+  "dep:aes-gcm",
+  "dep:cbc",
+  "dep:pbkdf2",
+  "dep:sha1",
+  "dep:tempfile",
+  "dep:dirs",
+]
+
 [dependencies]
-aes = "0.8"
-aes-gcm = "0.10"
+aes = { version = "0.8", optional = true }
+aes-gcm = { version = "0.10", optional = true }
 base64 = "0.22"
-cbc = { version = "0.1", features = ["alloc"] }
+cbc = { version = "0.1", features = ["alloc"], optional = true }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
-dirs = "6.0"
+dirs = { version = "6.0", optional = true }
 json_comments = "0.2.2"
-pbkdf2 = { version = "0.12", features = ["simple"] }
+pbkdf2 = { version = "0.12", features = ["simple"], optional = true }
 reqwest = { version = "0.13", default-features = false, features = [
   "rustls",
   "json",
 ] }
-rusqlite = "0.39"
+rusqlite = { version = "0.39", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-sha1 = "0.10"
-tempfile = "3"
+sha1 = { version = "0.10", optional = true }
+tempfile = { version = "3", optional = true }
 thiserror = "2.0"
 tokio = { version = "1.49.0", features = ["rt", "macros", "time"] }
 zzsleep = "0.0.7"
@@ -46,6 +60,14 @@ secret-service = { version = "5.0", features = ["rt-tokio-crypto-rust"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = ["Win32_Security_Cryptography"] }
+
+[[example]]
+name = "test_copilot"
+required-features = ["browser"]
+
+[[example]]
+name = "test_codex"
+required-features = ["browser"]
 
 [lints.clippy]
 allow_attributes = "deny"

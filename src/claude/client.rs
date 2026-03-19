@@ -1,7 +1,10 @@
 use super::error::{ClaudeApiError, Result};
 use super::types::UsageResponse;
+
+#[cfg(feature = "browser")]
 use crate::Cookie;
 
+#[cfg(feature = "browser")]
 fn urldecode(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut chars = s.bytes();
@@ -21,6 +24,7 @@ fn urldecode(s: &str) -> String {
     result
 }
 
+#[cfg(feature = "browser")]
 fn extract_uuid(s: &str) -> Option<String> {
     // Find a UUID pattern (8-4-4-4-12 hex digits)
     let bytes = s.as_bytes();
@@ -52,21 +56,22 @@ const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
     AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
 
 impl ClaudeClient {
+    /// Fetch usage using a pre-built cookie header string and org ID.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the org ID cookie is missing, the API request fails, or the response
-    /// cannot be parsed.
-    pub async fn fetch_usage(cookies: &[Cookie]) -> Result<UsageResponse> {
-        let org_id = Self::find_org_id(cookies)?;
-        let cookie_header = Self::build_cookie_header(cookies);
-
+    /// Returns an error if the API request fails or the response cannot be parsed.
+    pub async fn fetch_usage_with_header(
+        cookie_header: &str,
+        org_id: &str,
+    ) -> Result<UsageResponse> {
         let url = format!("https://claude.ai/api/organizations/{org_id}/usage");
 
         let client = reqwest::Client::builder().user_agent(USER_AGENT).build()?;
 
         let response = client
             .get(&url)
-            .header("Cookie", &cookie_header)
+            .header("Cookie", cookie_header)
             .header("Accept", "application/json")
             .header("Accept-Language", "en-US,en;q=0.9")
             .header("Referer", "https://claude.ai/")
@@ -98,6 +103,18 @@ impl ClaudeClient {
         Ok(usage)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the org ID cookie is missing, the API request fails, or the response
+    /// cannot be parsed.
+    #[cfg(feature = "browser")]
+    pub async fn fetch_usage(cookies: &[Cookie]) -> Result<UsageResponse> {
+        let org_id = Self::find_org_id(cookies)?;
+        let cookie_header = Self::build_cookie_header(cookies);
+        Self::fetch_usage_with_header(&cookie_header, &org_id).await
+    }
+
+    #[cfg(feature = "browser")]
     fn find_org_id(cookies: &[Cookie]) -> Result<String> {
         let raw = cookies
             .iter()
@@ -116,6 +133,7 @@ impl ClaudeClient {
         })
     }
 
+    #[cfg(feature = "browser")]
     fn build_cookie_header(cookies: &[Cookie]) -> String {
         cookies
             .iter()
