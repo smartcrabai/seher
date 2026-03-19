@@ -1191,6 +1191,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9dbbfed4e59ba9750e15ba154fdfd9329cee16ff3df539c2666b70f58cc32105"
 
 [[package]]
+name = "jsonc-parser"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25ac804b0cb9f49ec7531e7d5e3d9e4913c7f2d8d110507a662eaf8d4925c0b4"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "leb128fmt"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1917,6 +1926,7 @@ dependencies = [
  "clap",
  "dirs",
  "json_comments",
+ "jsonc-parser",
  "open",
  "pbkdf2",
  "reqwest",

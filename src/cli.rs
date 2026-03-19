@@ -643,10 +643,10 @@ mod tests {
     }
 
     fn sample_settings_with_priority(priority: Vec<PriorityRule>) -> Settings {
-        Settings {
-            priority,
-            agents: vec![],
-        }
+        let mut s = Settings::default();
+        s.priority = priority;
+        s.agents = vec![];
+        s
     }
 
     // -----------------------------------------------------------------------
@@ -888,48 +888,48 @@ mod tests {
         claude_models.insert("high".to_string(), "opus".to_string());
         claude_models.insert("low".to_string(), "haiku".to_string());
 
-        Settings {
-            priority: vec![
-                PriorityRule {
-                    command: "claude".to_string(),
-                    provider: None,
-                    model: Some("high".to_string()),
-                    priority: 10,
-                },
-                PriorityRule {
-                    command: "codex".to_string(),
-                    provider: None,
-                    model: None,
-                    priority: 50,
-                },
-            ],
-            agents: vec![
-                AgentConfig {
-                    command: "claude".to_string(),
-                    args: vec![],
-                    models: Some(claude_models),
-                    arg_maps: HashMap::new(),
-                    env: Some({
-                        let mut e = HashMap::new();
-                        e.insert("ANTHROPIC_API_KEY".to_string(), "sk-test".to_string());
-                        e
-                    }),
-                    provider: None,
-                    openrouter_management_key: None,
-                    pre_command: vec![],
-                },
-                AgentConfig {
-                    command: "codex".to_string(),
-                    args: vec![],
-                    models: None,
-                    arg_maps: HashMap::new(),
-                    env: None,
-                    provider: None,
-                    openrouter_management_key: None,
-                    pre_command: vec![],
-                },
-            ],
-        }
+        let mut s = Settings::default();
+        s.priority = vec![
+            PriorityRule {
+                command: "claude".to_string(),
+                provider: None,
+                model: Some("high".to_string()),
+                priority: 10,
+            },
+            PriorityRule {
+                command: "codex".to_string(),
+                provider: None,
+                model: None,
+                priority: 50,
+            },
+        ];
+        s.agents = vec![
+            AgentConfig {
+                command: "claude".to_string(),
+                args: vec![],
+                models: Some(claude_models),
+                arg_maps: HashMap::new(),
+                env: Some({
+                    let mut e = HashMap::new();
+                    e.insert("ANTHROPIC_API_KEY".to_string(), "sk-test".to_string());
+                    e
+                }),
+                provider: None,
+                openrouter_management_key: None,
+                pre_command: vec![],
+            },
+            AgentConfig {
+                command: "codex".to_string(),
+                args: vec![],
+                models: None,
+                arg_maps: HashMap::new(),
+                env: None,
+                provider: None,
+                openrouter_management_key: None,
+                pre_command: vec![],
+            },
+        ];
+        s
     }
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
