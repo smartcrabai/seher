@@ -1,6 +1,8 @@
-use crate::Cookie;
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
+
+#[cfg(feature = "browser")]
+use crate::Cookie;
 
 #[derive(Debug, Deserialize)]
 pub struct QuotaRemaining {
@@ -47,21 +49,21 @@ const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
 pub struct CopilotClient;
 
 impl CopilotClient {
+    /// Fetch quota using a pre-built cookie header string.
+    ///
     /// # Errors
     ///
     /// Returns an error if the GitHub Copilot API request fails or the response cannot be parsed.
-    pub async fn fetch_quota(
-        cookies: &[Cookie],
+    pub async fn fetch_quota_with_header(
+        cookie_header: &str,
     ) -> Result<CopilotQuota, Box<dyn std::error::Error>> {
-        let cookie_header = Self::build_cookie_header(cookies);
-
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()?;
 
         let response = client
             .get("https://github.com/github-copilot/chat")
-            .header("Cookie", &cookie_header)
+            .header("Cookie", cookie_header)
             .header("User-Agent", USER_AGENT)
             .header("github-verified-fetch", "true")
             .header("x-requested-with", "XMLHttpRequest")
@@ -94,6 +96,18 @@ impl CopilotClient {
         })
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the GitHub Copilot API request fails or the response cannot be parsed.
+    #[cfg(feature = "browser")]
+    pub async fn fetch_quota(
+        cookies: &[Cookie],
+    ) -> Result<CopilotQuota, Box<dyn std::error::Error>> {
+        let cookie_header = Self::build_cookie_header(cookies);
+        Self::fetch_quota_with_header(&cookie_header).await
+    }
+
+    #[cfg(feature = "browser")]
     fn build_cookie_header(cookies: &[Cookie]) -> String {
         cookies
             .iter()

@@ -7,10 +7,12 @@ pub struct CreditsData {
 }
 
 impl CreditsData {
+    #[must_use]
     pub fn is_limited(&self) -> bool {
         self.total_usage >= self.total_credits
     }
 
+    #[must_use]
     pub fn utilization(&self) -> f64 {
         if self.total_credits > 0.0 {
             self.total_usage / self.total_credits * 100.0

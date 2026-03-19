@@ -8,6 +8,7 @@ pub enum ClaudeApiError {
     #[error("JSON parse error: {0}")]
     ParseError(#[from] serde_json::Error),
 
+    #[cfg(feature = "browser")]
     #[error("Cookie not found: {0}")]
     CookieNotFound(String),
 

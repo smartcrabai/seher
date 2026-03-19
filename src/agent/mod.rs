@@ -114,20 +114,14 @@ impl Agent {
             None => vec![],
             Some("claude") => {
                 let usage = crate::claude::ClaudeClient::fetch_usage(&self.cookies).await?;
-                let windows = [
-                    ("five_hour", &usage.five_hour),
-                    ("seven_day", &usage.seven_day),
-                    ("seven_day_sonnet", &usage.seven_day_sonnet),
-                ];
-                windows
+                usage
+                    .all_windows()
                     .into_iter()
-                    .filter_map(|(name, w)| {
-                        w.as_ref().map(|w| UsageEntry {
-                            entry_type: name.to_string(),
-                            limited: w.utilization >= 100.0,
-                            utilization: w.utilization,
-                            resets_at: w.resets_at,
-                        })
+                    .map(|(name, w)| UsageEntry {
+                        entry_type: name.to_string(),
+                        limited: w.utilization >= 100.0,
+                        utilization: w.utilization,
+                        resets_at: w.resets_at,
                     })
                     .collect()
             }
@@ -180,26 +174,22 @@ impl Agent {
 
     async fn check_claude_limit(&self) -> Result<AgentLimit, Box<dyn std::error::Error>> {
         let usage = crate::claude::ClaudeClient::fetch_usage(&self.cookies).await?;
+        let windows = usage.all_windows();
 
-        if let Some(reset_time) = usage.next_reset_time() {
+        let reset_time = windows
+            .iter()
+            .filter(|(_, w)| w.utilization >= 100.0)
+            .filter_map(|(_, w)| w.resets_at)
+            .max();
+
+        if let Some(reset_time) = reset_time {
             Ok(AgentLimit::Limited {
                 reset_time: Some(reset_time),
             })
+        } else if windows.iter().any(|(_, w)| w.utilization >= 100.0) {
+            Ok(AgentLimit::Limited { reset_time: None })
         } else {
-            let is_limited = [
-                usage.five_hour.as_ref(),
-                usage.seven_day.as_ref(),
-                usage.seven_day_sonnet.as_ref(),
-            ]
-            .into_iter()
-            .flatten()
-            .any(|w| w.utilization >= 100.0);
-
-            if is_limited {
-                Ok(AgentLimit::Limited { reset_time: None })
-            } else {
-                Ok(AgentLimit::NotLimited)
-            }
+            Ok(AgentLimit::NotLimited)
         }
     }
 
