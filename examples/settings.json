@@ -1,5 +1,4 @@
 {
-  "$schema": "https://raw.githubusercontent.com/smartcrabai/seher/main/schemas/settings.schema.json",
   "priority": [
     {
       "command": "opencode",
@@ -26,15 +25,21 @@
   "agents": [
     {
       "command": "claude",
-      "args": ["--model", "{model}"],
+      "args": [
+        "--model",
+        "{model}"
+      ],
       "models": {
-        "high": "opus",
-        "medium": "sonnet",
         "low": "haiku",
+        "medium": "sonnet",
+        "high": "opus",
         "sonnet": "sonnet"
       },
       "arg_maps": {
-        "--danger": ["--permission-mode", "bypassPermissions"]
+        "--danger": [
+          "--permission-mode",
+          "bypassPermissions"
+        ]
       },
       "env": {
         "CLAUDE_CODE_MAX_TURNS": "100"
@@ -42,30 +47,41 @@
     },
     {
       "command": "opencode",
-      "provider": "copilot",
-      "args": ["--model", "{model}", "--yolo"],
+      "args": [
+        "--model",
+        "{model}",
+        "--yolo"
+      ],
       "models": {
         "high": "github-copilot/gpt-5.4",
         "medium": "github-copilot/gpt-5.4",
         "low": "github-copilot/claude-haiku-4.5"
-      }
+      },
+      "provider": "copilot"
     },
     {
       "command": "codex",
-      "pre_command": ["git", "pull", "--rebase"]
+      "pre_command": [
+        "git",
+        "pull",
+        "--rebase"
+      ]
     },
     {
       "command": "claude",
-      "provider": null,
-      "args": ["--model", "{model}"],
+      "args": [
+        "--model",
+        "{model}"
+      ],
       "models": {
-        "medium": "MiniMax-M2.5",
-        "low": "MiniMax-M2.5"
+        "low": "MiniMax-M2.5",
+        "medium": "MiniMax-M2.5"
       },
       "env": {
         "ANTHROPIC_AUTH_TOKEN": "your-api-key-here",
         "ANTHROPIC_BASE_URL": "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic"
-      }
+      },
+      "provider": null
     }
   ]
 }

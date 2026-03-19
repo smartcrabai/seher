@@ -13,6 +13,7 @@ pub mod crypto;
 pub mod claude;
 pub mod copilot;
 pub mod openrouter;
+pub mod web;
 
 #[cfg(feature = "browser")]
 pub use agent::{Agent, AgentLimit, AgentStatus, UsageEntry};

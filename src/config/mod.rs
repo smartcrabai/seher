@@ -1,10 +1,10 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Settings {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub priority: Vec<PriorityRule>,
     pub agents: Vec<AgentConfig>,
 }
@@ -33,6 +33,18 @@ impl<'de> serde::Deserialize<'de> for ProviderConfig {
     }
 }
 
+impl serde::Serialize for ProviderConfig {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            ProviderConfig::Explicit(s) => serializer.serialize_str(s),
+            ProviderConfig::Inferred | ProviderConfig::None => serializer.serialize_none(),
+        }
+    }
+}
+
 fn deserialize_provider_config<'de, D>(deserializer: D) -> Result<Option<ProviderConfig>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -41,31 +53,63 @@ where
     Ok(Some(config))
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[allow(clippy::ref_option)] // &Option<T> is required by serde skip_serializing_if
+fn is_inferred_or_absent_provider(value: &Option<ProviderConfig>) -> bool {
+    matches!(value, Option::None | Some(ProviderConfig::Inferred))
+}
+
+#[allow(clippy::ref_option)] // &Option<T> is required by serde serialize_with
+fn serialize_provider_config<S>(
+    value: &Option<ProviderConfig>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match value {
+        Some(ProviderConfig::Explicit(s)) => serializer.serialize_str(s),
+        Option::None
+        | Some(ProviderConfig::Inferred | ProviderConfig::None) => {
+            serializer.serialize_none()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct AgentConfig {
     pub command: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub models: Option<HashMap<String, String>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub arg_maps: HashMap<String, Vec<String>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<HashMap<String, String>>,
-    #[serde(default, deserialize_with = "deserialize_provider_config")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_provider_config",
+        serialize_with = "serialize_provider_config",
+        skip_serializing_if = "is_inferred_or_absent_provider"
+    )]
     pub provider: Option<ProviderConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openrouter_management_key: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pre_command: Vec<String>,
 }
 
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 pub struct PriorityRule {
     pub command: String,
-    #[serde(default, deserialize_with = "deserialize_provider_config")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_provider_config",
+        serialize_with = "serialize_provider_config",
+        skip_serializing_if = "is_inferred_or_absent_provider"
+    )]
     pub provider: Option<ProviderConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     pub priority: i32,
 }
@@ -220,6 +264,61 @@ impl Settings {
         let clean = strip_trailing_commas(&json_str);
         let settings: Settings = serde_json::from_str(&clean)?;
         Ok(settings)
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if serialization or file writing fails.
+    pub fn save(&self, path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
+        let path = match path {
+            Some(p) => p.to_path_buf(),
+            None => Self::settings_path()?,
+        };
+        let json = serde_json::to_string_pretty(self)?;
+        let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+        std::io::Write::write_all(&mut tmp, json.as_bytes())?;
+        std::io::Write::flush(&mut tmp)?;
+        tmp.persist(&path).map_err(|e| e.error)?;
+        Ok(())
+    }
+
+    /// Upsert a `PriorityRule`. If a matching rule (command + provider + model) already exists,
+    /// its priority is updated. Otherwise a new rule is appended.
+    pub fn upsert_priority(
+        &mut self,
+        command: &str,
+        provider: Option<ProviderConfig>,
+        model: Option<String>,
+        priority: i32,
+    ) {
+        for rule in &mut self.priority {
+            if rule.command == command && rule.provider == provider && rule.model == model {
+                rule.priority = priority;
+                return;
+            }
+        }
+        self.priority.push(PriorityRule {
+            command: command.to_string(),
+            provider,
+            model,
+            priority,
+        });
+    }
+
+    /// Remove a `PriorityRule` matching the given (command, provider, model) triple.
+    pub fn remove_priority(
+        &mut self,
+        command: &str,
+        provider: Option<&ProviderConfig>,
+        model: Option<&str>,
+    ) {
+        self.priority.retain(|rule| {
+            !(rule.command == command
+                && rule.provider.as_ref() == provider
+                && rule.model.as_deref() == model)
+        });
     }
 
     fn settings_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -687,6 +786,99 @@ mod tests {
         // Then: provider resolution is unaffected by the presence of openrouter_management_key
         assert_eq!(settings.agents[0].resolve_provider(), Some("claude"));
         assert_eq!(settings.agents[0].resolve_domain(), Some("claude.ai"));
+        Ok(())
+    }
+
+    // ── Serialize tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_serialize_roundtrip_sample_settings() -> TestResult {
+        let settings = load_sample()?;
+        let json = serde_json::to_string_pretty(&settings)?;
+        let reparsed: Settings = serde_json::from_str(&json)?;
+
+        assert_eq!(reparsed.agents.len(), settings.agents.len());
+        assert_eq!(reparsed.priority.len(), settings.priority.len());
+        assert_eq!(reparsed.agents[0].command, settings.agents[0].command);
+        Ok(())
+    }
+
+    #[test]
+    fn test_serialize_skips_empty_args() -> TestResult {
+        let json = r#"{"agents": [{"command": "claude"}]}"#;
+        let settings: Settings = serde_json::from_str(json)?;
+        let out = serde_json::to_string(&settings)?;
+        let val: serde_json::Value = serde_json::from_str(&out)?;
+
+        assert!(val["agents"][0]["args"].is_null());
+        Ok(())
+    }
+
+    #[test]
+    fn test_serialize_null_provider_roundtrip() -> TestResult {
+        let json = r#"{"agents": [{"command": "claude", "provider": null}]}"#;
+        let settings: Settings = serde_json::from_str(json)?;
+        let out = serde_json::to_string(&settings)?;
+        let val: serde_json::Value = serde_json::from_str(&out)?;
+
+        assert!(val["agents"][0]["provider"].is_null());
+        Ok(())
+    }
+
+    #[test]
+    fn test_serialize_inferred_provider_skipped() -> TestResult {
+        let json = r#"{"agents": [{"command": "claude"}]}"#;
+        let settings: Settings = serde_json::from_str(json)?;
+        let out = serde_json::to_string(&settings)?;
+        let val: serde_json::Value = serde_json::from_str(&out)?;
+
+        // provider field absent when inferred
+        assert!(val["agents"][0]["provider"].is_null());
+        Ok(())
+    }
+
+    #[test]
+    fn test_upsert_priority_creates_new_rule() {
+        let mut settings = Settings::default();
+        settings.upsert_priority("claude", None, Some("high".to_string()), 42);
+
+        assert_eq!(settings.priority.len(), 1);
+        assert_eq!(settings.priority[0].priority, 42);
+        assert_eq!(settings.priority[0].model.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn test_upsert_priority_updates_existing_rule() {
+        let mut settings = Settings::default();
+        settings.upsert_priority("claude", None, Some("high".to_string()), 10);
+        settings.upsert_priority("claude", None, Some("high".to_string()), 99);
+
+        assert_eq!(settings.priority.len(), 1);
+        assert_eq!(settings.priority[0].priority, 99);
+    }
+
+    #[test]
+    fn test_remove_priority_removes_matching_rule() {
+        let mut settings = Settings::default();
+        settings.upsert_priority("claude", None, Some("high".to_string()), 10);
+        settings.upsert_priority("claude", None, Some("low".to_string()), 5);
+        settings.remove_priority("claude", None, Some("high"));
+
+        assert_eq!(settings.priority.len(), 1);
+        assert_eq!(settings.priority[0].model.as_deref(), Some("low"));
+    }
+
+    #[test]
+    fn test_save_and_reload() -> TestResult {
+        let settings = load_sample()?;
+        let tmp = tempfile::NamedTempFile::new()?;
+        settings.save(Some(tmp.path()))?;
+
+        let content = std::fs::read_to_string(tmp.path())?;
+        let reloaded: Settings = serde_json::from_str(&content)?;
+
+        assert_eq!(reloaded.agents.len(), settings.agents.len());
+        assert_eq!(reloaded.priority.len(), settings.priority.len());
         Ok(())
     }
 }
