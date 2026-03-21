@@ -3,8 +3,15 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct UsageWindow {
-    pub utilization: f64,
+    pub utilization: Option<f64>,
     pub resets_at: Option<DateTime<Utc>>,
+}
+
+impl UsageWindow {
+    #[must_use]
+    pub fn is_limited(&self) -> bool {
+        self.utilization.unwrap_or(0.0) >= 100.0
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -42,7 +49,7 @@ impl UsageResponse {
     pub fn next_reset_time(&self) -> Option<chrono::DateTime<Utc>> {
         self.all_windows()
             .into_iter()
-            .filter(|(_, w)| w.utilization >= 100.0)
+            .filter(|(_, w)| w.is_limited())
             .filter_map(|(_, w)| w.resets_at)
             .max()
     }

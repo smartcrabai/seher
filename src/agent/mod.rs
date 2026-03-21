@@ -119,8 +119,8 @@ impl Agent {
                     .into_iter()
                     .map(|(name, w)| UsageEntry {
                         entry_type: name.to_string(),
-                        limited: w.utilization >= 100.0,
-                        utilization: w.utilization,
+                        limited: w.is_limited(),
+                        utilization: w.utilization.unwrap_or(0.0),
                         resets_at: w.resets_at,
                     })
                     .collect()
@@ -176,18 +176,19 @@ impl Agent {
         let usage = crate::claude::ClaudeClient::fetch_usage(&self.cookies).await?;
         let windows = usage.all_windows();
 
-        let reset_time = windows
-            .iter()
-            .filter(|(_, w)| w.utilization >= 100.0)
-            .filter_map(|(_, w)| w.resets_at)
-            .max();
+        let (has_limited, reset_time) =
+            windows
+                .iter()
+                .fold((false, None), |(has_lim, max_t), (_, w)| {
+                    if w.is_limited() {
+                        (true, max_t.max(w.resets_at))
+                    } else {
+                        (has_lim, max_t)
+                    }
+                });
 
-        if let Some(reset_time) = reset_time {
-            Ok(AgentLimit::Limited {
-                reset_time: Some(reset_time),
-            })
-        } else if windows.iter().any(|(_, w)| w.utilization >= 100.0) {
-            Ok(AgentLimit::Limited { reset_time: None })
+        if has_limited {
+            Ok(AgentLimit::Limited { reset_time })
         } else {
             Ok(AgentLimit::NotLimited)
         }
