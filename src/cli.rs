@@ -92,12 +92,25 @@ impl From<std::io::Result<std::process::ExitStatus>> for ChildExitKind {
     }
 }
 
+/// Tri-state representing how a user-supplied prompt has been resolved from stdin.
+#[derive(Debug)]
+enum PromptState {
+    /// stdin was a TTY; the prompt has not been resolved (editor fallback may apply).
+    Unresolved,
+    /// stdin was non-TTY and contained a non-empty prompt after trimming.
+    Resolved(String),
+    /// stdin was non-TTY but was empty or whitespace-only; no prompt to inject.
+    Empty,
+}
+
 /// Preserved invocation state that can be reused across auto-rerun attempts.
 struct InvocationInput {
     /// Raw trailing args as received from the CLI, before agent-specific mapping.
     pub raw_agent_args: Vec<String>,
     /// Prompt obtained from the editor on the first attempt; reused on rerun.
     pub cached_prompt: Option<String>,
+    /// Prompt resolved from stdin before the first execution attempt (tri-state).
+    pub stdin_prompt: PromptState,
 }
 
 /// Return `true` if an auto-rerun should be triggered.
@@ -275,9 +288,28 @@ async fn run_with_limit_check(settings: &Settings, agents: Vec<Agent>, args: &Ar
         limited_indices.retain(|(i, _)| agents[*i].has_model(model_key));
     }
 
+    let stdin_prompt = {
+        use std::io::{IsTerminal, Read};
+        if std::io::stdin().is_terminal() {
+            PromptState::Unresolved
+        } else {
+            let mut content = String::new();
+            if let Err(e) = std::io::stdin().read_to_string(&mut content)
+                && !args.quiet
+            {
+                eprintln!("Failed to read stdin: {e}");
+            }
+            match parse_stdin_content(&content) {
+                Some(s) => PromptState::Resolved(s),
+                None => PromptState::Empty,
+            }
+        }
+    };
+
     let mut input = InvocationInput {
         raw_agent_args: args.extra.clone(),
         cached_prompt: None,
+        stdin_prompt,
     };
 
     if let Some(selected_index) =
@@ -464,6 +496,11 @@ fn has_session_cookie(domain: &str, cookie: &seher::Cookie) -> bool {
     }
 }
 
+fn parse_stdin_content(content: &str) -> Option<String> {
+    let trimmed = content.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
 fn prompt_from_editor() -> std::result::Result<String, Box<dyn std::error::Error>> {
     let tmp = tempfile::NamedTempFile::new()?;
     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
@@ -500,7 +537,14 @@ fn execute_agent(
     let selected_agent = &agents[selected_index];
     let mut final_args = selected_agent.mapped_args(&input.raw_agent_args);
 
-    if input.raw_agent_args.is_empty() && !quiet {
+    if let PromptState::Resolved(p) = &input.stdin_prompt {
+        final_args.push(p.clone());
+    }
+
+    if matches!(input.stdin_prompt, PromptState::Unresolved)
+        && input.raw_agent_args.is_empty()
+        && !quiet
+    {
         if input.cached_prompt.is_none() {
             match prompt_from_editor() {
                 Ok(prompt) => input.cached_prompt = Some(prompt),
@@ -511,7 +555,6 @@ fn execute_agent(
                 }
             }
         }
-        // cached_prompt is guaranteed Some at this point
         if let Some(p) = input.cached_prompt.as_deref()
             && !p.is_empty()
         {
@@ -1171,5 +1214,43 @@ mod tests {
             ChildExitKind::SignalTerminated
         );
         Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_stdin_content
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_stdin_content_returns_some_for_nonempty_string() {
+        assert_eq!(
+            parse_stdin_content("fix bugs"),
+            Some("fix bugs".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_stdin_content_trims_leading_and_trailing_whitespace() {
+        assert_eq!(
+            parse_stdin_content("  fix bugs  \n"),
+            Some("fix bugs".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_stdin_content_returns_none_for_empty_string() {
+        assert_eq!(parse_stdin_content(""), None);
+    }
+
+    #[test]
+    fn parse_stdin_content_returns_none_for_whitespace_only_string() {
+        assert_eq!(parse_stdin_content("  \n  \t  "), None);
+    }
+
+    #[test]
+    fn parse_stdin_content_preserves_internal_content_including_newlines() {
+        assert_eq!(
+            parse_stdin_content("line one\nline two\n"),
+            Some("line one\nline two".to_string())
+        );
     }
 }
