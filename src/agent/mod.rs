@@ -99,6 +99,7 @@ impl Agent {
             Some("codex") => self.check_codex_limit().await,
             Some("copilot") => self.check_copilot_limit().await,
             Some("openrouter") => self.check_openrouter_limit().await,
+            Some("glm") => self.check_glm_limit().await,
             None => Ok(AgentLimit::NotLimited),
             Some(p) => Err(format!("Unknown provider: {p}").into()),
         }
@@ -163,6 +164,25 @@ impl Agent {
                     resets_at: None,
                 }]
             }
+            Some("glm") => {
+                let api_key = self.glm_api_key()?;
+                let quota = crate::glm::GlmClient::fetch_quota(api_key).await?;
+                match quota.data {
+                    Some(data) => data
+                        .limits
+                        .iter()
+                        .map(|l| UsageEntry {
+                            entry_type: l.limit_type.clone(),
+                            limited: l.percentage >= 100,
+                            utilization: f64::from(l.percentage),
+                            resets_at: l
+                                .next_reset_time
+                                .and_then(|ms| DateTime::from_timestamp_millis(ms)),
+                        })
+                        .collect(),
+                    None => vec![],
+                }
+            }
             Some(p) => return Err(format!("Unknown provider: {p}").into()),
         };
         Ok(AgentStatus {
@@ -224,6 +244,31 @@ impl Agent {
             Ok(AgentLimit::Limited { reset_time: None })
         } else {
             Ok(AgentLimit::NotLimited)
+        }
+    }
+
+    fn glm_api_key(&self) -> Result<&str, Box<dyn std::error::Error>> {
+        self.config.glm_api_key.as_deref().ok_or_else(|| {
+            "glm_api_key is required for GLM provider"
+                .to_string()
+                .into()
+        })
+    }
+
+    async fn check_glm_limit(&self) -> Result<AgentLimit, Box<dyn std::error::Error>> {
+        let api_key = self.glm_api_key()?;
+        let quota = crate::glm::GlmClient::fetch_quota(api_key).await?;
+        match quota.data {
+            Some(data) if data.is_limited() => {
+                let reset_time = data
+                    .limits
+                    .iter()
+                    .filter_map(|l| l.next_reset_time)
+                    .filter_map(|ms| DateTime::from_timestamp_millis(ms))
+                    .max();
+                Ok(AgentLimit::Limited { reset_time })
+            }
+            _ => Ok(AgentLimit::NotLimited),
         }
     }
 
@@ -344,6 +389,7 @@ mod tests {
                 env: None,
                 provider: None,
                 openrouter_management_key: None,
+                glm_api_key: None,
                 pre_command: vec![],
             },
             vec![],
@@ -478,6 +524,7 @@ mod tests {
                     "openrouter".to_string(),
                 )),
                 openrouter_management_key: management_key.map(str::to_string),
+                glm_api_key: None,
                 pre_command: vec![],
             },
             vec![],
@@ -494,6 +541,7 @@ mod tests {
                 env: None,
                 provider: None,
                 openrouter_management_key: None,
+                glm_api_key: None,
                 pre_command,
             },
             vec![],

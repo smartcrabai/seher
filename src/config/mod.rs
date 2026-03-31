@@ -105,6 +105,8 @@ pub struct AgentConfig {
     pub provider: Option<ProviderConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openrouter_management_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glm_api_key: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pre_command: Vec<String>,
 }
@@ -129,6 +131,7 @@ fn command_to_provider(command: &str) -> Option<&str> {
         "claude" => Some("claude"),
         "codex" => Some("codex"),
         "copilot" => Some("copilot"),
+        "glm" => Some("glm"),
         _ => None,
     }
 }
@@ -188,6 +191,7 @@ impl Default for Settings {
                 env: None,
                 provider: None,
                 openrouter_management_key: None,
+                glm_api_key: None,
                 pre_command: vec![],
             }],
             original_text: None,
@@ -1126,6 +1130,7 @@ mod tests {
             env: None,
             provider: None,
             openrouter_management_key: None,
+            glm_api_key: None,
             pre_command: vec![],
         });
         settings.save(Some(tmp.path()))?;
