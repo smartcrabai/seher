@@ -318,7 +318,7 @@ async fn run_with_limit_check(settings: &Settings, agents: Vec<Agent>, args: &Ar
         if !args.quiet {
             println!(
                 "Agent {} is available (not limited)",
-                agents[selected_index].command()
+                format_agent_identity(&agents[selected_index].config)
             );
         }
         execute_with_auto_rerun(
@@ -579,13 +579,17 @@ fn execute_agent(
     selected_agent.execute(&resolved, &final_args).into()
 }
 
+fn format_agent_identity(config: &AgentConfig) -> String {
+    let provider = config.resolve_provider().unwrap_or("(none)");
+    format!("command={} provider={}", config.command, provider)
+}
+
 fn format_priority_entry<W: std::io::Write>(
     writer: &mut W,
     rank: usize,
     config: &AgentConfig,
     priority: i32,
 ) {
-    let provider = config.resolve_provider().unwrap_or("(none)");
     let env_display = match &config.env {
         None => String::new(),
         Some(env) => {
@@ -596,8 +600,11 @@ fn format_priority_entry<W: std::io::Write>(
     };
     writeln!(
         writer,
-        "  {}. [priority={:3}] command={} provider={} env={{{}}}",
-        rank, priority, config.command, provider, env_display
+        "  {}. [priority={:3}] {} env={{{}}}",
+        rank,
+        priority,
+        format_agent_identity(config),
+        env_display
     )
     .ok();
 }
@@ -1247,6 +1254,40 @@ mod tests {
     #[test]
     fn parse_stdin_content_returns_none_for_whitespace_only_string() {
         assert_eq!(parse_stdin_content("  \n  \t  "), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // format_agent_identity
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn format_agent_identity_returns_command_and_inferred_provider() {
+        assert_eq!(
+            format_agent_identity(&sample_agent("claude", None).config),
+            "command=claude provider=claude"
+        );
+    }
+
+    #[test]
+    fn format_agent_identity_returns_command_and_explicit_provider() {
+        assert_eq!(
+            format_agent_identity(
+                &sample_agent(
+                    "opencode",
+                    Some(ProviderConfig::Explicit("copilot".to_string()))
+                )
+                .config
+            ),
+            "command=opencode provider=copilot"
+        );
+    }
+
+    #[test]
+    fn format_agent_identity_returns_none_for_explicitly_disabled_provider() {
+        assert_eq!(
+            format_agent_identity(&sample_agent("claude", Some(ProviderConfig::None)).config),
+            "command=claude provider=(none)"
+        );
     }
 
     #[test]
