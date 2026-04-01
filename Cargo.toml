@@ -39,7 +39,7 @@ browser = [
   "dep:aes",
   "dep:aes-gcm",
   "dep:cbc",
-  "dep:pbkdf2",
+  "dep:hmac",
   "dep:sha1",
   "dep:tempfile",
   "dep:dirs",
@@ -55,10 +55,10 @@ cbc = { version = "0.1", features = ["alloc"], optional = true }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 dirs = { version = "6.0", optional = true }
+hmac = { version = "0.13", optional = true }
 json_comments = "0.2.2"
 jsonc-parser = { version = "0.32", features = ["cst", "serde"] }
 open = "5"
-pbkdf2 = { version = "0.12", features = ["simple"], optional = true }
 reqwest = { version = "0.13", default-features = false, features = [
   "rustls",
   "json",

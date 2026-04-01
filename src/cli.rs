@@ -708,6 +708,7 @@ mod tests {
                 env: None,
                 provider,
                 openrouter_management_key: None,
+                glm_api_key: None,
                 pre_command: vec![],
             },
             vec![],
@@ -1039,6 +1040,7 @@ mod tests {
                 }),
                 provider: None,
                 openrouter_management_key: None,
+                glm_api_key: None,
                 pre_command: vec![],
             },
             AgentConfig {
@@ -1049,6 +1051,7 @@ mod tests {
                 env: None,
                 provider: None,
                 openrouter_management_key: None,
+                glm_api_key: None,
                 pre_command: vec![],
             },
         ];

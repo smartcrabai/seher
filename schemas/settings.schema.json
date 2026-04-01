@@ -30,7 +30,7 @@
     "provider": {
       "description": "Provider used for rate-limit tracking. Omit to infer from command, use null to disable provider-based checks, or use any string to override the provider name.",
       "type": ["string", "null"],
-      "examples": ["claude", "codex", "copilot", "openrouter", null]
+      "examples": ["claude", "codex", "copilot", "openrouter", "glm", null]
     },
     "agentConfig": {
       "type": "object",
@@ -104,19 +104,40 @@
         "openrouter_management_key": {
           "type": "string",
           "description": "Management API key for OpenRouter provider. Required when provider is \"openrouter\"."
+        },
+        "glm_api_key": {
+          "type": "string",
+          "description": "API key for GLM (Zhipu AI) provider. Required when provider is \"glm\"."
         }
       },
-      "if": {
-        "properties": {
-          "provider": {
-            "const": "openrouter"
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "provider": {
+                "const": "openrouter"
+              }
+            },
+            "required": ["provider"]
+          },
+          "then": {
+            "required": ["openrouter_management_key"]
           }
         },
-        "required": ["provider"]
-      },
-      "then": {
-        "required": ["openrouter_management_key"]
-      }
+        {
+          "if": {
+            "properties": {
+              "provider": {
+                "const": "glm"
+              }
+            },
+            "required": ["provider"]
+          },
+          "then": {
+            "required": ["glm_api_key"]
+          }
+        }
+      ]
     },
     "priorityRule": {
       "type": "object",

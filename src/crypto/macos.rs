@@ -1,6 +1,10 @@
 use crate::crypto::{CryptoError, Result};
 use aes::cipher::{BlockDecryptMut, KeyIvInit};
+use hmac::{Hmac, KeyInit, Mac};
 use security_framework::os::macos::keychain::SecKeychain;
+use sha1::Sha1;
+
+type HmacSha1 = Hmac<Sha1>;
 
 type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
 
@@ -34,9 +38,41 @@ fn get_encryption_key() -> Result<Vec<u8>> {
     let password = get_chrome_password()?;
 
     let mut key = vec![0u8; KEY_LENGTH];
-    pbkdf2::pbkdf2_hmac::<sha1::Sha1>(&password, SALT, ITERATIONS, &mut key);
+    pbkdf2_hmac_sha1(&password, SALT, ITERATIONS, &mut key);
 
     Ok(key)
+}
+
+#[expect(clippy::expect_used)]
+fn pbkdf2_hmac_sha1(password: &[u8], salt: &[u8], iterations: u32, output: &mut [u8]) {
+    const SHA1_LEN: usize = 20;
+    let block_count = output.len().div_ceil(SHA1_LEN);
+
+    for block_idx in 1..=block_count {
+        // U1 = HMAC(password, salt || INT(block_idx))
+        let mut mac = HmacSha1::new_from_slice(password).expect("HMAC accepts any key size");
+        mac.update(salt);
+        mac.update(
+            &u32::try_from(block_idx)
+                .expect("block index overflow")
+                .to_be_bytes(),
+        );
+        let mut u = mac.finalize().into_bytes();
+        let mut t = u;
+
+        for _ in 1..iterations {
+            let mut mac = HmacSha1::new_from_slice(password).expect("HMAC accepts any key size");
+            mac.update(&u);
+            u = mac.finalize().into_bytes();
+            for (t_val, u_val) in t.iter_mut().zip(u.iter()) {
+                *t_val ^= u_val;
+            }
+        }
+
+        let start = (block_idx - 1) * SHA1_LEN;
+        let end = (start + SHA1_LEN).min(output.len());
+        output[start..end].copy_from_slice(&t[..end - start]);
+    }
 }
 
 fn get_chrome_password() -> Result<Vec<u8>> {

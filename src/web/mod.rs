@@ -736,6 +736,7 @@ async fn add_agent_handler(State(state): State<SharedState>) -> HandlerResult {
         env: None,
         provider: None,
         openrouter_management_key: None,
+        glm_api_key: None,
         pre_command: vec![],
     });
     let model_keys = collect_model_keys(&settings);
