@@ -163,6 +163,13 @@ impl AgentConfig {
     pub fn resolve_domain(&self) -> Option<&str> {
         self.resolve_provider().and_then(provider_to_domain)
     }
+
+    #[must_use]
+    pub fn has_model(&self, model_key: &str) -> bool {
+        self.models
+            .as_ref()
+            .is_none_or(|m| m.contains_key(model_key))
+    }
 }
 
 impl PriorityRule {

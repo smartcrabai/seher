@@ -7,6 +7,7 @@ use seher::{
 use std::cmp::Reverse;
 use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::str::FromStr;
 use zzsleep::sleep_until;
 
@@ -122,16 +123,18 @@ fn should_auto_rerun(exit_kind: &ChildExitKind, agent_is_provider_aware: bool) -
     matches!(exit_kind, ChildExitKind::Failure { .. }) && agent_is_provider_aware
 }
 
-fn select_best_available_agent(
+/// Returns indices of agents that support the given model, sorted by descending
+/// priority with stable tie-break by original filtered-agent index.
+fn candidate_indices_in_priority_order(
     settings: &Settings,
     agents: &[Agent],
-    available_indices: &[usize],
     model: Option<&str>,
-) -> Option<usize> {
-    available_indices
-        .iter()
-        .copied()
-        .min_by_key(|&i| (Reverse(settings.priority_for(&agents[i].config, model)), i))
+) -> Vec<usize> {
+    let mut indices: Vec<usize> = (0..agents.len())
+        .filter(|&i| model.is_none_or(|key| agents[i].has_model(key)))
+        .collect();
+    indices.sort_by_key(|&i| (Reverse(settings.priority_for(&agents[i].config, model)), i));
+    indices
 }
 
 pub async fn run(args: Args) {
@@ -248,44 +251,51 @@ async fn print_json_status(agents: &[Agent]) {
     }
 }
 
+#[derive(Debug, PartialEq)]
+enum ScanOutcome {
+    Available {
+        index: usize,
+    },
+    AllLimited {
+        limited: Vec<(usize, Option<DateTime<Utc>>)>,
+    },
+}
+
+#[expect(clippy::needless_lifetimes)]
+async fn scan_candidates<'a, F>(
+    _agents: &'a [Agent],
+    candidates: Vec<usize>,
+    mut check_fn: F,
+) -> ScanOutcome
+where
+    F: FnMut(
+        usize,
+    )
+        -> Pin<Box<dyn Future<Output = Result<AgentLimit, Box<dyn std::error::Error>>> + 'a>>,
+{
+    let mut limited: Vec<(usize, Option<DateTime<Utc>>)> = Vec::new();
+    for idx in candidates {
+        match check_fn(idx).await {
+            Ok(AgentLimit::NotLimited) => return ScanOutcome::Available { index: idx },
+            Ok(AgentLimit::Limited { reset_time }) => limited.push((idx, reset_time)),
+            Err(_) => {}
+        }
+    }
+    ScanOutcome::AllLimited { limited }
+}
+
 async fn run_with_limit_check(settings: &Settings, agents: Vec<Agent>, args: &Args) {
-    type LimitResult = (usize, Result<seher::AgentLimit, Box<dyn std::error::Error>>);
-    let mut limit_results: Vec<LimitResult> = Vec::new();
+    let model = args.model.as_deref();
 
-    for (i, agent) in agents.iter().enumerate() {
-        if !args.quiet {
-            println!(
-                "Checking limit for {} {}...",
-                agent.command(),
-                agent.resolved_args(args.model.as_deref()).join(" ")
-            );
-        }
-        let result = agent.check_limit().await;
-        limit_results.push((i, result));
-    }
+    let candidates = candidate_indices_in_priority_order(settings, &agents, model);
 
-    let mut available_indices: Vec<usize> = Vec::new();
-    let mut limited_indices: Vec<(usize, Option<DateTime<Utc>>)> = Vec::new();
-
-    for (i, result) in &limit_results {
-        match result {
-            Ok(AgentLimit::NotLimited) => available_indices.push(*i),
-            Ok(AgentLimit::Limited { reset_time }) => limited_indices.push((*i, *reset_time)),
-            Err(e) => {
-                if !args.quiet {
-                    eprintln!("Failed to check limit for agent {i}: {e}");
-                }
-            }
-        }
-    }
-
-    if let Some(model_key) = args.model.as_deref() {
-        if !agents.iter().any(|a| a.has_model(model_key)) {
+    if candidates.is_empty() {
+        if let Some(model_key) = model {
             eprintln!("No agents found with model '{model_key}'");
-            return;
+        } else {
+            eprintln!("No available agents");
         }
-        available_indices.retain(|&i| agents[i].has_model(model_key));
-        limited_indices.retain(|(i, _)| agents[*i].has_model(model_key));
+        return;
     }
 
     let stdin_prompt = {
@@ -312,48 +322,56 @@ async fn run_with_limit_check(settings: &Settings, agents: Vec<Agent>, args: &Ar
         stdin_prompt,
     };
 
-    if let Some(selected_index) =
-        select_best_available_agent(settings, &agents, &available_indices, args.model.as_deref())
-    {
-        if !args.quiet {
+    let quiet = args.quiet;
+    let agents_slice = &agents[..];
+    let outcome = scan_candidates(agents_slice, candidates, |idx| {
+        if !quiet {
             println!(
-                "Agent {} is available (not limited)",
-                format_agent_identity(&agents[selected_index].config)
+                "Checking limit for {}...",
+                format_agent_identity(&agents_slice[idx].config)
             );
         }
-        execute_with_auto_rerun(
-            &agents,
-            selected_index,
-            &mut input,
-            args.model.as_deref(),
-            args.quiet,
-        );
-        return;
-    }
+        Box::pin(agents_slice[idx].check_limit())
+    })
+    .await;
 
-    if !limited_indices.is_empty() {
-        let earliest = limited_indices
-            .iter()
-            .filter_map(|(i, rt)| rt.map(|t| (*i, t)))
-            .min_by_key(|(_, t)| *t);
-
-        if let Some((idx, rt)) = earliest {
-            if !args.quiet {
+    match outcome {
+        ScanOutcome::Available { index } => {
+            if !quiet {
                 println!(
-                    "All agents limited. Waiting for {} ({} seconds)...",
-                    rt.format("%Y-%m-%d %H:%M:%S UTC"),
-                    (rt - Utc::now()).num_seconds()
+                    "Agent {} is available (not limited)",
+                    agents[index].command()
                 );
             }
-            sleep_until_reset(rt, args.quiet).await;
-            execute_with_auto_rerun(&agents, idx, &mut input, args.model.as_deref(), args.quiet);
-            return;
-        } else if !args.quiet {
-            println!("All agents limited, no reset time available");
+            execute_with_auto_rerun(&agents, index, &mut input, model, quiet);
+        }
+        ScanOutcome::AllLimited { limited } => {
+            if !limited.is_empty() {
+                let earliest = limited
+                    .iter()
+                    .filter_map(|(i, rt)| rt.map(|t| (*i, t)))
+                    .min_by_key(|(_, t)| *t);
+
+                if let Some((idx, rt)) = earliest {
+                    if !quiet {
+                        println!(
+                            "All agents limited. Waiting for {} ({} seconds)...",
+                            rt.format("%Y-%m-%d %H:%M:%S UTC"),
+                            (rt - Utc::now()).num_seconds()
+                        );
+                    }
+                    sleep_until_reset(rt, quiet).await;
+                    execute_with_auto_rerun(&agents, idx, &mut input, model, quiet);
+                    return;
+                }
+                if !quiet {
+                    println!("All agents limited, no reset time available");
+                }
+                return;
+            }
+            eprintln!("No available agents");
         }
     }
-
-    eprintln!("No available agents");
 }
 
 fn collect_candidate_profiles_with<GetProfile, ListProfiles>(
@@ -618,9 +636,7 @@ fn write_model_section<W: std::io::Write>(
         .agents
         .iter()
         .enumerate()
-        .filter(|(_, config)| {
-            model.is_none_or(|key| config.models.as_ref().is_none_or(|m| m.contains_key(key)))
-        })
+        .filter(|(_, config)| model.is_none_or(|key| config.has_model(key)))
         .map(|(i, config)| (i, config, settings.priority_for(config, model)))
         .collect();
     candidates.sort_by_key(|(i, _, priority)| (Reverse(*priority), *i));
@@ -678,7 +694,9 @@ async fn sleep_until_reset(reset_time: DateTime<Utc>, quiet: bool) {
 mod tests {
     use super::*;
     use seher::{AgentConfig, PriorityRule, config::ProviderConfig};
+    use std::cell::RefCell;
     use std::collections::HashMap;
+    use std::rc::Rc;
 
     fn sample_cookie(name: &str) -> seher::Cookie {
         sample_cookie_with_value(name, "value", i64::MAX)
@@ -705,12 +723,16 @@ mod tests {
         )
     }
 
-    fn sample_agent(command: &str, provider: Option<ProviderConfig>) -> Agent {
+    fn make_sample_agent(
+        command: &str,
+        provider: Option<ProviderConfig>,
+        models: Option<HashMap<String, String>>,
+    ) -> Agent {
         Agent::new(
             AgentConfig {
                 command: command.to_string(),
                 args: vec![],
-                models: None,
+                models,
                 arg_maps: HashMap::new(),
                 env: None,
                 provider,
@@ -720,6 +742,14 @@ mod tests {
             },
             vec![],
         )
+    }
+
+    fn sample_agent(command: &str, provider: Option<ProviderConfig>) -> Agent {
+        make_sample_agent(command, provider, None)
+    }
+
+    fn sample_agent_with_models(command: &str, models: Option<HashMap<String, String>>) -> Agent {
+        make_sample_agent(command, None, models)
     }
 
     fn sample_settings_with_priority(priority: Vec<PriorityRule>) -> Settings {
@@ -821,92 +851,6 @@ mod tests {
             &ChildExitKind::Failure { code: None },
             true,
         ));
-    }
-
-    #[test]
-    fn select_best_available_agent_prefers_higher_priority() {
-        let settings = sample_settings_with_priority(vec![
-            PriorityRule {
-                command: "claude".to_string(),
-                provider: None,
-                model: Some("high".to_string()),
-                priority: 10,
-            },
-            PriorityRule {
-                command: "codex".to_string(),
-                provider: None,
-                model: Some("high".to_string()),
-                priority: 100,
-            },
-        ]);
-        let agents = vec![sample_agent("claude", None), sample_agent("codex", None)];
-
-        let selected = select_best_available_agent(&settings, &agents, &[0, 1], Some("high"));
-
-        assert_eq!(selected, Some(1));
-    }
-
-    #[test]
-    fn select_best_available_agent_keeps_agent_order_when_priority_is_equal() {
-        let settings = sample_settings_with_priority(vec![]);
-        let agents = vec![sample_agent("claude", None), sample_agent("codex", None)];
-
-        let selected = select_best_available_agent(&settings, &agents, &[1, 0], Some("high"));
-
-        assert_eq!(selected, Some(0));
-    }
-
-    #[test]
-    fn select_best_available_agent_uses_model_specific_priority() {
-        let settings = sample_settings_with_priority(vec![
-            PriorityRule {
-                command: "claude".to_string(),
-                provider: None,
-                model: Some("high".to_string()),
-                priority: 100,
-            },
-            PriorityRule {
-                command: "claude".to_string(),
-                provider: None,
-                model: Some("low".to_string()),
-                priority: -50,
-            },
-        ]);
-        let agents = vec![sample_agent("claude", None)];
-
-        let selected_high = select_best_available_agent(&settings, &agents, &[0], Some("high"));
-        let selected_low = select_best_available_agent(&settings, &agents, &[0], Some("low"));
-
-        assert_eq!(selected_high, Some(0));
-        assert_eq!(selected_low, Some(0));
-        assert_eq!(settings.priority_for(&agents[0].config, Some("high")), 100);
-        assert_eq!(settings.priority_for(&agents[0].config, Some("low")), -50);
-    }
-
-    #[test]
-    fn select_best_available_agent_allows_fallback_to_win_on_priority() {
-        let settings = sample_settings_with_priority(vec![
-            PriorityRule {
-                command: "claude".to_string(),
-                provider: None,
-                model: Some("medium".to_string()),
-                priority: 10,
-            },
-            PriorityRule {
-                command: "claude".to_string(),
-                provider: Some(ProviderConfig::None),
-                model: Some("medium".to_string()),
-                priority: 20,
-            },
-        ]);
-        let agents = vec![
-            sample_agent("claude", None),
-            sample_agent("claude", Some(ProviderConfig::None)),
-        ];
-
-        let selected = select_best_available_agent(&settings, &agents, &[0, 1], Some("medium"));
-
-        assert_eq!(selected, Some(1));
     }
 
     #[test]
@@ -1296,5 +1240,296 @@ mod tests {
             parse_stdin_content("line one\nline two\n"),
             Some("line one\nline two".to_string())
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // candidate_indices_in_priority_order
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn candidate_order_sorts_by_descending_priority() {
+        // Given: three agents with priorities 10, 50, 30 respectively
+        let settings = sample_settings_with_priority(vec![
+            PriorityRule {
+                command: "claude".to_string(),
+                provider: None,
+                model: None,
+                priority: 10,
+            },
+            PriorityRule {
+                command: "codex".to_string(),
+                provider: None,
+                model: None,
+                priority: 50,
+            },
+            PriorityRule {
+                command: "copilot".to_string(),
+                provider: None,
+                model: None,
+                priority: 30,
+            },
+        ]);
+        let agents = vec![
+            sample_agent("claude", None),
+            sample_agent("codex", None),
+            sample_agent("copilot", None),
+        ];
+
+        // When: getting candidate indices in priority order
+        let result = candidate_indices_in_priority_order(&settings, &agents, None);
+
+        // Then: order is codex(50), copilot(30), claude(10) -> [1, 2, 0]
+        assert_eq!(result, vec![1, 2, 0]);
+    }
+
+    #[test]
+    fn candidate_order_preserves_original_index_for_equal_priority() {
+        // Given: three agents all with default priority 0
+        let settings = sample_settings_with_priority(vec![]);
+        let agents = vec![
+            sample_agent("claude", None),
+            sample_agent("codex", None),
+            sample_agent("copilot", None),
+        ];
+
+        // When: getting candidate indices in priority order
+        let result = candidate_indices_in_priority_order(&settings, &agents, None);
+
+        // Then: original order preserved (stable tie-break by index)
+        assert_eq!(result, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn candidate_order_includes_pass_through_agents_for_any_model() {
+        // Given: codex (models=None, pass-through) and claude (models={high: opus})
+        let mut claude_models = HashMap::new();
+        claude_models.insert("high".to_string(), "opus".to_string());
+
+        let settings = Settings::default();
+        let agents = vec![
+            sample_agent_with_models("codex", None),
+            sample_agent_with_models("claude", Some(claude_models)),
+        ];
+
+        // When: filtering for "high" model
+        let result = candidate_indices_in_priority_order(&settings, &agents, Some("high"));
+
+        // Then: both agents included (pass-through accepts any model)
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&0));
+        assert!(result.contains(&1));
+    }
+
+    #[test]
+    fn candidate_order_excludes_agents_without_requested_model() {
+        // Given: claude with only "low" model
+        let mut claude_models = HashMap::new();
+        claude_models.insert("low".to_string(), "haiku".to_string());
+
+        let settings = Settings::default();
+        let agents = vec![sample_agent_with_models("claude", Some(claude_models))];
+
+        // When: filtering for "high" model
+        let result = candidate_indices_in_priority_order(&settings, &agents, Some("high"));
+
+        // Then: no agents match
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn candidate_order_returns_all_agents_when_no_model_filter() {
+        // Given: two agents with different model configurations
+        let mut claude_models = HashMap::new();
+        claude_models.insert("high".to_string(), "opus".to_string());
+
+        let settings = Settings::default();
+        let agents = vec![
+            sample_agent_with_models("codex", None),
+            sample_agent_with_models("claude", Some(claude_models)),
+        ];
+
+        // When: no model filter specified
+        let result = candidate_indices_in_priority_order(&settings, &agents, None);
+
+        // Then: all agents included regardless of their model map
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn candidate_order_combines_priority_and_model_filter() {
+        // Given: claude (high priority=100), codex (pass-through, priority=0), copilot (high priority=50)
+        let mut claude_models = HashMap::new();
+        claude_models.insert("high".to_string(), "opus".to_string());
+
+        let mut copilot_models = HashMap::new();
+        copilot_models.insert("high".to_string(), "gpt-5".to_string());
+
+        let settings = sample_settings_with_priority(vec![
+            PriorityRule {
+                command: "claude".to_string(),
+                provider: None,
+                model: Some("high".to_string()),
+                priority: 100,
+            },
+            PriorityRule {
+                command: "copilot".to_string(),
+                provider: None,
+                model: Some("high".to_string()),
+                priority: 50,
+            },
+        ]);
+
+        let agents = vec![
+            sample_agent_with_models("claude", Some(claude_models)),
+            sample_agent_with_models("codex", None),
+            sample_agent_with_models("copilot", Some(copilot_models)),
+        ];
+
+        // When: filtering for "high" model
+        let result = candidate_indices_in_priority_order(&settings, &agents, Some("high"));
+
+        // Then: all 3 included, sorted by priority: claude(100), copilot(50), codex(0)
+        assert_eq!(result, vec![0, 2, 1]);
+    }
+
+    // -----------------------------------------------------------------------
+    // scan_candidates
+    // -----------------------------------------------------------------------
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn scan_stops_after_first_available() -> TestResult {
+        // Given: codex has highest priority and is not limited
+        let settings = sample_settings_with_priority(vec![PriorityRule {
+            command: "codex".to_string(),
+            provider: None,
+            model: None,
+            priority: 50,
+        }]);
+        let agents = vec![
+            sample_agent("claude", None),
+            sample_agent("codex", None),
+            sample_agent("copilot", None),
+        ];
+
+        let checked: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
+        let checked_clone = checked.clone();
+
+        // When: scanning with codex (index 1, highest priority) returning NotLimited
+        let candidates = candidate_indices_in_priority_order(&settings, &agents, None);
+        let result = scan_candidates(&agents, candidates, move |idx| {
+            checked_clone.borrow_mut().push(idx);
+            let is_available = idx == 1;
+            Box::pin(async move {
+                Ok::<_, Box<dyn std::error::Error>>(if is_available {
+                    AgentLimit::NotLimited
+                } else {
+                    AgentLimit::Limited { reset_time: None }
+                })
+            })
+        })
+        .await;
+
+        // Then: returns Available at index 1, only that agent was checked
+        assert_eq!(result, ScanOutcome::Available { index: 1 });
+        assert_eq!(*checked.borrow(), vec![1]);
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn scan_collects_reset_times_when_all_limited() -> TestResult {
+        // Given: two agents, both limited with different reset times
+        let settings = Settings::default();
+        let agents = vec![sample_agent("claude", None), sample_agent("codex", None)];
+
+        let reset_time = "2025-06-15T12:00:00Z".parse::<DateTime<Utc>>()?;
+
+        let candidates = candidate_indices_in_priority_order(&settings, &agents, None);
+        let result = scan_candidates(&agents, candidates, |idx| {
+            let rt = if idx == 1 { Some(reset_time) } else { None };
+            Box::pin(async move {
+                Ok::<_, Box<dyn std::error::Error>>(AgentLimit::Limited { reset_time: rt })
+            })
+        })
+        .await;
+
+        // Then: returns AllLimited with both agents' reset times
+        match result {
+            ScanOutcome::AllLimited { limited } => {
+                assert_eq!(limited.len(), 2);
+                assert_eq!(limited[0], (0, None));
+                assert_eq!(limited[1], (1, Some(reset_time)));
+            }
+            other @ ScanOutcome::Available { .. } => panic!("expected AllLimited, got {other:?}"),
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn scan_continues_past_errors() -> TestResult {
+        // Given: 3 agents where the highest-priority one errors
+        let settings = sample_settings_with_priority(vec![PriorityRule {
+            command: "codex".to_string(),
+            provider: None,
+            model: None,
+            priority: 50,
+        }]);
+        let agents = vec![
+            sample_agent("claude", None),
+            sample_agent("codex", None),
+            sample_agent("copilot", None),
+        ];
+
+        let checked: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
+        let checked_clone = checked.clone();
+
+        // When: codex (highest priority) errors, claude (next) is available
+        let candidates = candidate_indices_in_priority_order(&settings, &agents, None);
+        let result = scan_candidates(&agents, candidates, move |idx| {
+            checked_clone.borrow_mut().push(idx);
+            Box::pin(async move {
+                match idx {
+                    1 => Err::<AgentLimit, Box<dyn std::error::Error>>("network error".into()),
+                    0 => Ok(AgentLimit::NotLimited),
+                    _ => Ok(AgentLimit::Limited { reset_time: None }),
+                }
+            })
+        })
+        .await;
+
+        // Then: returns Available at index 0 (claude)
+        assert_eq!(result, ScanOutcome::Available { index: 0 });
+        assert!(
+            checked.borrow().contains(&1),
+            "codex should have been checked"
+        );
+        assert!(
+            checked.borrow().contains(&0),
+            "claude should have been checked"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn scan_returns_empty_limited_when_all_errored() -> TestResult {
+        // Given: one agent that always errors
+        let settings = Settings::default();
+        let agents = vec![sample_agent("claude", None)];
+
+        // When: the agent's check_limit always returns an error
+        let candidates = candidate_indices_in_priority_order(&settings, &agents, None);
+        let result = scan_candidates(&agents, candidates, |_| {
+            Box::pin(async {
+                Err::<AgentLimit, Box<dyn std::error::Error>>("network error".into())
+            })
+        })
+        .await;
+
+        // Then: returns AllLimited with empty limited list (all errored, none limited)
+        assert_eq!(result, ScanOutcome::AllLimited { limited: vec![] });
+
+        Ok(())
     }
 }

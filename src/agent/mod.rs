@@ -312,10 +312,7 @@ impl Agent {
 
     #[must_use]
     pub fn has_model(&self, model_key: &str) -> bool {
-        match &self.config.models {
-            None => true, // no models map -> pass-through, accepts any model key
-            Some(m) => m.contains_key(model_key),
-        }
+        self.config.has_model(model_key)
     }
 
     #[must_use]
