@@ -104,6 +104,7 @@ impl Agent {
             Some("kimi-k2") => self.check_kimik2_limit().await,
             Some("warp") => self.check_warp_limit().await,
             Some("kiro") => self.check_kiro_limit().await,
+            Some("opencode-go") => self.check_opencode_go_limit(),
             None => Ok(AgentLimit::NotLimited),
             Some(p) => Err(format!("Unknown provider: {p}").into()),
         }
@@ -235,6 +236,17 @@ impl Agent {
                     resets_at: Self::reset_time_from_seconds(info.reset_in_seconds),
                 }]
             }
+            Some("opencode-go") => self
+                .opencode_go_usage_snapshot()?
+                .windows
+                .into_iter()
+                .map(|window| UsageEntry {
+                    entry_type: window.entry_type.to_string(),
+                    limited: window.is_limited(),
+                    utilization: window.utilization(),
+                    resets_at: window.resets_at,
+                })
+                .collect(),
             Some(p) => return Err(format!("Unknown provider: {p}").into()),
         };
         Ok(AgentStatus {
@@ -402,6 +414,21 @@ impl Agent {
         }
     }
 
+    fn check_opencode_go_limit(&self) -> Result<AgentLimit, Box<dyn std::error::Error>> {
+        let snapshot = self.opencode_go_usage_snapshot()?;
+        if snapshot
+            .windows
+            .iter()
+            .any(crate::opencode_go::OpencodeGoUsageWindow::is_limited)
+        {
+            Ok(AgentLimit::Limited {
+                reset_time: snapshot.reset_time(),
+            })
+        } else {
+            Ok(AgentLimit::NotLimited)
+        }
+    }
+
     async fn check_codex_limit(&self) -> Result<AgentLimit, Box<dyn std::error::Error>> {
         let usage = crate::codex::CodexClient::fetch_usage(&self.cookies).await?;
 
@@ -492,6 +519,20 @@ impl Agent {
             })
             .cloned()
             .collect()
+    }
+
+    fn opencode_go_usage_snapshot(
+        &self,
+    ) -> Result<crate::opencode_go::OpencodeGoUsageSnapshot, Box<dyn std::error::Error>> {
+        let db_path = self.resolve_optional_env("SEHER_OPENCODE_DB_PATH");
+        let auth_path = self.resolve_optional_env("SEHER_OPENCODE_AUTH_PATH");
+        Ok(
+            crate::opencode_go::OpencodeGoUsageStore::fetch_usage_with_paths_at(
+                db_path.as_deref().map(std::path::Path::new),
+                auth_path.as_deref().map(std::path::Path::new),
+                Utc::now(),
+            )?,
+        )
     }
 }
 
@@ -837,6 +878,73 @@ mod tests {
         let agent = make_api_key_agent("kiro");
         let result = agent.fetch_status().await;
         assert!(result.is_err(), "kiro without CLI should return an error");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn check_limit_opencode_go_uses_local_history() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let db_path = tmp.path().join("opencode.db");
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute("CREATE TABLE message (data TEXT NOT NULL)", [])?;
+        conn.execute(
+            "INSERT INTO message (data) VALUES (?1)",
+            [r#"{"role":"assistant","providerID":"opencode-go","cost":6.5,"time":{"completed":4102448400000}}"#],
+        )?;
+        conn.execute(
+            "INSERT INTO message (data) VALUES (?1)",
+            [r#"{"role":"assistant","providerID":"opencode-go","cost":6.0,"time":{"completed":4102461000000}}"#],
+        )?;
+        drop(conn);
+
+        let mut agent = make_api_key_agent("opencode-go");
+        agent.config.env = Some(HashMap::from([(
+            "SEHER_OPENCODE_DB_PATH".to_string(),
+            db_path.display().to_string(),
+        )]));
+        let result = agent.check_limit().await?;
+        assert!(matches!(result, AgentLimit::Limited { .. }));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn fetch_status_opencode_go_returns_usage_windows() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let db_path = tmp.path().join("opencode.db");
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute("CREATE TABLE message (data TEXT NOT NULL)", [])?;
+        conn.execute(
+            "INSERT INTO message (data) VALUES (?1)",
+            [r#"{"role":"assistant","providerID":"opencode-go","cost":2.25,"time":{"completed":4102461000000}}"#],
+        )?;
+        drop(conn);
+
+        let mut agent = make_api_key_agent("opencode-go");
+        agent.config.env = Some(HashMap::from([(
+            "SEHER_OPENCODE_DB_PATH".to_string(),
+            db_path.display().to_string(),
+        )]));
+        let status = agent.fetch_status().await?;
+        assert_eq!(status.provider.as_deref(), Some("opencode-go"));
+        assert_eq!(status.usage.len(), 3);
+        assert!(
+            status
+                .usage
+                .iter()
+                .any(|entry| entry.entry_type == "five_hour_spend")
+        );
+        assert!(
+            status
+                .usage
+                .iter()
+                .any(|entry| entry.entry_type == "weekly_spend")
+        );
+        assert!(
+            status
+                .usage
+                .iter()
+                .any(|entry| entry.entry_type == "monthly_spend")
+        );
         Ok(())
     }
 

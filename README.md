@@ -211,7 +211,7 @@ The `{model}` placeholder in `args` is resolved based on the value passed to `--
 
 `priority` matches the combination of `command`, resolved `provider`, and `--model` key. If a rule's `provider` is omitted, it is inferred from `command` using the same logic as agents (`claude` → `claude`, `codex` → `codex`, `copilot` → `copilot`). Setting `provider` to `null` matches fallback agents. When multiple agents are not rate-limited, seher selects the one with the highest `priority`; if priorities are equal, the earlier entry in `agents` wins.
 
-The `provider` field controls rate limit tracking. If omitted, the provider is inferred from the command name (`claude` → claude.ai, `codex` → chatgpt.com, `copilot` → github.com). Setting it to `null` disables rate limit checking for that agent. Setting it to a string (e.g. `"codex"`, `"copilot"`, `"openrouter"`, or `"glm"`) uses that provider's rate limit regardless of the command name.
+The `provider` field controls rate limit tracking. If omitted, the provider is inferred from the command name (`claude` → claude.ai, `codex` → chatgpt.com, `copilot` → github.com). Setting it to `null` disables rate limit checking for that agent. Setting it to a string (e.g. `"codex"`, `"copilot"`, `"openrouter"`, `"glm"`, or `"opencode-go"`) uses that provider's rate limit regardless of the command name.
 
 For Codex, seher reads `chatgpt.com` browser cookies, fetches an access token from `https://chatgpt.com/api/auth/session`, and then calls `https://chatgpt.com/backend-api/wham/usage`. The request intentionally keeps headers minimal and does not require hard-coding a bearer token in your config.
 
@@ -241,6 +241,23 @@ For GLM (Zhipu AI), seher uses the `glm_api_key` to authenticate with the Zhipu 
       "args": ["--model", "{model}"],
       "models": {
         "high": "glm-4-plus"
+      }
+    }
+  ]
+}
+```
+
+For OpenCode Go, seher reads the local OpenCode history database at `~/.local/share/opencode/opencode.db` and tracks the spend recorded for assistant messages whose `providerID` is `"opencode-go"`. It reports rolling 5-hour, 7-day, and 30-day windows against the documented Go caps (`$12`, `$30`, `$60`). This is local-device tracking, so it reflects usage recorded by your local OpenCode installation rather than the hosted console.
+
+```json
+{
+  "agents": [
+    {
+      "command": "opencode",
+      "provider": "opencode-go",
+      "args": ["--model", "{model}"],
+      "models": {
+        "medium": "opencode-go/minimax-m2.7"
       }
     }
   ]

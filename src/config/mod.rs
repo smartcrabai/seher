@@ -799,6 +799,20 @@ mod tests {
     }
 
     #[test]
+    fn test_provider_field_opencode_go_string() -> TestResult {
+        let json = r#"{"agents": [{"command": "opencode", "provider": "opencode-go"}]}"#;
+        let settings: Settings = serde_json::from_str(json)?;
+
+        assert_eq!(
+            settings.agents[0].provider,
+            Some(ProviderConfig::Explicit("opencode-go".to_string()))
+        );
+        assert_eq!(settings.agents[0].resolve_provider(), Some("opencode-go"));
+        assert_eq!(settings.agents[0].resolve_domain(), None);
+        Ok(())
+    }
+
+    #[test]
     fn test_provider_unknown_string() -> TestResult {
         let json = r#"{"agents": [{"command": "someai", "provider": "unknown"}]}"#;
         let settings: Settings = serde_json::from_str(json)?;
