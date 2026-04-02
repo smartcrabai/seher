@@ -15,6 +15,8 @@ pub mod copilot;
 pub mod glm;
 pub mod kimik2;
 pub mod kiro;
+#[cfg(feature = "browser")]
+pub mod opencode_go;
 pub mod openrouter;
 pub mod warp;
 pub mod web;
@@ -29,3 +31,5 @@ pub use claude::{ClaudeClient, UsageResponse, UsageWindow};
 pub use codex::{CodexClient, CodexRateLimit, CodexUsageResponse, CodexWindow};
 #[cfg(feature = "browser")]
 pub use config::{AgentConfig, PriorityRule, Settings};
+#[cfg(feature = "browser")]
+pub use opencode_go::{OpencodeGoAuth, OpencodeGoUsageSnapshot, OpencodeGoUsageStore};

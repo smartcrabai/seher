@@ -30,7 +30,7 @@
     "provider": {
       "description": "Provider used for rate-limit tracking. Omit to infer from command, use null to disable provider-based checks, or use any string to override the provider name.",
       "type": ["string", "null"],
-      "examples": ["claude", "codex", "copilot", "openrouter", "glm", null]
+      "examples": ["claude", "codex", "copilot", "openrouter", "glm", "opencode-go", null]
     },
     "agentConfig": {
       "type": "object",
