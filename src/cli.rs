@@ -125,16 +125,19 @@ fn should_auto_rerun(exit_kind: &ChildExitKind, agent_is_provider_aware: bool) -
 
 /// Returns indices of agents that support the given model, sorted by descending
 /// priority with stable tie-break by original filtered-agent index.
+/// `now` is captured once by the caller so priority comparisons are consistent.
 fn candidate_indices_in_priority_order(
     settings: &Settings,
     agents: &[Agent],
     model: Option<&str>,
+    now: &DateTime<Local>,
 ) -> Vec<usize> {
-    let mut indices: Vec<usize> = (0..agents.len())
+    let mut indices: Vec<(usize, i32)> = (0..agents.len())
         .filter(|&i| model.is_none_or(|key| agents[i].has_model(key)))
+        .map(|i| (i, settings.priority_for_at(&agents[i].config, model, now)))
         .collect();
-    indices.sort_by_key(|&i| (Reverse(settings.priority_for(&agents[i].config, model)), i));
-    indices
+    indices.sort_by_key(|&(i, priority)| (Reverse(priority), i));
+    indices.into_iter().map(|(i, _)| i).collect()
 }
 
 pub async fn run(args: Args) {
@@ -286,8 +289,9 @@ where
 
 async fn run_with_limit_check(settings: &Settings, agents: Vec<Agent>, args: &Args) {
     let model = args.model.as_deref();
+    let now = Local::now();
 
-    let candidates = candidate_indices_in_priority_order(settings, &agents, model);
+    let candidates = candidate_indices_in_priority_order(settings, &agents, model, &now);
 
     if candidates.is_empty() {
         if let Some(model_key) = model {
@@ -631,13 +635,14 @@ fn write_model_section<W: std::io::Write>(
     writer: &mut W,
     settings: &Settings,
     model: Option<&str>,
+    now: &DateTime<Local>,
 ) {
     let mut candidates: Vec<_> = settings
         .agents
         .iter()
         .enumerate()
         .filter(|(_, config)| model.is_none_or(|key| config.has_model(key)))
-        .map(|(i, config)| (i, config, settings.priority_for(config, model)))
+        .map(|(i, config)| (i, config, settings.priority_for_at(config, model, now)))
         .collect();
     candidates.sort_by_key(|(i, _, priority)| (Reverse(*priority), *i));
 
@@ -651,6 +656,8 @@ fn write_model_section<W: std::io::Write>(
 fn write_priority<W: std::io::Write>(writer: &mut W, settings: &Settings) {
     use std::collections::BTreeSet;
 
+    let now = Local::now();
+
     let model_keys: BTreeSet<String> = settings
         .agents
         .iter()
@@ -659,9 +666,9 @@ fn write_priority<W: std::io::Write>(writer: &mut W, settings: &Settings) {
         .collect();
 
     for key in &model_keys {
-        write_model_section(writer, settings, Some(key.as_str()));
+        write_model_section(writer, settings, Some(key.as_str()), &now);
     }
-    write_model_section(writer, settings, None);
+    write_model_section(writer, settings, None, &now);
 }
 
 fn print_priority(settings: &Settings) {
@@ -691,12 +698,28 @@ async fn sleep_until_reset(reset_time: DateTime<Utc>, quiet: bool) {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::unwrap_used,
+    reason = "test helpers use unwrap for conciseness"
+)]
 mod tests {
     use super::*;
     use seher::{AgentConfig, PriorityRule, config::ProviderConfig};
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::rc::Rc;
+
+    fn make_local_dt(year: i32, month: u32, day: u32, hour: u32) -> DateTime<Local> {
+        use chrono::TimeZone;
+        let naive = chrono::NaiveDateTime::new(
+            chrono::NaiveDate::from_ymd_opt(year, month, day).unwrap(),
+            chrono::NaiveTime::from_hms_opt(hour, 0, 0).unwrap(),
+        );
+        Local
+            .from_local_datetime(&naive)
+            .single()
+            .unwrap_or_else(|| Local.from_local_datetime(&naive).latest().unwrap())
+    }
 
     fn sample_cookie(name: &str) -> seher::Cookie {
         sample_cookie_with_value(name, "value", i64::MAX)
@@ -970,12 +993,16 @@ mod tests {
                 provider: None,
                 model: Some("high".to_string()),
                 priority: 10,
+                weekdays: None,
+                hours: None,
             },
             PriorityRule {
                 command: "codex".to_string(),
                 provider: None,
                 model: None,
                 priority: 50,
+                weekdays: None,
+                hours: None,
             },
         ];
         s.agents = vec![
@@ -1255,18 +1282,24 @@ mod tests {
                 provider: None,
                 model: None,
                 priority: 10,
+                weekdays: None,
+                hours: None,
             },
             PriorityRule {
                 command: "codex".to_string(),
                 provider: None,
                 model: None,
                 priority: 50,
+                weekdays: None,
+                hours: None,
             },
             PriorityRule {
                 command: "copilot".to_string(),
                 provider: None,
                 model: None,
                 priority: 30,
+                weekdays: None,
+                hours: None,
             },
         ]);
         let agents = vec![
@@ -1276,7 +1309,7 @@ mod tests {
         ];
 
         // When: getting candidate indices in priority order
-        let result = candidate_indices_in_priority_order(&settings, &agents, None);
+        let result = candidate_indices_in_priority_order(&settings, &agents, None, &Local::now());
 
         // Then: order is codex(50), copilot(30), claude(10) -> [1, 2, 0]
         assert_eq!(result, vec![1, 2, 0]);
@@ -1293,7 +1326,7 @@ mod tests {
         ];
 
         // When: getting candidate indices in priority order
-        let result = candidate_indices_in_priority_order(&settings, &agents, None);
+        let result = candidate_indices_in_priority_order(&settings, &agents, None, &Local::now());
 
         // Then: original order preserved (stable tie-break by index)
         assert_eq!(result, vec![0, 1, 2]);
@@ -1312,7 +1345,8 @@ mod tests {
         ];
 
         // When: filtering for "high" model
-        let result = candidate_indices_in_priority_order(&settings, &agents, Some("high"));
+        let result =
+            candidate_indices_in_priority_order(&settings, &agents, Some("high"), &Local::now());
 
         // Then: both agents included (pass-through accepts any model)
         assert_eq!(result.len(), 2);
@@ -1330,7 +1364,8 @@ mod tests {
         let agents = vec![sample_agent_with_models("claude", Some(claude_models))];
 
         // When: filtering for "high" model
-        let result = candidate_indices_in_priority_order(&settings, &agents, Some("high"));
+        let result =
+            candidate_indices_in_priority_order(&settings, &agents, Some("high"), &Local::now());
 
         // Then: no agents match
         assert!(result.is_empty());
@@ -1349,7 +1384,7 @@ mod tests {
         ];
 
         // When: no model filter specified
-        let result = candidate_indices_in_priority_order(&settings, &agents, None);
+        let result = candidate_indices_in_priority_order(&settings, &agents, None, &Local::now());
 
         // Then: all agents included regardless of their model map
         assert_eq!(result.len(), 2);
@@ -1370,12 +1405,16 @@ mod tests {
                 provider: None,
                 model: Some("high".to_string()),
                 priority: 100,
+                weekdays: None,
+                hours: None,
             },
             PriorityRule {
                 command: "copilot".to_string(),
                 provider: None,
                 model: Some("high".to_string()),
                 priority: 50,
+                weekdays: None,
+                hours: None,
             },
         ]);
 
@@ -1386,10 +1425,90 @@ mod tests {
         ];
 
         // When: filtering for "high" model
-        let result = candidate_indices_in_priority_order(&settings, &agents, Some("high"));
+        let result =
+            candidate_indices_in_priority_order(&settings, &agents, Some("high"), &Local::now());
 
         // Then: all 3 included, sorted by priority: claude(100), copilot(50), codex(0)
         assert_eq!(result, vec![0, 2, 1]);
+    }
+
+    #[test]
+    fn candidate_order_uses_scheduled_priority_when_rule_is_active() {
+        // Given: codex has base priority 10 and a scheduled priority 200 for Mon-Fri 21-27.
+        // Claude has a fixed priority of 100.
+        let settings = sample_settings_with_priority(vec![
+            PriorityRule {
+                command: "claude".to_string(),
+                provider: None,
+                model: None,
+                priority: 100,
+                weekdays: None,
+                hours: None,
+            },
+            PriorityRule {
+                command: "codex".to_string(),
+                provider: None,
+                model: None,
+                priority: 10,
+                weekdays: None,
+                hours: None,
+            },
+            PriorityRule {
+                command: "codex".to_string(),
+                provider: None,
+                model: None,
+                priority: 200,
+                weekdays: Some(vec!["1-5".to_string()]),
+                hours: Some(vec!["21-27".to_string()]),
+            },
+        ]);
+        let agents = vec![sample_agent("claude", None), sample_agent("codex", None)];
+
+        // When: evaluating on Monday 22:00 (active window for codex scheduled rule)
+        let monday_22h = make_local_dt(2024, 1, 8, 22);
+        let result = candidate_indices_in_priority_order(&settings, &agents, None, &monday_22h);
+
+        // Then: codex (scheduled priority 200) > claude (100) → codex first
+        assert_eq!(result, vec![1, 0]);
+    }
+
+    #[test]
+    fn candidate_order_uses_base_priority_when_scheduled_rule_is_inactive() {
+        // Given: same rules as above
+        let settings = sample_settings_with_priority(vec![
+            PriorityRule {
+                command: "claude".to_string(),
+                provider: None,
+                model: None,
+                priority: 100,
+                weekdays: None,
+                hours: None,
+            },
+            PriorityRule {
+                command: "codex".to_string(),
+                provider: None,
+                model: None,
+                priority: 10,
+                weekdays: None,
+                hours: None,
+            },
+            PriorityRule {
+                command: "codex".to_string(),
+                provider: None,
+                model: None,
+                priority: 200,
+                weekdays: Some(vec!["1-5".to_string()]),
+                hours: Some(vec!["21-27".to_string()]),
+            },
+        ]);
+        let agents = vec![sample_agent("claude", None), sample_agent("codex", None)];
+
+        // When: evaluating on Saturday 22:00 (outside Mon-Fri window)
+        let saturday_22h = make_local_dt(2024, 1, 13, 22);
+        let result = candidate_indices_in_priority_order(&settings, &agents, None, &saturday_22h);
+
+        // Then: claude (100) > codex (base 10) → claude first
+        assert_eq!(result, vec![0, 1]);
     }
 
     // -----------------------------------------------------------------------
@@ -1404,6 +1523,8 @@ mod tests {
             provider: None,
             model: None,
             priority: 50,
+            weekdays: None,
+            hours: None,
         }]);
         let agents = vec![
             sample_agent("claude", None),
@@ -1415,7 +1536,8 @@ mod tests {
         let checked_clone = checked.clone();
 
         // When: scanning with codex (index 1, highest priority) returning NotLimited
-        let candidates = candidate_indices_in_priority_order(&settings, &agents, None);
+        let candidates =
+            candidate_indices_in_priority_order(&settings, &agents, None, &Local::now());
         let result = scan_candidates(&agents, candidates, move |idx| {
             checked_clone.borrow_mut().push(idx);
             let is_available = idx == 1;
@@ -1444,7 +1566,8 @@ mod tests {
 
         let reset_time = "2025-06-15T12:00:00Z".parse::<DateTime<Utc>>()?;
 
-        let candidates = candidate_indices_in_priority_order(&settings, &agents, None);
+        let candidates =
+            candidate_indices_in_priority_order(&settings, &agents, None, &Local::now());
         let result = scan_candidates(&agents, candidates, |idx| {
             let rt = if idx == 1 { Some(reset_time) } else { None };
             Box::pin(async move {
@@ -1474,6 +1597,8 @@ mod tests {
             provider: None,
             model: None,
             priority: 50,
+            weekdays: None,
+            hours: None,
         }]);
         let agents = vec![
             sample_agent("claude", None),
@@ -1485,7 +1610,8 @@ mod tests {
         let checked_clone = checked.clone();
 
         // When: codex (highest priority) errors, claude (next) is available
-        let candidates = candidate_indices_in_priority_order(&settings, &agents, None);
+        let candidates =
+            candidate_indices_in_priority_order(&settings, &agents, None, &Local::now());
         let result = scan_candidates(&agents, candidates, move |idx| {
             checked_clone.borrow_mut().push(idx);
             Box::pin(async move {
@@ -1519,7 +1645,8 @@ mod tests {
         let agents = vec![sample_agent("claude", None)];
 
         // When: the agent's check_limit always returns an error
-        let candidates = candidate_indices_in_priority_order(&settings, &agents, None);
+        let candidates =
+            candidate_indices_in_priority_order(&settings, &agents, None, &Local::now());
         let result = scan_candidates(&agents, candidates, |_| {
             Box::pin(async {
                 Err::<AgentLimit, Box<dyn std::error::Error>>("network error".into())

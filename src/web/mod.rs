@@ -18,6 +18,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 
+use chrono::Local;
+
 use crate::config::{AgentConfig, ProviderConfig, Settings};
 
 // -- shared state --------------------------------------------------------------
@@ -62,16 +64,21 @@ fn collect_model_keys(settings: &Settings) -> Vec<String> {
 }
 
 /// Priority of agent x model. Returns `None` when the model is unavailable.
-fn priority_value(settings: &Settings, agent: &AgentConfig, model_key: &str) -> Option<i32> {
+fn priority_value(
+    settings: &Settings,
+    agent: &AgentConfig,
+    model_key: &str,
+    now: &chrono::DateTime<Local>,
+) -> Option<i32> {
     if model_key == "(none)" {
-        return Some(settings.priority_for(agent, None));
+        return Some(settings.priority_for_at(agent, None, now));
     }
     match &agent.models {
         Some(models) if models.contains_key(model_key) => {
-            Some(settings.priority_for(agent, Some(model_key)))
+            Some(settings.priority_for_at(agent, Some(model_key), now))
         }
         Some(_) => None,
-        None => Some(settings.priority_for(agent, Some(model_key))), // passthrough
+        None => Some(settings.priority_for_at(agent, Some(model_key), now)), // passthrough
     }
 }
 
@@ -206,6 +213,7 @@ fn render_agent_row(
     agent: &AgentConfig,
     settings: &Settings,
     model_keys: &[String],
+    now: &chrono::DateTime<Local>,
 ) -> String {
     let AgentDisplay {
         command,
@@ -219,7 +227,7 @@ fn render_agent_row(
 
     let priority_cells: String = model_keys
         .iter()
-        .map(|mk| match priority_value(settings, agent, mk) {
+        .map(|mk| match priority_value(settings, agent, mk, now) {
             None => r#"<td class="unavail">-</td>"#.to_string(),
             Some(p) => format!(r#"<td class="prio">{p}</td>"#),
         })
@@ -248,6 +256,7 @@ fn render_edit_row(
     agent: &AgentConfig,
     settings: &Settings,
     model_keys: &[String],
+    now: &chrono::DateTime<Local>,
 ) -> String {
     let AgentDisplay {
         command,
@@ -261,7 +270,7 @@ fn render_edit_row(
 
     let priority_inputs: String = model_keys
         .iter()
-        .map(|mk| match priority_value(settings, agent, mk) {
+        .map(|mk| match priority_value(settings, agent, mk, now) {
             None => r#"<td class="unavail">-</td>"#.to_string(),
             Some(p) => {
                 let p_str = if p == 0 { String::new() } else { p.to_string() };
@@ -289,12 +298,16 @@ fn render_edit_row(
     )
 }
 
-fn render_tbody(settings: &Settings, model_keys: &[String]) -> String {
+fn render_tbody(
+    settings: &Settings,
+    model_keys: &[String],
+    now: &chrono::DateTime<Local>,
+) -> String {
     settings
         .agents
         .iter()
         .enumerate()
-        .map(|(idx, agent)| render_agent_row(idx, agent, settings, model_keys))
+        .map(|(idx, agent)| render_agent_row(idx, agent, settings, model_keys, now))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -326,17 +339,18 @@ fn render_thead_model_cols(model_keys: &[String], sort_by: Option<&str>) -> Stri
     reason = "single-function HTML template, splitting would harm readability"
 )]
 fn render_full_page(settings: &Settings, model_keys: &[String], sort_by: Option<&str>) -> String {
+    let now = Local::now();
     let mut indexed: Vec<(usize, &AgentConfig)> = settings.agents.iter().enumerate().collect();
     if let Some(sk) = sort_by {
         indexed.sort_by_key(|(_, a)| {
-            std::cmp::Reverse(priority_value(settings, a, sk).unwrap_or(i32::MIN))
+            std::cmp::Reverse(priority_value(settings, a, sk, &now).unwrap_or(i32::MIN))
         });
     }
 
     let thead_model_cols = render_thead_model_cols(model_keys, sort_by);
     let tbody: String = indexed
         .iter()
-        .map(|(idx, agent)| render_agent_row(*idx, agent, settings, model_keys))
+        .map(|(idx, agent)| render_agent_row(*idx, agent, settings, model_keys, &now))
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -648,7 +662,14 @@ async fn edit_agent_handler(
         .get(idx)
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Agent not found".to_string()))?;
     let model_keys = collect_model_keys(&settings);
-    Ok(Html(render_edit_row(idx, agent, &settings, &model_keys)))
+    let now = Local::now();
+    Ok(Html(render_edit_row(
+        idx,
+        agent,
+        &settings,
+        &model_keys,
+        &now,
+    )))
 }
 
 async fn view_agent_handler(
@@ -661,7 +682,14 @@ async fn view_agent_handler(
         .get(idx)
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Agent not found".to_string()))?;
     let model_keys = collect_model_keys(&settings);
-    Ok(Html(render_agent_row(idx, agent, &settings, &model_keys)))
+    let now = Local::now();
+    Ok(Html(render_agent_row(
+        idx,
+        agent,
+        &settings,
+        &model_keys,
+        &now,
+    )))
 }
 
 async fn update_agent_handler(
@@ -723,7 +751,8 @@ async fn update_agent_handler(
     }
 
     let model_keys = collect_model_keys(&settings);
-    Ok(Html(render_tbody(&settings, &model_keys)))
+    let now = Local::now();
+    Ok(Html(render_tbody(&settings, &model_keys, &now)))
 }
 
 async fn add_agent_handler(State(state): State<SharedState>) -> HandlerResult {
@@ -740,7 +769,8 @@ async fn add_agent_handler(State(state): State<SharedState>) -> HandlerResult {
         pre_command: vec![],
     });
     let model_keys = collect_model_keys(&settings);
-    Ok(Html(render_tbody(&settings, &model_keys)))
+    let now = Local::now();
+    Ok(Html(render_tbody(&settings, &model_keys, &now)))
 }
 
 async fn delete_agent_handler(
@@ -753,7 +783,8 @@ async fn delete_agent_handler(
     }
     settings.agents.remove(idx);
     let model_keys = collect_model_keys(&settings);
-    Ok(Html(render_tbody(&settings, &model_keys)))
+    let now = Local::now();
+    Ok(Html(render_tbody(&settings, &model_keys, &now)))
 }
 
 async fn save_handler(State(state): State<SharedState>) -> HandlerResult {
