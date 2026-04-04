@@ -1,3 +1,4 @@
+use chrono::{DateTime, Local};
 use jsonc_parser::cst::{
     CstArray, CstContainerNode, CstInputValue, CstLeafNode, CstNode, CstObject, CstRootNode,
 };
@@ -124,6 +125,14 @@ pub struct PriorityRule {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     pub priority: i32,
+    /// Weekday ranges in "start-end" format (0=Sun, 1=Mon, ..., 6=Sat, inclusive).
+    /// e.g. `["1-5"]` means Monday through Friday.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weekdays: Option<Vec<String>>,
+    /// Hour ranges in "start-end" format, half-open [start, end), 0-48.
+    /// e.g. `["21-27"]` means 21:00 to 03:00 next day.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hours: Option<Vec<String>>,
 }
 
 fn command_to_provider(command: &str) -> Option<&str> {
@@ -187,6 +196,71 @@ impl PriorityRule {
         self.command == command
             && self.resolve_provider() == provider
             && self.model.as_deref() == model
+    }
+
+    /// Like [`matches`], but also evaluates `weekdays`/`hours` schedule conditions
+    /// against the given local timestamp.
+    #[must_use]
+    pub fn matches_at(
+        &self,
+        command: &str,
+        provider: Option<&str>,
+        model: Option<&str>,
+        now: &DateTime<Local>,
+    ) -> bool {
+        use chrono::{Datelike, Timelike};
+
+        if !self.matches(command, provider, model) {
+            return false;
+        }
+
+        let current_hour = now.hour();
+        let current_weekday = now.weekday().num_days_from_sunday(); // 0=Sun..6=Sat
+
+        // Check hours constraint (OR logic across multiple ranges)
+        if let Some(hour_ranges) = &self.hours {
+            let hour_matched = hour_ranges.iter().any(|range_str| {
+                let Some((start, end)) = parse_schedule_range(range_str) else {
+                    return false;
+                };
+                // Direct match: current_hour in [start, end)
+                if current_hour >= start && current_hour < end {
+                    weekday_in_ranges(current_weekday, self.weekdays.as_deref())
+                }
+                // Overnight match: (current_hour + 24) in [start, end)
+                else if end > 24 {
+                    let shifted = current_hour + 24;
+                    if shifted >= start && shifted < end {
+                        // Use previous day's weekday
+                        let prev_weekday = if current_weekday == 0 {
+                            6
+                        } else {
+                            current_weekday - 1
+                        };
+                        weekday_in_ranges(prev_weekday, self.weekdays.as_deref())
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            });
+            if !hour_matched {
+                return false;
+            }
+        } else if !weekday_in_ranges(current_weekday, self.weekdays.as_deref()) {
+            // No hours constraint; check weekdays alone if present
+            return false;
+        }
+
+        true
+    }
+
+    /// Returns the number of schedule axes constrained by this rule (0, 1, or 2).
+    /// Used for conflict resolution: rules with more constraints win over less specific ones.
+    #[must_use]
+    pub fn schedule_specificity(&self) -> u8 {
+        u8::from(self.weekdays.is_some()) + u8::from(self.hours.is_some())
     }
 }
 
@@ -404,23 +478,107 @@ fn strip_trailing_commas(s: &str) -> String {
     result
 }
 
+/// Parse a schedule range string like "start-end" into `(start, end)`.
+/// Returns `None` if the string is not parseable.
+/// Validation (start < end, bounds) is done separately in `validate_priority_schedule`.
+fn parse_schedule_range(s: &str) -> Option<(u32, u32)> {
+    let (start_str, end_str) = s.split_once('-')?;
+    let start: u32 = start_str.parse().ok()?;
+    let end: u32 = end_str.parse().ok()?;
+    Some((start, end))
+}
+
+/// Returns `true` if `weekday` falls within any range in `ranges`, or if `ranges` is `None`.
+fn weekday_in_ranges(weekday: u32, ranges: Option<&[String]>) -> bool {
+    if let Some(wd_ranges) = ranges {
+        wd_ranges.iter().any(|wd_str| {
+            let Some((ws, we)) = parse_schedule_range(wd_str) else {
+                return false;
+            };
+            weekday >= ws && weekday <= we
+        })
+    } else {
+        true
+    }
+}
+
 impl Settings {
+    /// Evaluates schedule conditions against `now`.
+    /// Among all matching rules, the one with the highest schedule specificity wins;
+    /// ties are broken by first occurrence (stable, original-order compatible).
     #[must_use]
-    pub fn priority_for(&self, agent: &AgentConfig, model: Option<&str>) -> i32 {
-        self.priority_for_components(&agent.command, agent.resolve_provider(), model)
+    pub fn priority_for_at(
+        &self,
+        agent: &AgentConfig,
+        model: Option<&str>,
+        now: &DateTime<Local>,
+    ) -> i32 {
+        self.priority_for_components_at(&agent.command, agent.resolve_provider(), model, now)
     }
 
+    /// Among all matching rules, the one with the highest schedule specificity wins;
+    /// ties are broken by first occurrence (stable, original-order compatible).
     #[must_use]
-    pub fn priority_for_components(
+    pub fn priority_for_components_at(
         &self,
         command: &str,
         provider: Option<&str>,
         model: Option<&str>,
+        now: &DateTime<Local>,
     ) -> i32 {
+        // Among all matching rules, pick the one with the highest schedule_specificity.
+        // In case of a tie, the first occurrence wins (stable, original-order compatible).
         self.priority
             .iter()
-            .find(|rule| rule.matches(command, provider, model))
+            .filter(|rule| rule.matches_at(command, provider, model, now))
+            .fold(None::<&PriorityRule>, |best, rule| match best {
+                None => Some(rule),
+                Some(b) if rule.schedule_specificity() > b.schedule_specificity() => Some(rule),
+                Some(b) => Some(b),
+            })
             .map_or(0, |rule| rule.priority)
+    }
+
+    fn validate_priority_schedule(&self) -> Result<(), Box<dyn std::error::Error>> {
+        for rule in &self.priority {
+            if let Some(hour_ranges) = &rule.hours {
+                for range_str in hour_ranges {
+                    let (start, end) = parse_schedule_range(range_str)
+                        .ok_or_else(|| format!("invalid hours range: {range_str:?}"))?;
+                    if start >= end {
+                        return Err(format!(
+                            "invalid hours range {range_str:?}: start must be less than end"
+                        )
+                        .into());
+                    }
+                    if end > 48 {
+                        return Err(format!(
+                            "invalid hours range {range_str:?}: end must not exceed 48"
+                        )
+                        .into());
+                    }
+                }
+            }
+            if let Some(wd_ranges) = &rule.weekdays {
+                for range_str in wd_ranges {
+                    let (start, end) = parse_schedule_range(range_str)
+                        .ok_or_else(|| format!("invalid weekdays range: {range_str:?}"))?;
+                    if start > end {
+                        return Err(format!(
+                            "invalid weekdays range {range_str:?}: start must not exceed end"
+                        )
+                        .into());
+                    }
+                    if end > 6 {
+                        return Err(format!(
+                            "invalid weekdays range {range_str:?}: end must not exceed 6"
+                        )
+                        .into());
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// # Errors
@@ -443,6 +601,7 @@ impl Settings {
         std::io::Read::read_to_string(&mut stripped, &mut json_str)?;
         let clean = strip_trailing_commas(&json_str);
         let mut settings: Settings = serde_json::from_str(&clean)?;
+        settings.validate_priority_schedule()?;
         settings.original_text = Some(content);
         Ok(settings)
     }
@@ -505,6 +664,8 @@ impl Settings {
             provider,
             model,
             priority,
+            weekdays: None,
+            hours: None,
         });
     }
 
@@ -531,6 +692,21 @@ impl Settings {
         }
         Ok(dir.join("settings.json"))
     }
+}
+
+/// Construct a local `DateTime` for testing without DST ambiguity (January = no DST).
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test helper")]
+pub(crate) fn make_local_dt(year: i32, month: u32, day: u32, hour: u32) -> DateTime<Local> {
+    use chrono::TimeZone;
+    let naive = chrono::NaiveDateTime::new(
+        chrono::NaiveDate::from_ymd_opt(year, month, day).unwrap(),
+        chrono::NaiveTime::from_hms_opt(hour, 0, 0).unwrap(),
+    );
+    Local
+        .from_local_datetime(&naive)
+        .single()
+        .unwrap_or_else(|| Local.from_local_datetime(&naive).latest().unwrap())
 }
 
 #[cfg(test)]
@@ -571,6 +747,8 @@ mod tests {
                 provider: Some(ProviderConfig::Explicit("copilot".to_string())),
                 model: Some("high".to_string()),
                 priority: 100,
+                weekdays: None,
+                hours: None,
             }
         );
         assert_eq!(
@@ -580,6 +758,8 @@ mod tests {
                 provider: Some(ProviderConfig::None),
                 model: Some("medium".to_string()),
                 priority: 25,
+                weekdays: None,
+                hours: None,
             }
         );
         Ok(())
@@ -713,10 +893,14 @@ mod tests {
     fn test_priority_defaults_to_zero_when_no_rule_matches() -> TestResult {
         let json = r#"{"priority": [{"command": "claude", "model": "high", "priority": 10}], "agents": [{"command": "codex"}]}"#;
         let settings: Settings = serde_json::from_str(json)?;
+        let now = make_local_dt(2024, 1, 8, 10);
 
-        assert_eq!(settings.priority_for(&settings.agents[0], Some("high")), 0);
         assert_eq!(
-            settings.priority_for_components("claude", Some("claude"), None),
+            settings.priority_for_at(&settings.agents[0], Some("high"), &now),
+            0
+        );
+        assert_eq!(
+            settings.priority_for_components_at("claude", Some("claude"), None, &now),
             0
         );
         Ok(())
@@ -731,8 +915,12 @@ mod tests {
             "agents": [{"command": "claude"}]
         }"#;
         let settings: Settings = serde_json::from_str(json)?;
+        let now = make_local_dt(2024, 1, 8, 10);
 
-        assert_eq!(settings.priority_for(&settings.agents[0], Some("high")), 42);
+        assert_eq!(
+            settings.priority_for_at(&settings.agents[0], Some("high"), &now),
+            42
+        );
         Ok(())
     }
 
@@ -745,9 +933,10 @@ mod tests {
             "agents": [{"command": "claude", "provider": null}]
         }"#;
         let settings: Settings = serde_json::from_str(json)?;
+        let now = make_local_dt(2024, 1, 8, 10);
 
         assert_eq!(
-            settings.priority_for(&settings.agents[0], Some("medium")),
+            settings.priority_for_at(&settings.agents[0], Some("medium"), &now),
             25
         );
         Ok(())
@@ -766,12 +955,16 @@ mod tests {
             ]
         }"#;
         let settings: Settings = serde_json::from_str(json)?;
+        let now = make_local_dt(2024, 1, 8, 10);
 
         assert_eq!(
-            settings.priority_for(&settings.agents[0], Some("high")),
+            settings.priority_for_at(&settings.agents[0], Some("high"), &now),
             i32::MAX
         );
-        assert_eq!(settings.priority_for(&settings.agents[1], None), i32::MIN);
+        assert_eq!(
+            settings.priority_for_at(&settings.agents[1], None, &now),
+            i32::MIN
+        );
         Ok(())
     }
 
@@ -1407,6 +1600,640 @@ mod tests {
 
         assert_eq!(settings.agents[0].resolve_provider(), Some("kiro"));
         assert_eq!(settings.agents[0].resolve_domain(), None);
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // helpers for schedule tests
+    // -----------------------------------------------------------------------
+
+    fn make_scheduled_rule(
+        command: &str,
+        priority: i32,
+        weekdays: Option<Vec<&str>>,
+        hours: Option<Vec<&str>>,
+    ) -> PriorityRule {
+        PriorityRule {
+            command: command.to_string(),
+            provider: None,
+            model: None,
+            priority,
+            weekdays: weekdays.map(|v| {
+                v.into_iter()
+                    .map(std::string::ToString::to_string)
+                    .collect()
+            }),
+            hours: hours.map(|v| {
+                v.into_iter()
+                    .map(std::string::ToString::to_string)
+                    .collect()
+            }),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // PriorityRule schedule fields: serde
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_priority_rule_deserializes_weekdays_and_hours() -> TestResult {
+        // Given: a priority rule JSON with weekdays and hours
+        let json = r#"{
+            "priority": [{
+                "command": "codex",
+                "priority": 200,
+                "weekdays": ["1-5"],
+                "hours": ["21-27"]
+            }],
+            "agents": []
+        }"#;
+
+        // When: parsed
+        let settings: Settings = serde_json::from_str(json)?;
+
+        // Then: fields are populated correctly
+        assert_eq!(settings.priority[0].weekdays, Some(vec!["1-5".to_string()]));
+        assert_eq!(settings.priority[0].hours, Some(vec!["21-27".to_string()]));
+        Ok(())
+    }
+
+    #[test]
+    fn test_priority_rule_weekdays_hours_absent_defaults_to_none() -> TestResult {
+        // Given: a priority rule without weekdays/hours
+        let json = r#"{"priority": [{"command": "codex", "priority": 50}], "agents": []}"#;
+
+        // When: parsed
+        let settings: Settings = serde_json::from_str(json)?;
+
+        // Then: optional schedule fields are None
+        assert_eq!(settings.priority[0].weekdays, None);
+        assert_eq!(settings.priority[0].hours, None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_priority_rule_serializes_without_schedule_fields_when_none() -> TestResult {
+        // Given: a rule with no schedule fields
+        let rule = make_scheduled_rule("codex", 50, None, None);
+        let settings = Settings {
+            priority: vec![rule],
+            agents: vec![],
+            original_text: None,
+        };
+
+        // When: serialized to JSON
+        let json = serde_json::to_string(&settings)?;
+        let val: serde_json::Value = serde_json::from_str(&json)?;
+
+        // Then: weekdays and hours fields are absent
+        assert!(
+            val["priority"][0]["weekdays"].is_null(),
+            "weekdays should be absent when None"
+        );
+        assert!(
+            val["priority"][0]["hours"].is_null(),
+            "hours should be absent when None"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_priority_rule_serializes_with_schedule_fields_when_some() -> TestResult {
+        // Given: a rule with weekdays and hours
+        let rule = make_scheduled_rule("codex", 200, Some(vec!["1-5"]), Some(vec!["21-27"]));
+        let settings = Settings {
+            priority: vec![rule],
+            agents: vec![],
+            original_text: None,
+        };
+
+        // When: serialized to JSON
+        let json = serde_json::to_string(&settings)?;
+        let val: serde_json::Value = serde_json::from_str(&json)?;
+
+        // Then: weekdays and hours are present with correct values
+        assert_eq!(val["priority"][0]["weekdays"], serde_json::json!(["1-5"]));
+        assert_eq!(val["priority"][0]["hours"], serde_json::json!(["21-27"]));
+        Ok(())
+    }
+
+    #[test]
+    fn test_priority_rule_multiple_hour_ranges_serialize_and_deserialize() -> TestResult {
+        // Given: multiple hour ranges
+        let json = r#"{
+            "priority": [{"command": "codex", "priority": 100, "hours": ["1-7", "21-27"]}],
+            "agents": []
+        }"#;
+
+        // When: parsed
+        let settings: Settings = serde_json::from_str(json)?;
+
+        // Then: both ranges are preserved
+        assert_eq!(
+            settings.priority[0].hours,
+            Some(vec!["1-7".to_string(), "21-27".to_string()])
+        );
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Range validation on load
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_load_rejects_hours_range_where_start_equals_end() -> TestResult {
+        // Given: hours range "7-7" where start == end (invalid: not start < end)
+        let json = r#"{"priority": [{"command": "codex", "priority": 50, "hours": ["7-7"]}], "agents": []}"#;
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), json)?;
+
+        // When/Then: load returns an error
+        let result = Settings::load(Some(tmp.path()));
+        assert!(
+            result.is_err(),
+            "expected load error for hours range where start == end"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_rejects_hours_range_where_start_exceeds_end() -> TestResult {
+        // Given: hours range "10-5" where start > end (invalid)
+        let json = r#"{"priority": [{"command": "codex", "priority": 50, "hours": ["10-5"]}], "agents": []}"#;
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), json)?;
+
+        // When/Then: load returns an error
+        let result = Settings::load(Some(tmp.path()));
+        assert!(
+            result.is_err(),
+            "expected load error for hours range where start > end"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_rejects_hours_end_exceeds_48() -> TestResult {
+        // Given: hours end value 49 which exceeds the maximum of 48
+        let json = r#"{"priority": [{"command": "codex", "priority": 50, "hours": ["20-49"]}], "agents": []}"#;
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), json)?;
+
+        // When/Then: load returns an error
+        let result = Settings::load(Some(tmp.path()));
+        assert!(result.is_err(), "expected load error for hours end > 48");
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_rejects_weekday_range_where_start_exceeds_end() -> TestResult {
+        // Given: weekdays range "5-2" where start > end
+        let json = r#"{"priority": [{"command": "codex", "priority": 50, "weekdays": ["5-2"]}], "agents": []}"#;
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), json)?;
+
+        // When/Then: load returns an error
+        let result = Settings::load(Some(tmp.path()));
+        assert!(
+            result.is_err(),
+            "expected load error for weekdays range where start > end"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_rejects_weekday_value_exceeds_6() -> TestResult {
+        // Given: weekdays range with end value 7 which is beyond Saturday (6)
+        let json = r#"{"priority": [{"command": "codex", "priority": 50, "weekdays": ["1-7"]}], "agents": []}"#;
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), json)?;
+
+        // When/Then: load returns an error
+        let result = Settings::load(Some(tmp.path()));
+        assert!(result.is_err(), "expected load error for weekday value > 6");
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_accepts_valid_hour_range_0_to_24() -> TestResult {
+        // Given: valid hours range "0-24"
+        let json = r#"{"priority": [{"command": "codex", "priority": 50, "hours": ["0-24"]}], "agents": []}"#;
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), json)?;
+
+        // When/Then: load succeeds
+        let result = Settings::load(Some(tmp.path()));
+        assert!(
+            result.is_ok(),
+            "expected load to succeed for valid hour range"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_accepts_valid_weekday_range_1_to_5() -> TestResult {
+        // Given: valid weekdays range "1-5" (Mon-Fri)
+        let json = r#"{"priority": [{"command": "codex", "priority": 50, "weekdays": ["1-5"]}], "agents": []}"#;
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), json)?;
+
+        // When/Then: load succeeds
+        let result = Settings::load(Some(tmp.path()));
+        assert!(
+            result.is_ok(),
+            "expected load to succeed for valid weekday range"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_accepts_overnight_hour_range_21_to_27() -> TestResult {
+        // Given: valid overnight hours range "21-27"
+        let json = r#"{"priority": [{"command": "codex", "priority": 200, "hours": ["21-27"]}], "agents": []}"#;
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), json)?;
+
+        // When/Then: load succeeds
+        let result = Settings::load(Some(tmp.path()));
+        assert!(
+            result.is_ok(),
+            "expected load to succeed for overnight hour range"
+        );
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // PriorityRule::matches_at
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_matches_at_no_schedule_always_matches_any_time() {
+        // Given: base rule with no weekdays/hours
+        let rule = make_scheduled_rule("codex", 50, None, None);
+        let monday_22h = make_local_dt(2024, 1, 8, 22);
+        let saturday_3h = make_local_dt(2024, 1, 13, 3);
+
+        // When/Then: matches at any time
+        assert!(rule.matches_at("codex", Some("codex"), None, &monday_22h));
+        assert!(rule.matches_at("codex", Some("codex"), None, &saturday_3h));
+    }
+
+    #[test]
+    fn test_matches_at_no_schedule_wrong_command_returns_false() {
+        // Given: rule for "codex" with no schedule
+        let rule = make_scheduled_rule("codex", 50, None, None);
+        let monday_22h = make_local_dt(2024, 1, 8, 22);
+
+        // When/Then: a different command does not match
+        assert!(!rule.matches_at("claude", Some("claude"), None, &monday_22h));
+    }
+
+    #[test]
+    fn test_matches_at_weekdays_matches_on_specified_weekday() {
+        // Given: rule restricted to Mon-Fri (weekdays "1-5")
+        let rule = make_scheduled_rule("codex", 200, Some(vec!["1-5"]), None);
+        // 2024-01-08 is Monday (weekday 1)
+        let monday = make_local_dt(2024, 1, 8, 10);
+
+        // When/Then: Monday is within "1-5"
+        assert!(rule.matches_at("codex", Some("codex"), None, &monday));
+    }
+
+    #[test]
+    fn test_matches_at_weekdays_no_match_on_off_day() {
+        // Given: rule restricted to Mon-Fri (weekdays "1-5")
+        let rule = make_scheduled_rule("codex", 200, Some(vec!["1-5"]), None);
+        // 2024-01-06 is Saturday (weekday 6)
+        let saturday = make_local_dt(2024, 1, 6, 10);
+
+        // When/Then: Saturday is NOT within "1-5"
+        assert!(!rule.matches_at("codex", Some("codex"), None, &saturday));
+    }
+
+    #[test]
+    fn test_matches_at_weekdays_sunday_included_in_0_to_0_range() {
+        // Given: rule restricted to only Sunday (weekdays "0-0")
+        let rule = make_scheduled_rule("codex", 200, Some(vec!["0-0"]), None);
+        // 2024-01-07 is Sunday (weekday 0)
+        let sunday = make_local_dt(2024, 1, 7, 10);
+        let monday = make_local_dt(2024, 1, 8, 10);
+
+        // When/Then
+        assert!(rule.matches_at("codex", Some("codex"), None, &sunday));
+        assert!(!rule.matches_at("codex", Some("codex"), None, &monday));
+    }
+
+    #[test]
+    fn test_matches_at_hours_matches_within_range() {
+        // Given: rule restricted to hours "21-27" (21:00-03:00)
+        let rule = make_scheduled_rule("codex", 200, None, Some(vec!["21-27"]));
+        let monday_22h = make_local_dt(2024, 1, 8, 22);
+
+        // When/Then: 22:00 is within [21, 27)
+        assert!(rule.matches_at("codex", Some("codex"), None, &monday_22h));
+    }
+
+    #[test]
+    fn test_matches_at_hours_no_match_outside_range() {
+        // Given: rule restricted to hours "21-27"
+        let rule = make_scheduled_rule("codex", 200, None, Some(vec!["21-27"]));
+        let monday_20h = make_local_dt(2024, 1, 8, 20);
+
+        // When/Then: 20:00 is NOT in [21, 27)
+        assert!(!rule.matches_at("codex", Some("codex"), None, &monday_20h));
+    }
+
+    #[test]
+    fn test_matches_at_hours_half_open_end_boundary_does_not_match() {
+        // Given: rule restricted to hours "21-24" (21:00 to midnight, half-open)
+        let rule = make_scheduled_rule("codex", 200, None, Some(vec!["21-24"]));
+        // At exactly hour 24 (= next day 00:00), direct match: 24 not in [21, 24)
+        // Cross-midnight: 24+0=24, not in [21, 24) either
+        let tuesday_0h = make_local_dt(2024, 1, 9, 0);
+
+        // When/Then: midnight (hour 0) is NOT matched by direct or cross-midnight path
+        // Cross-midnight: 24+0=24, half-open [21, 24) excludes 24
+        assert!(!rule.matches_at("codex", Some("codex"), None, &tuesday_0h));
+    }
+
+    #[test]
+    fn test_matches_at_hours_multiple_ranges_uses_or_logic() {
+        // Given: rule with two separate hour ranges "1-7" and "21-27"
+        let rule = make_scheduled_rule("codex", 200, None, Some(vec!["1-7", "21-27"]));
+        let monday_3h = make_local_dt(2024, 1, 8, 3);
+        let monday_22h = make_local_dt(2024, 1, 8, 22);
+        let monday_12h = make_local_dt(2024, 1, 8, 12);
+
+        // When/Then: both ranges match, middle of day does not
+        assert!(rule.matches_at("codex", Some("codex"), None, &monday_3h));
+        assert!(rule.matches_at("codex", Some("codex"), None, &monday_22h));
+        assert!(!rule.matches_at("codex", Some("codex"), None, &monday_12h));
+    }
+
+    #[test]
+    fn test_matches_at_overnight_range_matches_hours_in_next_day_morning() {
+        // Given: rule with hours "21-27" (21:00 Mon to 03:00 Tue)
+        let rule = make_scheduled_rule("codex", 200, None, Some(vec!["21-27"]));
+        // 2024-01-09 02:00 is Tuesday 02:00
+        // Cross-midnight check: previous day's hour = 24+2 = 26, which is in [21, 27)
+        let tuesday_2h = make_local_dt(2024, 1, 9, 2);
+
+        // When/Then: Tuesday 02:00 matches because 24+2=26 is in [21, 27)
+        assert!(rule.matches_at("codex", Some("codex"), None, &tuesday_2h));
+    }
+
+    #[test]
+    fn test_matches_at_overnight_range_does_not_match_at_boundary_end() {
+        // Given: rule with hours "21-27"
+        let rule = make_scheduled_rule("codex", 200, None, Some(vec!["21-27"]));
+        // 2024-01-09 03:00: cross-midnight check gives 24+3=27, which is NOT in [21, 27)
+        let tuesday_3h = make_local_dt(2024, 1, 9, 3);
+
+        // When/Then: Tuesday 03:00 does NOT match (27 excluded by half-open interval)
+        assert!(!rule.matches_at("codex", Some("codex"), None, &tuesday_3h));
+    }
+
+    #[test]
+    fn test_matches_at_overnight_with_weekday_uses_start_day_for_cross_midnight_hour() {
+        // Given: rule for Mon-Fri with hours "21-27"
+        // Monday 21:00 to Tuesday 03:00 should be active
+        let rule = make_scheduled_rule("codex", 200, Some(vec!["1-5"]), Some(vec!["21-27"]));
+        // Tuesday 02:00: cross-midnight → previous day is Monday (weekday 1), which is in "1-5"
+        let tuesday_2h = make_local_dt(2024, 1, 9, 2);
+
+        // When/Then: Tuesday 02:00 matches because it falls within Monday's 21-27 window
+        assert!(rule.matches_at("codex", Some("codex"), None, &tuesday_2h));
+    }
+
+    #[test]
+    fn test_matches_at_overnight_with_weekday_no_match_when_start_day_excluded() {
+        // Given: rule for Mon-Fri with hours "21-27"
+        // Saturday 21:00 to Sunday 03:00 should NOT be active (Saturday is not in 1-5)
+        let rule = make_scheduled_rule("codex", 200, Some(vec!["1-5"]), Some(vec!["21-27"]));
+        // Sunday 02:00: cross-midnight → previous day is Saturday (weekday 6), not in "1-5"
+        let sunday_2h = make_local_dt(2024, 1, 7, 2);
+
+        // When/Then: does not match
+        assert!(!rule.matches_at("codex", Some("codex"), None, &sunday_2h));
+    }
+
+    #[test]
+    fn test_matches_at_weekdays_and_hours_both_required_for_match() {
+        // Given: rule for Mon-Fri with hours "9-17"
+        let rule = make_scheduled_rule("codex", 200, Some(vec!["1-5"]), Some(vec!["9-17"]));
+        let monday_10h = make_local_dt(2024, 1, 8, 10); // Mon 10:00 → matches
+        let monday_20h = make_local_dt(2024, 1, 8, 20); // Mon 20:00 → wrong hour
+        let saturday_10h = make_local_dt(2024, 1, 13, 10); // Sat 10:00 → wrong day
+
+        // When/Then
+        assert!(rule.matches_at("codex", Some("codex"), None, &monday_10h));
+        assert!(!rule.matches_at("codex", Some("codex"), None, &monday_20h));
+        assert!(!rule.matches_at("codex", Some("codex"), None, &saturday_10h));
+    }
+
+    // -----------------------------------------------------------------------
+    // Settings::priority_for_at
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_priority_for_at_backward_compat_no_schedule_behaves_like_priority_for() -> TestResult {
+        // Given: rules without schedule fields (same as existing tests)
+        let json = r#"{
+            "priority": [
+                {"command": "claude", "model": "high", "priority": 42}
+            ],
+            "agents": [{"command": "claude"}]
+        }"#;
+        let settings: Settings = serde_json::from_str(json)?;
+        let now = make_local_dt(2024, 1, 8, 10);
+
+        // When: calling priority_for_at
+        let result =
+            settings.priority_for_components_at("claude", Some("claude"), Some("high"), &now);
+
+        // Then: same result as the original priority_for_components
+        assert_eq!(result, 42);
+        Ok(())
+    }
+
+    #[test]
+    fn test_priority_for_at_returns_zero_when_no_rule_matches() -> TestResult {
+        // Given: rule for different command
+        let json = r#"{"priority": [{"command": "codex", "priority": 50}], "agents": []}"#;
+        let settings: Settings = serde_json::from_str(json)?;
+        let now = make_local_dt(2024, 1, 8, 10);
+
+        // When/Then: no matching rule → 0
+        assert_eq!(
+            settings.priority_for_components_at("claude", Some("claude"), None, &now),
+            0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_priority_for_at_scheduled_rule_overrides_base_when_active() -> TestResult {
+        // Given: base rule (priority 50) and a higher-priority scheduled rule for Mon-Fri 21-27
+        let json = r#"{
+            "priority": [
+                {"command": "codex", "priority": 50},
+                {"command": "codex", "priority": 200, "weekdays": ["1-5"], "hours": ["21-27"]}
+            ],
+            "agents": []
+        }"#;
+        let settings: Settings = serde_json::from_str(json)?;
+        // 2024-01-08 22:00 = Monday 22:00 → active window
+        let active_time = make_local_dt(2024, 1, 8, 22);
+
+        // When: evaluating during active window
+        let result =
+            settings.priority_for_components_at("codex", Some("codex"), None, &active_time);
+
+        // Then: scheduled rule (200) overrides base rule (50)
+        assert_eq!(result, 200);
+        Ok(())
+    }
+
+    #[test]
+    fn test_priority_for_at_base_rule_active_when_scheduled_is_inactive() -> TestResult {
+        // Given: same rules as above
+        let json = r#"{
+            "priority": [
+                {"command": "codex", "priority": 50},
+                {"command": "codex", "priority": 200, "weekdays": ["1-5"], "hours": ["21-27"]}
+            ],
+            "agents": []
+        }"#;
+        let settings: Settings = serde_json::from_str(json)?;
+        // 2024-01-13 22:00 = Saturday 22:00 → outside Mon-Fri window
+        let inactive_time = make_local_dt(2024, 1, 13, 22);
+
+        // When: evaluating outside active window
+        let result =
+            settings.priority_for_components_at("codex", Some("codex"), None, &inactive_time);
+
+        // Then: base rule (50) is used
+        assert_eq!(result, 50);
+        Ok(())
+    }
+
+    #[test]
+    fn test_priority_for_at_most_specific_rule_wins_over_less_specific() -> TestResult {
+        // Given: three rules with different specificity for the same target
+        // - base rule (no schedule): priority 10
+        // - hours-only rule: priority 30
+        // - weekdays+hours rule: priority 50
+        let json = r#"{
+            "priority": [
+                {"command": "codex", "priority": 10},
+                {"command": "codex", "priority": 30, "hours": ["21-27"]},
+                {"command": "codex", "priority": 50, "weekdays": ["1-5"], "hours": ["21-27"]}
+            ],
+            "agents": []
+        }"#;
+        let settings: Settings = serde_json::from_str(json)?;
+        // Monday 22:00 → all three rules match
+        let monday_22h = make_local_dt(2024, 1, 8, 22);
+
+        // When: evaluating during the window all three match
+        let result = settings.priority_for_components_at("codex", Some("codex"), None, &monday_22h);
+
+        // Then: most specific rule (weekdays+hours, priority 50) wins
+        assert_eq!(result, 50);
+        Ok(())
+    }
+
+    #[test]
+    fn test_priority_for_at_same_specificity_first_rule_wins() -> TestResult {
+        // Given: two rules with same specificity (both hours-only), different priorities
+        let json = r#"{
+            "priority": [
+                {"command": "codex", "priority": 30, "hours": ["20-23"]},
+                {"command": "codex", "priority": 99, "hours": ["21-27"]}
+            ],
+            "agents": []
+        }"#;
+        let settings: Settings = serde_json::from_str(json)?;
+        // 22:00 matches both "20-23" and "21-27"
+        let time_22h = make_local_dt(2024, 1, 8, 22);
+
+        // When: both match with equal specificity
+        let result = settings.priority_for_components_at("codex", Some("codex"), None, &time_22h);
+
+        // Then: first rule wins (stable, order-compatible)
+        assert_eq!(result, 30);
+        Ok(())
+    }
+
+    #[test]
+    fn test_priority_for_at_hours_only_rule_matches_when_weekday_inactive() -> TestResult {
+        // Given: base rule and a hours-only rule (no weekday restriction)
+        let json = r#"{
+            "priority": [
+                {"command": "codex", "priority": 10},
+                {"command": "codex", "priority": 80, "hours": ["21-27"]}
+            ],
+            "agents": []
+        }"#;
+        let settings: Settings = serde_json::from_str(json)?;
+        // Saturday 22:00 → hours-only rule applies (no weekday restriction)
+        let saturday_22h = make_local_dt(2024, 1, 13, 22);
+
+        // When/Then: hours-only rule (80) wins over base rule (10)
+        let result =
+            settings.priority_for_components_at("codex", Some("codex"), None, &saturday_22h);
+        assert_eq!(result, 80);
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Save with schedule fields: JSONC comment preservation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_save_preserves_comments_with_weekdays_and_hours_fields() -> TestResult {
+        // Given: a JSONC file with comments and a scheduled priority rule
+        let jsonc = r#"{
+    // Scheduled priority overrides
+    "priority": [
+        // Base rule
+        {"command": "codex", "priority": 50},
+        // Nighttime boost
+        {"command": "codex", "priority": 200, "weekdays": ["1-5"], "hours": ["21-27"]}
+    ],
+    "agents": [{"command": "codex"}]
+}"#;
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), jsonc)?;
+
+        let mut settings = Settings::load(Some(tmp.path()))?;
+        // Modify priority to trigger CST save
+        settings.priority[0].priority = 60;
+        settings.save(Some(tmp.path()))?;
+
+        let content = std::fs::read_to_string(tmp.path())?;
+
+        // Then: comments are preserved
+        assert!(
+            content.contains("// Scheduled priority overrides"),
+            "top-level comment lost:\n{content}"
+        );
+        assert!(
+            content.contains("// Base rule"),
+            "base rule comment lost:\n{content}"
+        );
+        assert!(
+            content.contains("// Nighttime boost"),
+            "scheduled rule comment lost:\n{content}"
+        );
+        // And the updated priority value is present
+        assert!(
+            content.contains("60"),
+            "updated priority value missing:\n{content}"
+        );
+        // And the schedule fields are preserved
+        assert!(content.contains("21-27"), "hours field lost:\n{content}");
+        assert!(content.contains("1-5"), "weekdays field lost:\n{content}");
         Ok(())
     }
 }
