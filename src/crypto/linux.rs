@@ -1,5 +1,5 @@
 use crate::crypto::{CryptoError, Result};
-use aes::cipher::{BlockDecryptMut, KeyIvInit};
+use cbc::cipher::{BlockModeDecrypt, KeyIvInit};
 use hmac::{Hmac, KeyInit, Mac};
 use sha1::Sha1;
 
@@ -105,11 +105,12 @@ fn pbkdf2_hmac_sha1(password: &[u8], salt: &[u8], iterations: u32, output: &mut 
 }
 
 fn decrypt_aes_cbc(key: &[u8], encrypted: &[u8]) -> Result<String> {
-    let cipher = Aes128CbcDec::new(key.into(), IV.into());
+    let cipher = Aes128CbcDec::new_from_slices(key, IV)
+        .map_err(|e| CryptoError::DecryptionFailed(format!("Invalid key or IV length: {e}")))?;
 
     let mut buffer = encrypted.to_vec();
     let decrypted = cipher
-        .decrypt_padded_mut::<aes::cipher::block_padding::Pkcs7>(&mut buffer)
+        .decrypt_padded::<cbc::cipher::block_padding::Pkcs7>(&mut buffer)
         .map_err(|e| CryptoError::DecryptionFailed(format!("AES-CBC decryption failed: {e:?}")))?;
 
     String::from_utf8(decrypted.to_vec())
