@@ -767,6 +767,8 @@ async fn add_agent_handler(State(state): State<SharedState>) -> HandlerResult {
         openrouter_management_key: None,
         glm_api_key: None,
         pre_command: vec![],
+        active: None,
+        inactive: None,
     });
     let model_keys = collect_model_keys(&settings);
     let now = Local::now();

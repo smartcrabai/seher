@@ -110,6 +110,10 @@ pub struct AgentConfig {
     pub glm_api_key: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pre_command: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<ScheduleRule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inactive: Option<ScheduleRule>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
@@ -133,6 +137,28 @@ pub struct PriorityRule {
     /// e.g. `["21-27"]` means 21:00 to 03:00 next day.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hours: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+pub struct ScheduleRule {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weekdays: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hours: Option<Vec<String>>,
+}
+
+impl ScheduleRule {
+    #[must_use]
+    pub fn matches_at(&self, now: &DateTime<Local>) -> bool {
+        schedule_matches_at(self.weekdays.as_deref(), self.hours.as_deref(), now)
+    }
+
+    fn validate(&self, label: &str) -> Result<(), Box<dyn std::error::Error>> {
+        if self.weekdays.is_none() && self.hours.is_none() {
+            return Err(format!("{label}: must specify at least one of weekdays or hours").into());
+        }
+        validate_schedule_rule(self.weekdays.as_deref(), self.hours.as_deref(), label)
+    }
 }
 
 fn command_to_provider(command: &str) -> Option<&str> {
@@ -183,6 +209,18 @@ impl AgentConfig {
             .as_ref()
             .is_none_or(|m| m.contains_key(model_key))
     }
+
+    #[must_use]
+    pub fn is_active_at(&self, now: &DateTime<Local>) -> bool {
+        match (&self.active, &self.inactive) {
+            (Some(rule), None) => rule.matches_at(now),
+            (None, Some(rule)) => !rule.matches_at(now),
+            (None, None) => true,
+            (Some(active_rule), Some(inactive_rule)) => {
+                active_rule.matches_at(now) && !inactive_rule.matches_at(now)
+            }
+        }
+    }
 }
 
 impl PriorityRule {
@@ -208,52 +246,11 @@ impl PriorityRule {
         model: Option<&str>,
         now: &DateTime<Local>,
     ) -> bool {
-        use chrono::{Datelike, Timelike};
-
         if !self.matches(command, provider, model) {
             return false;
         }
 
-        let current_hour = now.hour();
-        let current_weekday = now.weekday().num_days_from_sunday(); // 0=Sun..6=Sat
-
-        // Check hours constraint (OR logic across multiple ranges)
-        if let Some(hour_ranges) = &self.hours {
-            let hour_matched = hour_ranges.iter().any(|range_str| {
-                let Some((start, end)) = parse_schedule_range(range_str) else {
-                    return false;
-                };
-                // Direct match: current_hour in [start, end)
-                if current_hour >= start && current_hour < end {
-                    weekday_in_ranges(current_weekday, self.weekdays.as_deref())
-                }
-                // Overnight match: (current_hour + 24) in [start, end)
-                else if end > 24 {
-                    let shifted = current_hour + 24;
-                    if shifted >= start && shifted < end {
-                        // Use previous day's weekday
-                        let prev_weekday = if current_weekday == 0 {
-                            6
-                        } else {
-                            current_weekday - 1
-                        };
-                        weekday_in_ranges(prev_weekday, self.weekdays.as_deref())
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            });
-            if !hour_matched {
-                return false;
-            }
-        } else if !weekday_in_ranges(current_weekday, self.weekdays.as_deref()) {
-            // No hours constraint; check weekdays alone if present
-            return false;
-        }
-
-        true
+        schedule_matches_at(self.weekdays.as_deref(), self.hours.as_deref(), now)
     }
 
     /// Returns the number of schedule axes constrained by this rule (0, 1, or 2).
@@ -278,6 +275,8 @@ impl Default for Settings {
                 openrouter_management_key: None,
                 glm_api_key: None,
                 pre_command: vec![],
+                active: None,
+                inactive: None,
             }],
             original_text: None,
         }
@@ -480,7 +479,7 @@ fn strip_trailing_commas(s: &str) -> String {
 
 /// Parse a schedule range string like "start-end" into `(start, end)`.
 /// Returns `None` if the string is not parseable.
-/// Validation (start < end, bounds) is done separately in `validate_priority_schedule`.
+/// Validation (start < end, bounds) is done separately in `validate_schedule_rule`.
 fn parse_schedule_range(s: &str) -> Option<(u32, u32)> {
     let (start_str, end_str) = s.split_once('-')?;
     let start: u32 = start_str.parse().ok()?;
@@ -500,6 +499,92 @@ fn weekday_in_ranges(weekday: u32, ranges: Option<&[String]>) -> bool {
     } else {
         true
     }
+}
+
+fn schedule_matches_at(
+    weekdays: Option<&[String]>,
+    hours: Option<&[String]>,
+    now: &DateTime<Local>,
+) -> bool {
+    use chrono::{Datelike, Timelike};
+
+    let current_hour = now.hour();
+    let current_weekday = now.weekday().num_days_from_sunday();
+
+    if let Some(hour_ranges) = hours {
+        hour_ranges.iter().any(|range_str| {
+            let Some((start, end)) = parse_schedule_range(range_str) else {
+                return false;
+            };
+            if current_hour >= start && current_hour < end {
+                weekday_in_ranges(current_weekday, weekdays)
+            } else if end > 24 {
+                let shifted = current_hour + 24;
+                if shifted >= start && shifted < end {
+                    let prev_weekday = (current_weekday + 6) % 7;
+                    weekday_in_ranges(prev_weekday, weekdays)
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        })
+    } else {
+        weekday_in_ranges(current_weekday, weekdays)
+    }
+}
+
+fn validate_schedule_rule(
+    weekdays: Option<&[String]>,
+    hours: Option<&[String]>,
+    label: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Hours use half-open [start, end) intervals, so start == end would be an empty range.
+    if let Some(hour_ranges) = hours {
+        if hour_ranges.is_empty() {
+            return Err(format!("hours array in {label} must not be empty").into());
+        }
+        for range_str in hour_ranges {
+            let (start, end) = parse_schedule_range(range_str)
+                .ok_or_else(|| format!("invalid hours range in {label}: {range_str:?}"))?;
+            if start >= end {
+                return Err(format!(
+                    "invalid hours range in {label} {range_str:?}: start must be less than end"
+                )
+                .into());
+            }
+            if end > 48 {
+                return Err(format!(
+                    "invalid hours range in {label} {range_str:?}: end must not exceed 48"
+                )
+                .into());
+            }
+        }
+    }
+    // Weekdays use inclusive [start, end] intervals, so start == end is a single day (valid).
+    if let Some(wd_ranges) = weekdays {
+        if wd_ranges.is_empty() {
+            return Err(format!("weekdays array in {label} must not be empty").into());
+        }
+        for range_str in wd_ranges {
+            let (start, end) = parse_schedule_range(range_str)
+                .ok_or_else(|| format!("invalid weekdays range in {label}: {range_str:?}"))?;
+            if start > end {
+                return Err(format!(
+                    "invalid weekdays range in {label} {range_str:?}: start must not exceed end"
+                )
+                .into());
+            }
+            if end > 6 {
+                return Err(format!(
+                    "invalid weekdays range in {label} {range_str:?}: end must not exceed 6"
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
 }
 
 impl Settings {
@@ -541,41 +626,29 @@ impl Settings {
 
     fn validate_priority_schedule(&self) -> Result<(), Box<dyn std::error::Error>> {
         for rule in &self.priority {
-            if let Some(hour_ranges) = &rule.hours {
-                for range_str in hour_ranges {
-                    let (start, end) = parse_schedule_range(range_str)
-                        .ok_or_else(|| format!("invalid hours range: {range_str:?}"))?;
-                    if start >= end {
-                        return Err(format!(
-                            "invalid hours range {range_str:?}: start must be less than end"
-                        )
-                        .into());
-                    }
-                    if end > 48 {
-                        return Err(format!(
-                            "invalid hours range {range_str:?}: end must not exceed 48"
-                        )
-                        .into());
-                    }
-                }
+            validate_schedule_rule(
+                rule.weekdays.as_deref(),
+                rule.hours.as_deref(),
+                &format!("priority rule for command {:?}", rule.command),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn validate_agent_schedules(&self) -> Result<(), Box<dyn std::error::Error>> {
+        for agent in &self.agents {
+            if agent.active.is_some() && agent.inactive.is_some() {
+                return Err(format!(
+                    "agent {:?}: cannot have both active and inactive schedules",
+                    agent.command
+                )
+                .into());
             }
-            if let Some(wd_ranges) = &rule.weekdays {
-                for range_str in wd_ranges {
-                    let (start, end) = parse_schedule_range(range_str)
-                        .ok_or_else(|| format!("invalid weekdays range: {range_str:?}"))?;
-                    if start > end {
-                        return Err(format!(
-                            "invalid weekdays range {range_str:?}: start must not exceed end"
-                        )
-                        .into());
-                    }
-                    if end > 6 {
-                        return Err(format!(
-                            "invalid weekdays range {range_str:?}: end must not exceed 6"
-                        )
-                        .into());
-                    }
-                }
+            if let Some(active) = &agent.active {
+                active.validate(&format!("agent {:?} active schedule", agent.command))?;
+            }
+            if let Some(inactive) = &agent.inactive {
+                inactive.validate(&format!("agent {:?} inactive schedule", agent.command))?;
             }
         }
         Ok(())
@@ -602,6 +675,7 @@ impl Settings {
         let clean = strip_trailing_commas(&json_str);
         let mut settings: Settings = serde_json::from_str(&clean)?;
         settings.validate_priority_schedule()?;
+        settings.validate_agent_schedules()?;
         settings.original_text = Some(content);
         Ok(settings)
     }
@@ -1350,6 +1424,8 @@ mod tests {
             openrouter_management_key: None,
             glm_api_key: None,
             pre_command: vec![],
+            active: None,
+            inactive: None,
         });
         settings.save(Some(tmp.path()))?;
 
@@ -2234,6 +2310,282 @@ mod tests {
         // And the schedule fields are preserved
         assert!(content.contains("21-27"), "hours field lost:\n{content}");
         assert!(content.contains("1-5"), "weekdays field lost:\n{content}");
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // AgentConfig active/inactive schedule tests
+    // -----------------------------------------------------------------------
+
+    fn make_agent_config_with_schedule(
+        command: &str,
+        active: Option<ScheduleRule>,
+        inactive: Option<ScheduleRule>,
+    ) -> AgentConfig {
+        AgentConfig {
+            command: command.to_string(),
+            args: vec![],
+            models: None,
+            arg_maps: HashMap::new(),
+            env: None,
+            provider: None,
+            openrouter_management_key: None,
+            glm_api_key: None,
+            pre_command: vec![],
+            active,
+            inactive,
+        }
+    }
+
+    fn make_schedule_rule(weekdays: Option<Vec<&str>>, hours: Option<Vec<&str>>) -> ScheduleRule {
+        ScheduleRule {
+            weekdays: weekdays.map(|v| {
+                v.into_iter()
+                    .map(std::string::ToString::to_string)
+                    .collect()
+            }),
+            hours: hours.map(|v| {
+                v.into_iter()
+                    .map(std::string::ToString::to_string)
+                    .collect()
+            }),
+        }
+    }
+
+    #[test]
+    fn test_is_active_at_no_schedule_always_active() {
+        let agent = make_agent_config_with_schedule("claude", None, None);
+        let monday_10h = make_local_dt(2024, 1, 8, 10);
+        let sunday_22h = make_local_dt(2024, 1, 7, 22);
+
+        assert!(agent.is_active_at(&monday_10h));
+        assert!(agent.is_active_at(&sunday_22h));
+    }
+
+    #[test]
+    fn test_is_active_at_active_within_schedule() {
+        let rule = make_schedule_rule(Some(vec!["1-5"]), Some(vec!["9-17"]));
+        let agent = make_agent_config_with_schedule("claude", Some(rule), None);
+        let monday_10h = make_local_dt(2024, 1, 8, 10);
+
+        assert!(agent.is_active_at(&monday_10h));
+    }
+
+    #[test]
+    fn test_is_active_at_active_outside_schedule() {
+        let rule = make_schedule_rule(Some(vec!["1-5"]), Some(vec!["9-17"]));
+        let agent = make_agent_config_with_schedule("claude", Some(rule), None);
+        let saturday_10h = make_local_dt(2024, 1, 13, 10);
+        let monday_20h = make_local_dt(2024, 1, 8, 20);
+
+        assert!(!agent.is_active_at(&saturday_10h));
+        assert!(!agent.is_active_at(&monday_20h));
+    }
+
+    #[test]
+    fn test_is_active_at_inactive_within_schedule() {
+        let rule = make_schedule_rule(Some(vec!["1-5"]), Some(vec!["9-17"]));
+        let agent = make_agent_config_with_schedule("claude", None, Some(rule));
+        let monday_10h = make_local_dt(2024, 1, 8, 10);
+
+        assert!(!agent.is_active_at(&monday_10h));
+    }
+
+    #[test]
+    fn test_is_active_at_inactive_outside_schedule() {
+        let rule = make_schedule_rule(Some(vec!["1-5"]), Some(vec!["9-17"]));
+        let agent = make_agent_config_with_schedule("claude", None, Some(rule));
+        let saturday_10h = make_local_dt(2024, 1, 13, 10);
+        let monday_20h = make_local_dt(2024, 1, 8, 20);
+
+        assert!(agent.is_active_at(&saturday_10h));
+        assert!(agent.is_active_at(&monday_20h));
+    }
+
+    #[test]
+    fn test_is_active_at_active_overnight_hours() {
+        let rule = make_schedule_rule(None, Some(vec!["21-27"]));
+        let agent = make_agent_config_with_schedule("claude", Some(rule), None);
+        let monday_22h = make_local_dt(2024, 1, 8, 22);
+        let tuesday_2h = make_local_dt(2024, 1, 9, 2);
+        let tuesday_3h = make_local_dt(2024, 1, 9, 3);
+
+        assert!(agent.is_active_at(&monday_22h));
+        assert!(agent.is_active_at(&tuesday_2h));
+        assert!(!agent.is_active_at(&tuesday_3h));
+    }
+
+    #[test]
+    fn test_is_active_at_active_weekday_overnight_hours() {
+        let rule = make_schedule_rule(Some(vec!["1-5"]), Some(vec!["21-27"]));
+        let agent = make_agent_config_with_schedule("claude", Some(rule), None);
+        let tuesday_2h = make_local_dt(2024, 1, 9, 2);
+        let sunday_2h = make_local_dt(2024, 1, 7, 2);
+
+        assert!(agent.is_active_at(&tuesday_2h));
+        assert!(!agent.is_active_at(&sunday_2h));
+    }
+
+    // -----------------------------------------------------------------------
+    // AgentConfig active/inactive validation tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_load_rejects_agent_with_both_active_and_inactive() -> TestResult {
+        let json = r#"{
+            "agents": [
+                {"command": "claude", "active": {"hours": ["9-17"]}, "inactive": {"hours": ["21-27"]}}
+            ]
+        }"#;
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), json)?;
+
+        let result = Settings::load(Some(tmp.path()));
+        assert!(
+            result.is_err(),
+            "expected error when both active and inactive are set"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_rejects_agent_active_hours_start_exceeds_end() -> TestResult {
+        let json = r#"{
+            "agents": [
+                {"command": "claude", "active": {"hours": ["17-9"]}}
+            ]
+        }"#;
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), json)?;
+
+        let result = Settings::load(Some(tmp.path()));
+        assert!(
+            result.is_err(),
+            "expected error for active hours where start > end"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_rejects_agent_active_hours_end_exceeds_48() -> TestResult {
+        let json = r#"{
+            "agents": [
+                {"command": "claude", "active": {"hours": ["20-49"]}}
+            ]
+        }"#;
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), json)?;
+
+        let result = Settings::load(Some(tmp.path()));
+        assert!(
+            result.is_err(),
+            "expected error for active hours where end > 48"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_rejects_agent_inactive_weekday_end_exceeds_6() -> TestResult {
+        let json = r#"{
+            "agents": [
+                {"command": "claude", "inactive": {"weekdays": ["1-7"]}}
+            ]
+        }"#;
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), json)?;
+
+        let result = Settings::load(Some(tmp.path()));
+        assert!(
+            result.is_err(),
+            "expected error for inactive weekdays where end > 6"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_accepts_agent_with_valid_active_schedule() -> TestResult {
+        let json = r#"{
+            "agents": [
+                {"command": "claude", "active": {"weekdays": ["1-5"], "hours": ["9-17"]}}
+            ]
+        }"#;
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), json)?;
+
+        let result = Settings::load(Some(tmp.path()));
+        assert!(result.is_ok(), "expected success for valid active schedule");
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_accepts_agent_with_valid_inactive_schedule() -> TestResult {
+        let json = r#"{
+            "agents": [
+                {"command": "claude", "inactive": {"weekdays": ["0-0"], "hours": ["21-27"]}}
+            ]
+        }"#;
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), json)?;
+
+        let result = Settings::load(Some(tmp.path()));
+        assert!(
+            result.is_ok(),
+            "expected success for valid inactive schedule"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_rejects_agent_with_empty_active_schedule_rule() -> TestResult {
+        let json = r#"{
+            "agents": [
+                {"command": "claude", "active": {}}
+            ]
+        }"#;
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), json)?;
+
+        let result = Settings::load(Some(tmp.path()));
+        assert!(
+            result.is_err(),
+            "expected error for empty active schedule with no weekdays or hours"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_rejects_agent_active_with_empty_hours_array() -> TestResult {
+        let json = r#"{
+            "agents": [
+                {"command": "claude", "active": {"hours": []}}
+            ]
+        }"#;
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), json)?;
+
+        let result = Settings::load(Some(tmp.path()));
+        assert!(
+            result.is_err(),
+            "expected error for active schedule with empty hours array"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_rejects_agent_active_with_empty_weekdays_array() -> TestResult {
+        let json = r#"{
+            "agents": [
+                {"command": "claude", "active": {"weekdays": []}}
+            ]
+        }"#;
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), json)?;
+
+        let result = Settings::load(Some(tmp.path()));
+        assert!(
+            result.is_err(),
+            "expected error for active schedule with empty weekdays array"
+        );
         Ok(())
     }
 }

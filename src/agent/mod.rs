@@ -557,6 +557,8 @@ mod tests {
                 openrouter_management_key: None,
                 glm_api_key: None,
                 pre_command: vec![],
+                active: None,
+                inactive: None,
             },
             vec![],
         )
@@ -692,6 +694,8 @@ mod tests {
                 openrouter_management_key: management_key.map(str::to_string),
                 glm_api_key: None,
                 pre_command: vec![],
+                active: None,
+                inactive: None,
             },
             vec![],
         )
@@ -709,6 +713,8 @@ mod tests {
                 openrouter_management_key: None,
                 glm_api_key: None,
                 pre_command,
+                active: None,
+                inactive: None,
             },
             vec![],
         )
@@ -778,6 +784,8 @@ mod tests {
                 openrouter_management_key: None,
                 glm_api_key: None,
                 pre_command: vec![],
+                active: None,
+                inactive: None,
             },
             vec![],
         )

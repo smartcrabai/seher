@@ -108,6 +108,14 @@
         "glm_api_key": {
           "type": "string",
           "description": "API key for GLM (Zhipu AI) provider. Required when provider is \"glm\"."
+        },
+        "active": {
+          "description": "If set, the agent is active only during the specified schedule; completely disabled outside it.",
+          "$ref": "#/$defs/scheduleRule"
+        },
+        "inactive": {
+          "description": "If set, the agent is completely disabled during the specified schedule; active otherwise.",
+          "$ref": "#/$defs/scheduleRule"
         }
       },
       "allOf": [
@@ -160,6 +168,22 @@
           "description": "Priority value. Higher values win when multiple agents are available.",
           "minimum": -2147483648,
           "maximum": 2147483647
+        }
+      },
+      "allOf": [{ "$ref": "#/$defs/scheduleRule" }]
+    },
+    "scheduleRule": {
+      "type": "object",
+      "properties": {
+        "weekdays": {
+          "type": "array",
+          "description": "Weekday ranges in 'start-end' format (0=Sun, 1=Mon, ..., 6=Sat, inclusive). e.g. ['1-5'] means Mon-Fri.",
+          "items": { "type": "string" }
+        },
+        "hours": {
+          "type": "array",
+          "description": "Hour ranges in 'start-end' format, half-open [start, end), 0-48. e.g. ['21-27'] means 21:00-03:00 next day.",
+          "items": { "type": "string" }
         }
       }
     }

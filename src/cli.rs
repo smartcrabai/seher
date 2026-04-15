@@ -134,6 +134,7 @@ fn candidate_indices_in_priority_order(
 ) -> Vec<usize> {
     let mut indices: Vec<(usize, i32)> = (0..agents.len())
         .filter(|&i| model.is_none_or(|key| agents[i].has_model(key)))
+        .filter(|&i| agents[i].config.is_active_at(now))
         .map(|i| (i, settings.priority_for_at(&agents[i].config, model, now)))
         .collect();
     indices.sort_by_key(|&(i, priority)| (Reverse(priority), i));
@@ -762,6 +763,8 @@ mod tests {
                 openrouter_management_key: None,
                 glm_api_key: None,
                 pre_command: vec![],
+                active: None,
+                inactive: None,
             },
             vec![],
         )
@@ -1020,6 +1023,8 @@ mod tests {
                 openrouter_management_key: None,
                 glm_api_key: None,
                 pre_command: vec![],
+                active: None,
+                inactive: None,
             },
             AgentConfig {
                 command: "codex".to_string(),
@@ -1031,6 +1036,8 @@ mod tests {
                 openrouter_management_key: None,
                 glm_api_key: None,
                 pre_command: vec![],
+                active: None,
+                inactive: None,
             },
         ];
         s
