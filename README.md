@@ -117,6 +117,10 @@ You can customize seher's behavior by creating `~/.config/seher/settings.json` o
 | `agents[].provider` | string or null | Rate limit provider override (optional, see below) |
 | `agents[].openrouter_management_key` | string | Management API key for OpenRouter (required when `provider` is `"openrouter"`) |
 | `agents[].glm_api_key` | string | API key for GLM (Zhipu AI) provider (required when `provider` is `"glm"`) |
+| `agents[].active` | object or null | Schedule during which the agent is **only** active; disabled outside the window (optional) |
+| `agents[].inactive` | object or null | Schedule during which the agent is **disabled**; active outside the window (optional) |
+| `agents[].active.weekdays` / `agents[].inactive.weekdays` | array of strings or null | Weekday ranges in `"start-end"` format (0=Sun, 1=Mon, …, 6=Sat, inclusive). e.g. `["1-5"]` for Mon–Fri |
+| `agents[].active.hours` / `agents[].inactive.hours` | array of strings or null | Hour ranges in `"start-end"` format, half-open `[start, end)`, 0–48. e.g. `["21-27"]` for 21:00–03:00 overnight |
 
 
 ### JSON Schema
@@ -280,3 +284,37 @@ For OpenCode Go, seher reads the local OpenCode history database at `~/.local/sh
 ```
 
 The `env` field specifies environment variables to inject when launching the agent. This is useful for switching API keys or base URLs to route a standard command (e.g. `claude`) to a different backend.
+
+### Per-agent schedules (`active` / `inactive`)
+
+Individual agents can be enabled or disabled based on time-of-day and day-of-week rules:
+
+- `active`: when set, the agent is **only** selectable during the specified schedule; it is disabled outside of it.
+- `inactive`: when set, the agent is disabled during the specified schedule; it is active at all other times.
+- Setting both `active` and `inactive` on the same agent is rejected at load time. Each rule must specify at least one of `weekdays` or `hours`.
+
+Both fields use the same `"start-end"` range format as `priority[].weekdays` / `priority[].hours`. `weekdays` are inclusive (0=Sun … 6=Sat); `hours` are half-open `[start, end)` in the 0–48 space so that values ≥ 24 wrap into the next calendar day (e.g. `"21-27"` covers 21:00–03:00).
+
+Agents disabled by their schedule are transparently excluded from selection, so seher will fall back to the next eligible agent.
+
+```jsonc
+{
+  "agents": [
+    // Only use this agent on weekday business hours (Mon–Fri, 09:00–18:00)
+    {
+      "command": "claude",
+      "active": {
+        "weekdays": ["1-5"],
+        "hours": ["9-18"]
+      }
+    },
+    // Never use this agent overnight (21:00–03:00)
+    {
+      "command": "codex",
+      "inactive": {
+        "hours": ["21-27"]
+      }
+    }
+  ]
+}
+```
