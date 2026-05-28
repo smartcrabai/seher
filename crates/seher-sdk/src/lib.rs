@@ -18,8 +18,8 @@ pub mod kiro;
 #[cfg(feature = "browser")]
 pub mod opencode_go;
 pub mod openrouter;
+pub mod sdk;
 pub mod warp;
-pub mod web;
 pub mod zai;
 
 #[cfg(feature = "browser")]
@@ -30,6 +30,6 @@ pub use claude::{ClaudeClient, UsageResponse, UsageWindow};
 #[cfg(feature = "browser")]
 pub use codex::{CodexClient, CodexRateLimit, CodexUsageResponse, CodexWindow};
 #[cfg(feature = "browser")]
-pub use config::{AgentConfig, PriorityRule, Settings};
+pub use config::{AgentConfig, ProviderConfig};
 #[cfg(feature = "browser")]
 pub use opencode_go::{OpencodeGoAuth, OpencodeGoUsageSnapshot, OpencodeGoUsageStore};

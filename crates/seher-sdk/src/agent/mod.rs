@@ -8,7 +8,7 @@ pub struct Agent {
     pub cookies: Vec<Cookie>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum AgentLimit {
     NotLimited,
     Limited { reset_time: Option<DateTime<Utc>> },
@@ -83,11 +83,6 @@ impl Agent {
     #[must_use]
     pub fn command(&self) -> &str {
         &self.config.command
-    }
-
-    #[must_use]
-    pub fn args(&self) -> &[String] {
-        &self.config.args
     }
 
     /// # Errors
@@ -439,86 +434,6 @@ impl Agent {
         }
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if spawning or waiting on the child process fails.
-    pub fn execute(
-        &self,
-        resolved_args: &[String],
-        extra_args: &[String],
-    ) -> std::io::Result<std::process::ExitStatus> {
-        if let Some((cmd, args)) = self.config.pre_command.split_first() {
-            let mut pre_cmd = std::process::Command::new(cmd);
-            pre_cmd.args(args);
-            if let Some(env) = &self.config.env {
-                pre_cmd.envs(env);
-            }
-            let status = pre_cmd.status()?;
-            if !status.success() {
-                return Ok(status);
-            }
-        }
-        let mut cmd = std::process::Command::new(self.command());
-        cmd.args(resolved_args);
-        cmd.args(extra_args);
-        if let Some(env) = &self.config.env {
-            cmd.envs(env);
-        }
-        cmd.status()
-    }
-
-    #[must_use]
-    pub fn has_model(&self, model_key: &str) -> bool {
-        self.config.has_model(model_key)
-    }
-
-    #[must_use]
-    pub fn resolved_args(&self, model: Option<&str>) -> Vec<String> {
-        const MODEL_PLACEHOLDER: &str = "{model}";
-        let mut args: Vec<String> = self
-            .config
-            .args
-            .iter()
-            .filter_map(|arg| {
-                if arg.contains(MODEL_PLACEHOLDER) {
-                    let model_key = model?;
-                    let replacement = self
-                        .config
-                        .models
-                        .as_ref()
-                        .and_then(|m| m.get(model_key))
-                        .map_or(model_key, |s| s.as_str());
-                    Some(arg.replace(MODEL_PLACEHOLDER, replacement))
-                } else {
-                    Some(arg.clone())
-                }
-            })
-            .collect();
-
-        // If models map is not set, pass --model <value> through as-is
-        if self.config.models.is_none()
-            && let Some(model_key) = model
-        {
-            args.push("--model".to_string());
-            args.push(model_key.to_string());
-        }
-
-        args
-    }
-
-    #[must_use]
-    pub fn mapped_args(&self, args: &[String]) -> Vec<String> {
-        args.iter()
-            .flat_map(|arg| {
-                self.config
-                    .arg_maps
-                    .get(arg.as_str())
-                    .map_or_else(|| std::slice::from_ref(arg), Vec::as_slice)
-            })
-            .cloned()
-            .collect()
-    }
-
     fn opencode_go_usage_snapshot(
         &self,
     ) -> Result<crate::opencode_go::OpencodeGoUsageSnapshot, Box<dyn std::error::Error>> {
@@ -541,91 +456,6 @@ mod tests {
     use super::*;
     use crate::codex::{CodexRateLimit, CodexWindow};
     use crate::config::AgentConfig;
-
-    fn make_agent(
-        models: Option<HashMap<String, String>>,
-        arg_maps: HashMap<String, Vec<String>>,
-    ) -> Agent {
-        Agent::new(
-            AgentConfig {
-                command: "claude".to_string(),
-                args: vec![],
-                models,
-                arg_maps,
-                env: None,
-                provider: None,
-                openrouter_management_key: None,
-                glm_api_key: None,
-                pre_command: vec![],
-                active: None,
-                inactive: None,
-            },
-            vec![],
-        )
-    }
-
-    #[test]
-    fn has_model_returns_true_when_models_is_none() {
-        let agent = make_agent(None, HashMap::new());
-        assert!(agent.has_model("high"));
-        assert!(agent.has_model("anything"));
-    }
-
-    #[test]
-    fn resolved_args_passthrough_when_models_is_none_with_model() {
-        let agent = make_agent(None, HashMap::new());
-        let args = agent.resolved_args(Some("high"));
-        assert_eq!(args, vec!["--model", "high"]);
-    }
-
-    #[test]
-    fn resolved_args_no_model_flag_when_models_is_none_without_model() {
-        let agent = make_agent(None, HashMap::new());
-        let args = agent.resolved_args(None);
-        assert!(!args.contains(&"--model".to_string()));
-    }
-
-    #[test]
-    fn mapped_args_passthrough_when_arg_maps_is_empty() {
-        let agent = make_agent(None, HashMap::new());
-        let args = vec!["--danger".to_string(), "fix bugs".to_string()];
-
-        assert_eq!(agent.mapped_args(&args), args);
-    }
-
-    #[test]
-    fn mapped_args_replaces_matching_tokens() {
-        let mut arg_maps = HashMap::new();
-        arg_maps.insert("--danger".to_string(), vec!["--yolo".to_string()]);
-        let agent = make_agent(None, arg_maps);
-
-        assert_eq!(
-            agent.mapped_args(&["--danger".to_string(), "fix bugs".to_string()]),
-            vec!["--yolo".to_string(), "fix bugs".to_string()]
-        );
-    }
-
-    #[test]
-    fn mapped_args_can_expand_to_multiple_tokens() {
-        let mut arg_maps = HashMap::new();
-        arg_maps.insert(
-            "--danger".to_string(),
-            vec![
-                "--permission-mode".to_string(),
-                "bypassPermissions".to_string(),
-            ],
-        );
-        let agent = make_agent(None, arg_maps);
-
-        assert_eq!(
-            agent.mapped_args(&["--danger".to_string(), "fix bugs".to_string()]),
-            vec![
-                "--permission-mode".to_string(),
-                "bypassPermissions".to_string(),
-                "fix bugs".to_string(),
-            ]
-        );
-    }
 
     #[test]
     fn codex_usage_entries_marks_blocking_window_when_only_top_level_limit_is_set() {
@@ -684,60 +514,15 @@ mod tests {
         Agent::new(
             AgentConfig {
                 command: "myai".to_string(),
-                args: vec![],
-                models: None,
-                arg_maps: HashMap::new(),
                 env: None,
                 provider: Some(crate::config::ProviderConfig::Explicit(
                     "openrouter".to_string(),
                 )),
                 openrouter_management_key: management_key.map(str::to_string),
                 glm_api_key: None,
-                pre_command: vec![],
-                active: None,
-                inactive: None,
             },
             vec![],
         )
-    }
-
-    fn make_agent_with_pre_command(pre_command: Vec<String>, main_command: &str) -> Agent {
-        Agent::new(
-            AgentConfig {
-                command: main_command.to_string(),
-                args: vec![],
-                models: None,
-                arg_maps: HashMap::new(),
-                env: None,
-                provider: None,
-                openrouter_management_key: None,
-                glm_api_key: None,
-                pre_command,
-                active: None,
-                inactive: None,
-            },
-            vec![],
-        )
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn execute_runs_main_command_when_pre_command_succeeds() -> TestResult {
-        // pre_command: true (always exits 0), main: true
-        let agent = make_agent_with_pre_command(vec!["true".to_string()], "true");
-        let status = agent.execute(&[], &[])?;
-        assert!(status.success());
-        Ok(())
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn execute_skips_main_command_when_pre_command_fails() -> TestResult {
-        // pre_command: false (always exits non-0), main: true
-        let agent = make_agent_with_pre_command(vec!["false".to_string()], "true");
-        let status = agent.execute(&[], &[])?;
-        assert!(!status.success());
-        Ok(())
     }
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -774,18 +559,12 @@ mod tests {
         Agent::new(
             AgentConfig {
                 command: "myai".to_string(),
-                args: vec![],
-                models: None,
-                arg_maps: HashMap::new(),
                 env: None,
                 provider: Some(crate::config::ProviderConfig::Explicit(
                     provider.to_string(),
                 )),
                 openrouter_management_key: None,
                 glm_api_key: None,
-                pre_command: vec![],
-                active: None,
-                inactive: None,
             },
             vec![],
         )
