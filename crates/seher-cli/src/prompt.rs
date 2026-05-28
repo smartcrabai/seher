@@ -58,3 +58,32 @@ pub fn edit_with_seed(seed: &str) -> Result<String, Box<dyn std::error::Error>> 
     }
     Ok(std::fs::read_to_string(tmp.path())?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trailing_words_are_joined_with_spaces() {
+        let r = resolve(&["hello".to_string(), "world".to_string()]);
+        assert_eq!(r.as_deref(), Some("hello world"));
+    }
+
+    #[test]
+    fn trailing_single_word_returns_that_word() {
+        let r = resolve(&["alone".to_string()]);
+        assert_eq!(r.as_deref(), Some("alone"));
+    }
+
+    #[test]
+    fn trailing_only_whitespace_returns_none() {
+        let r = resolve(&["   ".to_string(), "\t".to_string()]);
+        assert_eq!(r, None);
+    }
+
+    #[test]
+    fn trailing_surrounding_whitespace_is_trimmed() {
+        let r = resolve(&["  hi  ".to_string()]);
+        assert_eq!(r.as_deref(), Some("hi"));
+    }
+}

@@ -24,6 +24,7 @@ pub use cookies::{BrowserSession, provider_to_domain};
 #[cfg(feature = "browser")]
 pub use resolve::{
     AllAgentsLimitedError, Candidate, CookieProbe, LimitProbe, NoMatchingAgentError, PollOptions,
-    ProbeFuture, ResolveError, ResolveOptions, ScanOutcome, alias_limit_provider, build_candidates,
-    poll_for_agent, resolve_agent, resolve_agent_with_cookies, scan,
+    ProbeFuture, ResolveError, ResolveOptions, SUPPORTED_SDK_KINDS, ScanOutcome,
+    alias_limit_provider, build_candidates, is_supported_sdk, poll_for_agent, resolve_agent,
+    resolve_agent_with_cookies, scan, unsupported_sdk_providers,
 };

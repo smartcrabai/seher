@@ -120,6 +120,32 @@ pub struct Candidate {
     pub resolved: ResolvedAgent,
 }
 
+/// Supported `sdk` values that can actually be executed by this implementation.
+///
+/// `pi_agent_rust` is the sole in-process execution engine, so providers tagged
+/// with the seher-ts-only SDK kinds (`claude`, `claude-terminal`, `codex`,
+/// `copilot`, `cursor`, `kimi`, `opencode`) cannot be run here. The config
+/// still accepts them (so the same `config.yaml` works in both
+/// implementations); they are silently filtered out of the candidate list.
+pub const SUPPORTED_SDK_KINDS: &[&str] = &["pi"];
+
+#[must_use]
+pub fn is_supported_sdk(sdk: &str) -> bool {
+    SUPPORTED_SDK_KINDS.contains(&sdk)
+}
+
+/// Enumerate `(provider, sdk)` pairs from the YAML config whose `sdk` value is
+/// not executable by this implementation. Use to print a one-time warning at
+/// startup. Returns an empty Vec when every provider is runnable.
+#[must_use]
+pub fn unsupported_sdk_providers(cfg: &Config) -> Vec<(String, String)> {
+    cfg.providers
+        .iter()
+        .filter(|p| !is_supported_sdk(&p.sdk))
+        .map(|p| (p.provider.clone(), p.sdk.clone()))
+        .collect()
+}
+
 #[must_use]
 pub fn build_candidates(
     cfg: &Config,
@@ -133,6 +159,11 @@ pub fn build_candidates(
         .iter()
         .enumerate()
         .filter_map(|(i, entry)| {
+            // Drop providers whose `sdk` isn't executable here (e.g. seher-ts
+            // entries with `sdk: claude`). The same config.yaml is portable.
+            if !is_supported_sdk(&entry.sdk) {
+                return None;
+            }
             if let Some(p) = provider_filter
                 && entry.provider != p
             {
@@ -677,5 +708,243 @@ mod tests {
         });
         let cfg3 = synthesize_agent_config("glm", &e3);
         assert_eq!(cfg3.glm_api_key.as_deref(), Some("glmkey"));
+    }
+
+    #[test]
+    fn synthesize_agent_config_kimi_k2_uses_env_var() {
+        let mut e = entry("kimi-k2", "kimi-k2", None, &[("build", "k2", None)]);
+        e.api = Some(ProviderApi {
+            key: Some("kimikey".into()),
+            endpoint: None,
+        });
+        let cfg = synthesize_agent_config("kimi-k2", &e);
+        assert_eq!(
+            cfg.env
+                .as_ref()
+                .and_then(|m| m.get("KIMI_K2_API_KEY"))
+                .map(String::as_str),
+            Some("kimikey"),
+        );
+    }
+
+    #[test]
+    fn synthesize_agent_config_warp_uses_env_var() {
+        let mut e = entry("warp", "warp", None, &[("build", "warp", None)]);
+        e.api = Some(ProviderApi {
+            key: Some("wkey".into()),
+            endpoint: None,
+        });
+        let cfg = synthesize_agent_config("warp", &e);
+        assert_eq!(
+            cfg.env
+                .as_ref()
+                .and_then(|m| m.get("WARP_API_KEY"))
+                .map(String::as_str),
+            Some("wkey"),
+        );
+    }
+
+    #[test]
+    fn synthesize_agent_config_claude_codex_copilot_have_empty_env() {
+        // Cookie-based providers — synthesize doesn't inject any env, the cookies
+        // are fetched separately by the BrowserSession.
+        for p in ["claude", "codex", "copilot", "kiro"] {
+            let e = entry(p, p, None, &[("build", "m", None)]);
+            let cfg = synthesize_agent_config(p, &e);
+            assert!(cfg.env.is_none(), "expected no env for {p}");
+            assert!(cfg.openrouter_management_key.is_none());
+            assert!(cfg.glm_api_key.is_none());
+            assert_eq!(cfg.command, p);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // sdk-filter (non-pi providers are excluded from candidates)
+    // -----------------------------------------------------------------------
+
+    fn entry_with_sdk(
+        key: &str,
+        provider: &str,
+        sdk: &str,
+        models: &[(&str, &str, Option<i32>)],
+    ) -> ProviderEntry {
+        let mut e = entry(key, provider, None, models);
+        e.sdk = sdk.to_string();
+        e
+    }
+
+    #[test]
+    fn build_candidates_filters_out_non_pi_sdks() {
+        let c = cfg(vec![
+            entry_with_sdk("claude", "claude", "claude", &[("build", "opus", None)]),
+            entry_with_sdk("zai", "zai", "pi", &[("build", "anthropic/zai", None)]),
+            entry_with_sdk("codex", "codex", "codex", &[("build", "gpt", None)]),
+        ]);
+        let candidates = build_candidates(&c, "build", None, &[]);
+        let providers: Vec<&str> = candidates
+            .iter()
+            .map(|c| c.resolved.provider.as_str())
+            .collect();
+        assert_eq!(providers, vec!["zai"]);
+    }
+
+    #[test]
+    fn unsupported_sdk_providers_lists_non_pi_entries() {
+        let c = cfg(vec![
+            entry_with_sdk("claude", "claude", "claude", &[("build", "opus", None)]),
+            entry_with_sdk("zai", "zai", "pi", &[("build", "z", None)]),
+            entry_with_sdk("codex", "codex", "codex", &[("build", "gpt", None)]),
+            entry_with_sdk("copilot", "copilot", "copilot", &[("build", "x", None)]),
+        ]);
+        let mut list = unsupported_sdk_providers(&c);
+        list.sort();
+        assert_eq!(
+            list,
+            vec![
+                ("claude".to_string(), "claude".to_string()),
+                ("codex".to_string(), "codex".to_string()),
+                ("copilot".to_string(), "copilot".to_string()),
+            ],
+        );
+    }
+
+    #[test]
+    fn unsupported_sdk_providers_empty_when_all_pi() {
+        let c = cfg(vec![
+            entry_with_sdk("a", "a", "pi", &[("build", "anthropic/x", None)]),
+            entry_with_sdk("b", "b", "pi", &[("build", "openai/y", None)]),
+        ]);
+        assert!(unsupported_sdk_providers(&c).is_empty());
+    }
+
+    #[test]
+    fn is_supported_sdk_only_accepts_pi() {
+        assert!(is_supported_sdk("pi"));
+        assert!(!is_supported_sdk("claude"));
+        assert!(!is_supported_sdk("codex"));
+        assert!(!is_supported_sdk(""));
+    }
+
+    // -----------------------------------------------------------------------
+    // poll_for_agent cancel-signal handling
+    // -----------------------------------------------------------------------
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn poll_for_agent_returns_canceled_when_signal_preflipped() {
+        // cancel is already true before the first poll iteration → must short-circuit.
+        let c = cfg(vec![entry("a", "a", Some(1), &[("build", "x", None)])]);
+        let mut probe = MockProbe {
+            outcomes: HashMap::new(),
+        };
+        let mut opts = PollOptions::default();
+        opts.config = Some(c);
+        opts.cancel = Some(Arc::new(AtomicBool::new(true)));
+        let err = poll_for_agent(opts, &mut probe)
+            .await
+            .expect_err("should be canceled");
+        assert!(matches!(err, ResolveError::Canceled), "got: {err:?}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn poll_for_agent_returns_available_when_provider_clear() {
+        let c = cfg(vec![entry("a", "a", Some(1), &[("build", "x", None)])]);
+        let mut probe = MockProbe {
+            outcomes: HashMap::new(),
+        };
+        let mut opts = PollOptions::default();
+        opts.config = Some(c);
+        let resolved = poll_for_agent(opts, &mut probe).await.expect("ok");
+        assert_eq!(resolved.provider, "a");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn poll_for_agent_no_matching_when_provider_filter_misses() {
+        let c = cfg(vec![entry("a", "a", Some(1), &[("build", "x", None)])]);
+        let mut probe = MockProbe {
+            outcomes: HashMap::new(),
+        };
+        let mut opts = PollOptions::default();
+        opts.config = Some(c);
+        opts.provider_filter = Some("nope".to_string());
+        let err = poll_for_agent(opts, &mut probe)
+            .await
+            .expect_err("should fail");
+        assert!(matches!(err, ResolveError::NoMatching(_)), "got: {err:?}");
+    }
+
+    // -----------------------------------------------------------------------
+    // scan probe-error propagation
+    // -----------------------------------------------------------------------
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn scan_no_agents_carries_probe_error_messages() {
+        let c = cfg(vec![
+            entry("a", "a", Some(1), &[("build", "x", None)]),
+            entry("b", "b", Some(2), &[("build", "y", None)]),
+        ]);
+
+        struct AlwaysErr;
+        impl LimitProbe for AlwaysErr {
+            fn probe<'a>(
+                &'a mut self,
+                entry: &'a ProviderEntry,
+                _resolved: &'a ResolvedAgent,
+            ) -> ProbeFuture<'a> {
+                let p = entry.provider.clone();
+                Box::pin(async move {
+                    let msg: Box<dyn std::error::Error> = format!("boom: {p}").into();
+                    Err(msg)
+                })
+            }
+        }
+
+        let candidates = build_candidates(&c, "build", None, &[]);
+        let mut probe = AlwaysErr;
+        let outcome = scan(&candidates, &c.providers, &mut probe).await;
+        match outcome {
+            ScanOutcome::NoAgents { probe_errors } => {
+                assert_eq!(probe_errors.len(), 2);
+                assert!(
+                    probe_errors
+                        .iter()
+                        .any(|(p, m)| p == "a" && m.contains("boom: a"))
+                );
+                assert!(
+                    probe_errors
+                        .iter()
+                        .any(|(p, m)| p == "b" && m.contains("boom: b"))
+                );
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolve_agent_surfaces_probe_errors_in_message() {
+        let c = cfg(vec![entry("a", "a", Some(1), &[("build", "x", None)])]);
+
+        struct AlwaysErr;
+        impl LimitProbe for AlwaysErr {
+            fn probe<'a>(
+                &'a mut self,
+                _entry: &'a ProviderEntry,
+                _resolved: &'a ResolvedAgent,
+            ) -> ProbeFuture<'a> {
+                Box::pin(async move {
+                    let msg: Box<dyn std::error::Error> = "cookie read failed".into();
+                    Err(msg)
+                })
+            }
+        }
+
+        let mut probe = AlwaysErr;
+        let mut opts = ResolveOptions::default();
+        opts.config = Some(c);
+        let err = resolve_agent(opts, &mut probe)
+            .await
+            .expect_err("should fail");
+        let msg = err.to_string();
+        assert!(msg.contains("cookie read failed"), "got: {msg}");
+        assert!(msg.contains("probe failures"), "got: {msg}");
     }
 }

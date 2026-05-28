@@ -9,8 +9,6 @@ use std::path::{Path, PathBuf};
 
 use super::config::{Config, ConfigRaw};
 
-const SUPPORTED_SDK_KINDS: &[&str] = &["pi"];
-
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("Failed to read config file '{path}': {source}")]
@@ -69,15 +67,11 @@ pub fn load_config(override_path: Option<&Path>) -> Result<Config, ConfigError> 
 }
 
 fn validate(cfg: &Config) -> Result<(), ConfigError> {
+    // Note: `entry.sdk` is *not* validated here. Unknown sdk values (e.g. the
+    // seher-ts-only `claude` / `codex` / `copilot` / ...) are accepted so the
+    // same `config.yaml` works in both implementations; the resolve engine
+    // filters non-executable entries out and warns the user once at startup.
     for entry in &cfg.providers {
-        if !SUPPORTED_SDK_KINDS.contains(&entry.sdk.as_str()) {
-            return Err(ConfigError::Invalid(format!(
-                "Provider '{}': unknown sdk '{}' (supported: {})",
-                entry.key,
-                entry.sdk,
-                SUPPORTED_SDK_KINDS.join(", "),
-            )));
-        }
         if entry.models.is_empty() {
             return Err(ConfigError::Invalid(format!(
                 "Provider '{}' defines no models",
@@ -160,19 +154,26 @@ providers:
     }
 
     #[test]
-    fn rejects_unknown_sdk() -> TestResult {
+    fn accepts_unknown_sdk_for_cross_impl_portability() -> TestResult {
+        // seher-ts entries (sdk: claude / codex / copilot / kimi / cursor / opencode)
+        // must parse without error; they are filtered out at resolve time.
         let yaml = "
 providers:
-  bogus:
-    sdk: not-real
+  claude:
+    sdk: claude
     models:
-      build: x/y
+      build: opus-4.7
+  zai:
+    sdk: pi
+    models:
+      build: anthropic/zai-model
 ";
         let tmp = tempfile::NamedTempFile::new()?;
         std::fs::write(tmp.path(), yaml)?;
-        let err = load_config(Some(tmp.path())).expect_err("should reject");
-        let msg = format!("{err}");
-        assert!(msg.contains("unknown sdk"), "got: {msg}");
+        let cfg = load_config(Some(tmp.path()))?;
+        assert_eq!(cfg.providers.len(), 2);
+        assert_eq!(cfg.providers[0].sdk, "claude");
+        assert_eq!(cfg.providers[1].sdk, "pi");
         Ok(())
     }
 }
