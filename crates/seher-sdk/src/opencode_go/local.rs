@@ -7,15 +7,16 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use thiserror::Error;
 
+// Documented OpenCode Go plan caps: $12 / 5h, $30 / 7d, $60 / 30d (rolling).
 const FIVE_HOUR_LIMIT_USD: f64 = 12.0;
 const WEEKLY_LIMIT_USD: f64 = 30.0;
 const MONTHLY_LIMIT_USD: f64 = 60.0;
 
-// Env overrides for the per-window USD limits. opencode zen exposes no usage
-// API (the local DB has no quota state — see docs/Issue #10448), so this spend
-// heuristic is only an *estimate* against thresholds that may not match the
-// user's actual plan. These let the user tune the thresholds to their zen
-// monthly usage limit, or set a window to `0` to disable it entirely.
+// Env overrides for the per-window USD caps. OpenCode Go is tracked by summing
+// the per-message `cost` recorded in the local OpenCode DB over rolling windows
+// and comparing against the plan caps above — local-device tracking, not the
+// hosted console. These overrides let the user adjust the caps if the plan
+// changes, or set a window to `0` to disable it entirely.
 const ENV_FIVE_HOUR_LIMIT: &str = "SEHER_OPENCODE_5H_LIMIT_USD";
 const ENV_WEEKLY_LIMIT: &str = "SEHER_OPENCODE_WEEKLY_LIMIT_USD";
 const ENV_MONTHLY_LIMIT: &str = "SEHER_OPENCODE_MONTHLY_LIMIT_USD";

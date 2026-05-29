@@ -26,22 +26,8 @@ const PI_LIMIT_TOKENS: &[&str] = &[
     "quota",
 ];
 
-/// Phrases matched as a multi-word substring (lowercased). Includes opencode
-/// zen's credit-exhaustion wording ("usage exceeded" / "add credits" /
-/// "insufficient credits"), since zen has no usage API and only surfaces the
-/// limit as a run-time error when driven through pi's OpenAI-compatible path.
-const PI_LIMIT_PHRASES: &[&str] = &[
-    "rate limit",
-    "usage limit",
-    "usage exceeded",
-    "too many requests",
-    "add credits",
-    "insufficient credit",
-    "insufficient credits",
-    "out of credits",
-    "no credits",
-    "credit balance",
-];
+/// Phrases matched as a multi-word substring (lowercased).
+const PI_LIMIT_PHRASES: &[&str] = &["rate limit", "usage limit", "too many requests"];
 
 fn is_pi_limit(msg: &str) -> bool {
     let lower = msg.to_lowercase();
@@ -269,14 +255,5 @@ mod tests {
         assert!(!is_pi_limit("loaded squotahelper module"));
         // bare numeric 429 inside HTTP status text still matches (separated by space)
         assert!(is_pi_limit("status 429 returned"));
-    }
-
-    #[test]
-    fn detects_opencode_zen_credit_exhaustion() {
-        // opencode zen surfaces the limit as a credit error, not a "rate limit".
-        assert!(is_pi_limit("Free usage exceeded. Add credits to continue."));
-        assert!(is_pi_limit("Insufficient credits"));
-        assert!(is_pi_limit("You are out of credits"));
-        assert!(is_pi_limit("credit balance too low"));
     }
 }
