@@ -16,15 +16,17 @@ pub struct OpencodeGoUsageWindow {
 }
 
 impl OpencodeGoUsageWindow {
+    /// A `limit_usd <= 0` window is **disabled** (the user opted out of this
+    /// window via env): never limited, regardless of spend.
     #[must_use]
     pub fn is_limited(&self) -> bool {
-        self.spent_usd + LIMIT_EPSILON >= self.limit_usd
+        self.limit_usd > 0.0 && self.spent_usd + LIMIT_EPSILON >= self.limit_usd
     }
 
     #[must_use]
     pub fn utilization(&self) -> f64 {
         if self.limit_usd <= 0.0 {
-            100.0
+            0.0
         } else {
             self.spent_usd / self.limit_usd * 100.0
         }

@@ -7,27 +7,69 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use thiserror::Error;
 
+// Documented OpenCode Go plan caps: $12 / 5h, $30 / 7d, $60 / 30d (rolling).
 const FIVE_HOUR_LIMIT_USD: f64 = 12.0;
 const WEEKLY_LIMIT_USD: f64 = 30.0;
 const MONTHLY_LIMIT_USD: f64 = 60.0;
 
-const WINDOW_SPECS: [WindowSpec; 3] = [
-    WindowSpec {
+// Env overrides for the per-window USD caps. OpenCode Go is tracked by summing
+// the per-message `cost` recorded in the local OpenCode DB over rolling windows
+// and comparing against the plan caps above — local-device tracking, not the
+// hosted console. These overrides let the user adjust the caps if the plan
+// changes, or set a window to `0` to disable it entirely.
+const ENV_FIVE_HOUR_LIMIT: &str = "SEHER_OPENCODE_5H_LIMIT_USD";
+const ENV_WEEKLY_LIMIT: &str = "SEHER_OPENCODE_WEEKLY_LIMIT_USD";
+const ENV_MONTHLY_LIMIT: &str = "SEHER_OPENCODE_MONTHLY_LIMIT_USD";
+
+struct WindowDef {
+    entry_type: &'static str,
+    window_seconds: i64,
+    default_limit_usd: f64,
+    env_var: &'static str,
+}
+
+const WINDOW_DEFS: [WindowDef; 3] = [
+    WindowDef {
         entry_type: "five_hour_spend",
         window_seconds: 5 * 60 * 60,
-        limit_usd: FIVE_HOUR_LIMIT_USD,
+        default_limit_usd: FIVE_HOUR_LIMIT_USD,
+        env_var: ENV_FIVE_HOUR_LIMIT,
     },
-    WindowSpec {
+    WindowDef {
         entry_type: "weekly_spend",
         window_seconds: 7 * 24 * 60 * 60,
-        limit_usd: WEEKLY_LIMIT_USD,
+        default_limit_usd: WEEKLY_LIMIT_USD,
+        env_var: ENV_WEEKLY_LIMIT,
     },
-    WindowSpec {
+    WindowDef {
         entry_type: "monthly_spend",
         window_seconds: 30 * 24 * 60 * 60,
-        limit_usd: MONTHLY_LIMIT_USD,
+        default_limit_usd: MONTHLY_LIMIT_USD,
+        env_var: ENV_MONTHLY_LIMIT,
     },
 ];
+
+/// Resolve the effective USD limit for a window: the value of `env_var` if it
+/// parses as a finite `f64`, otherwise `default`. A parsed value of `0` (or
+/// negative) disables the window (never limited).
+fn resolve_limit(env_var: &str, default: f64) -> f64 {
+    std::env::var(env_var)
+        .ok()
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|v| v.is_finite())
+        .unwrap_or(default)
+}
+
+fn window_specs() -> Vec<WindowSpec> {
+    WINDOW_DEFS
+        .iter()
+        .map(|d| WindowSpec {
+            entry_type: d.entry_type,
+            window_seconds: d.window_seconds,
+            limit_usd: resolve_limit(d.env_var, d.default_limit_usd),
+        })
+        .collect()
+}
 
 const LIMIT_EPSILON: f64 = 1e-9;
 
@@ -207,9 +249,9 @@ impl OpencodeGoUsageStore {
         records: &[UsageRecord],
         credentials_available: bool,
     ) -> OpencodeGoUsageSnapshot {
-        let windows = WINDOW_SPECS
-            .iter()
-            .map(|spec| Self::window_from_records(now, records, *spec))
+        let windows = window_specs()
+            .into_iter()
+            .map(|spec| Self::window_from_records(now, records, spec))
             .collect();
 
         OpencodeGoUsageSnapshot {
@@ -236,7 +278,9 @@ impl OpencodeGoUsageStore {
             .map(|record| record.cost_usd)
             .sum::<f64>();
 
-        let resets_at = if spent_usd + LIMIT_EPSILON >= spec.limit_usd {
+        // A non-positive limit means the window is disabled (never limited).
+        let limited = spec.limit_usd > 0.0 && spent_usd + LIMIT_EPSILON >= spec.limit_usd;
+        let resets_at = if limited {
             let mut remaining = spent_usd;
             active_records.iter().find_map(|record| {
                 remaining -= record.cost_usd;
@@ -352,6 +396,51 @@ mod tests {
             monthly.resets_at,
             Some(records[0].completed_at + Duration::days(30))
         );
+    }
+
+    #[test]
+    fn disabled_window_is_never_limited() {
+        // limit_usd <= 0 means the window is disabled, even if spend is huge.
+        let now = Utc
+            .timestamp_millis_opt(10 * 60 * 60 * 1000)
+            .single()
+            .unwrap();
+        let records = vec![usage_record(9 * 60 * 60 * 1000, 999.0)];
+        let spec = WindowSpec {
+            entry_type: "five_hour_spend",
+            window_seconds: 5 * 60 * 60,
+            limit_usd: 0.0,
+        };
+        let w = OpencodeGoUsageStore::window_from_records(now, &records, spec);
+        assert!(!w.is_limited());
+        assert_eq!(w.resets_at, None);
+        assert_eq!(w.utilization(), 0.0);
+    }
+
+    #[test]
+    fn resolve_limit_uses_default_when_env_absent() {
+        // Use a unique var name unlikely to be set in the environment.
+        assert_eq!(
+            resolve_limit("SEHER_OPENCODE_TEST_UNSET_LIMIT_XYZ", 42.0),
+            42.0
+        );
+    }
+
+    #[test]
+    fn limited_window_above_threshold() {
+        let now = Utc
+            .timestamp_millis_opt(10 * 60 * 60 * 1000)
+            .single()
+            .unwrap();
+        let records = vec![usage_record(9 * 60 * 60 * 1000, 13.0)];
+        let spec = WindowSpec {
+            entry_type: "five_hour_spend",
+            window_seconds: 5 * 60 * 60,
+            limit_usd: 12.0,
+        };
+        let w = OpencodeGoUsageStore::window_from_records(now, &records, spec);
+        assert!(w.is_limited());
+        assert!(w.resets_at.is_some());
     }
 
     #[test]
