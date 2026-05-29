@@ -20,10 +20,10 @@ use crate::stream::{Outcome, drain_to_stdout};
 /// Returns a stringified error for resolve / timeout / non-limit pi errors.
 pub fn resolve_and_stream(
     rt: &tokio::runtime::Runtime,
-    prompt: String,
+    prompt: &str,
     args: &Args,
     mode_key: &str,
-    system_prompt: Option<String>,
+    system_prompt: Option<&str>,
     logger: &Logger,
 ) -> Result<String, String> {
     // Load config + detect browser session once; reuse across retry attempts.
@@ -44,8 +44,8 @@ pub fn resolve_and_stream(
         resolve_once(rt, args, mode_key, excluded, &config, &browser_session)
     };
     let stream_runner = |resolved: &ResolvedAgent| -> Outcome {
-        let runner = build_runner(resolved, system_prompt.clone());
-        let rx = runner.stream(prompt.clone());
+        let runner = build_runner(resolved, system_prompt.map(str::to_string));
+        let rx = runner.stream(prompt.to_string());
         drain_to_stdout(rx, args.timeout)
     };
     stream_with_retry(args.timeout, logger, resolver, stream_runner)
@@ -75,23 +75,23 @@ where
 {
     let mut excluded: Vec<String> = Vec::new();
     loop {
-        let resolved = resolver(&excluded)?;
+        let agent = resolver(&excluded)?;
         logger.info(&format!(
             "Selected provider: {} (pi/{})",
-            resolved.provider, resolved.model_id
+            agent.provider, agent.model_id
         ));
-        match stream_runner(&resolved) {
+        match stream_runner(&agent) {
             Outcome::Done(t) => return Ok(t),
             Outcome::Limit => {
                 logger.warn(&format!(
                     "Provider '{}' hit API limit; retrying with next provider...",
-                    resolved.provider
+                    agent.provider
                 ));
                 // Exclude by the resolved YAML provider name (matches what
                 // `resolve_agent` compares against), not by pi's provider id
                 // which lives in a different namespace.
-                if !excluded.contains(&resolved.provider) {
-                    excluded.push(resolved.provider.clone());
+                if !excluded.contains(&agent.provider) {
+                    excluded.push(agent.provider.clone());
                 }
             }
             Outcome::Error(message) => return Err(message),
@@ -114,12 +114,14 @@ fn resolve_once(
     config: &Config,
     session: &BrowserSession,
 ) -> Result<ResolvedAgent, String> {
-    let mut opts = ResolveOptions::default();
-    opts.mode_key = mode_key.to_string();
-    opts.provider_filter = args.provider.clone();
-    opts.config = Some(config.clone());
-    opts.exclude_providers = excluded.to_vec();
-    opts.quiet = args.quiet;
+    let opts = ResolveOptions {
+        mode_key: mode_key.to_string(),
+        provider_filter: args.provider.clone(),
+        config: Some(config.clone()),
+        exclude_providers: excluded.to_vec(),
+        quiet: args.quiet,
+        ..Default::default()
+    };
 
     let mut probe = CookieProbe { session };
     rt.block_on(async move { resolve_agent(opts, &mut probe).await })
@@ -160,11 +162,7 @@ fn env_api_key_for(provider: Option<&str>) -> Option<String> {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    reason = "tests may panic on unexpected fixtures"
-)]
+#[expect(clippy::expect_used, reason = "tests may panic on unexpected fixtures")]
 mod tests {
     use super::*;
     use seher::sdk::ResolvedSkillsConfig;

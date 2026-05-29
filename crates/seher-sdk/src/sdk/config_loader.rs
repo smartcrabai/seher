@@ -27,6 +27,11 @@ pub enum ConfigError {
 
 /// Resolve the YAML config path using TS parity rules. Returns `None` when no
 /// path is supplied and the default `~/.config/seher/config.yaml` does not exist.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::HomeNotSet`] when no override or `$SEHER_CONFIG` is set
+/// and the home directory cannot be determined.
 pub fn resolve_config_path(override_path: Option<&Path>) -> Result<Option<PathBuf>, ConfigError> {
     if let Some(p) = override_path {
         return Ok(Some(p.to_path_buf()));
@@ -91,11 +96,7 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    reason = "tests may panic on unexpected fixtures"
-)]
+#[expect(clippy::expect_used, reason = "tests may panic on unexpected fixtures")]
 mod tests {
     use super::*;
 

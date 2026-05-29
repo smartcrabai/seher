@@ -10,7 +10,7 @@ use crate::run_mode::resolve_and_stream;
 /// Stringified errors from resolution, timeout, or non-limit pi errors.
 pub fn run(
     rt: &tokio::runtime::Runtime,
-    prompt: String,
+    prompt: &str,
     args: &Args,
     logger: &Logger,
 ) -> Result<(), String> {

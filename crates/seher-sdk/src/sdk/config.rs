@@ -182,11 +182,7 @@ pub struct ResolvedAgent {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    reason = "tests may panic on unexpected fixtures"
-)]
+#[expect(clippy::expect_used, reason = "tests may panic on unexpected fixtures")]
 mod tests {
     use super::*;
 
@@ -284,7 +280,7 @@ providers:
             skills: None,
             models: IndexMap::new(),
         };
-        assert_eq!(cfg.resolve_skills(&entry).include_claude, true);
+        assert!(cfg.resolve_skills(&entry).include_claude);
     }
 
     #[test]
@@ -307,6 +303,6 @@ providers:
             }),
             models: IndexMap::new(),
         };
-        assert_eq!(cfg.resolve_skills(&entry).include_claude, true);
+        assert!(cfg.resolve_skills(&entry).include_claude);
     }
 }

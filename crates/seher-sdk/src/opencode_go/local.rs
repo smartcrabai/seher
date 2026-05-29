@@ -414,15 +414,15 @@ mod tests {
         let w = OpencodeGoUsageStore::window_from_records(now, &records, spec);
         assert!(!w.is_limited());
         assert_eq!(w.resets_at, None);
-        assert_eq!(w.utilization(), 0.0);
+        assert!(w.utilization().abs() < f64::EPSILON);
     }
 
     #[test]
     fn resolve_limit_uses_default_when_env_absent() {
         // Use a unique var name unlikely to be set in the environment.
-        assert_eq!(
-            resolve_limit("SEHER_OPENCODE_TEST_UNSET_LIMIT_XYZ", 42.0),
-            42.0
+        assert!(
+            (resolve_limit("SEHER_OPENCODE_TEST_UNSET_LIMIT_XYZ", 42.0) - 42.0).abs()
+                < f64::EPSILON
         );
     }
 

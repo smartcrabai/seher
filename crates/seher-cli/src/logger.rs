@@ -18,6 +18,10 @@ impl Logger {
         }
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "method for call-site symmetry with info(); warnings always print regardless of quiet"
+    )]
     pub fn warn(&self, msg: &str) {
         let stderr = std::io::stderr();
         let mut e = stderr.lock();

@@ -4,6 +4,7 @@ use std::io::{IsTerminal, Read, Write};
 ///   1. trailing positional args → join with space
 ///   2. stdin (when not a TTY) → use trimmed content
 ///   3. else, open `$EDITOR` to type
+///
 /// Returns `None` if the resolved prompt is empty.
 pub fn resolve(trailing: &[String]) -> Option<String> {
     if !trailing.is_empty() {

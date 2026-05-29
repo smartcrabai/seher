@@ -57,11 +57,6 @@ impl AgentConfig {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    reason = "tests may panic on unexpected fixtures"
-)]
 mod tests {
     use super::*;
 

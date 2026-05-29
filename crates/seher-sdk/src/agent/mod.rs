@@ -413,21 +413,18 @@ impl Agent {
         // only sees this machine's spend and badly undercounts a multi-device
         // account. Fall back to the local snapshot if the remote fetch fails
         // (no cookie, signed out, network error).
-        if !self.cookies.is_empty() {
-            match crate::opencode_go::fetch_remote_usage(&self.cookies).await {
-                Ok(usage) => {
-                    return Ok(if usage.is_limited() {
-                        AgentLimit::Limited {
-                            reset_time: usage.reset_time(Utc::now()),
-                        }
-                    } else {
-                        AgentLimit::NotLimited
-                    });
+        // Fall through to the local heuristic if the remote fetch fails
+        // (no cookie, signed out, network error).
+        if !self.cookies.is_empty()
+            && let Ok(usage) = crate::opencode_go::fetch_remote_usage(&self.cookies).await
+        {
+            return Ok(if usage.is_limited() {
+                AgentLimit::Limited {
+                    reset_time: usage.reset_time(Utc::now()),
                 }
-                Err(_) => {
-                    // fall through to local heuristic
-                }
-            }
+            } else {
+                AgentLimit::NotLimited
+            });
         }
 
         let snapshot = self.opencode_go_usage_snapshot()?;

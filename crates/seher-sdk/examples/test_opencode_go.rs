@@ -1,7 +1,7 @@
-//! Live check of the authoritative OpenCode Go usage via the opencode.ai
+//! Live check of the authoritative `OpenCode` Go usage via the opencode.ai
 //! web dashboard. Reads the `opencode.ai` session cookie from local browsers.
 //!
-//!   cargo run -p seher-sdk --example test_opencode_go
+//!   cargo run -p seher-sdk --example `test_opencode_go`
 
 use seher::{BrowserDetector, CookieReader};
 
