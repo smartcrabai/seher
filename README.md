@@ -141,6 +141,99 @@ alias shr="seher --browser chrome --profile 'Profile 1'"
 ```
 
 
+## Using as a library
+
+The `seher-sdk` crate is published as a library named `seher`. The CLI is a thin
+wrapper around it, so anything the binary does is reachable from Rust.
+
+Because the crate depends on `pi_agent_rust` via git, it is not on crates.io yet —
+add it as a git (or path) dependency:
+
+```toml
+[dependencies]
+seher-sdk = { git = "https://github.com/smartcrabai/seher" }
+
+# Cookie-based rate-limit checks (claude.ai, chatgpt.com, …) need the `browser`
+# feature, which is on by default. Disable it if you only run API-key providers:
+# seher-sdk = { git = "https://github.com/smartcrabai/seher", default-features = false }
+```
+
+The library exposes two layers.
+
+### Low level — run a prompt through pi
+
+`PiRunner` streams a prompt through the `pi` engine. `stream` returns a channel of
+`StreamChunk` values (`Delta`, `Done`, `Limit`, `Error`) and runs pi on its own
+thread, so it works whether or not the caller hosts a tokio runtime:
+
+```rust
+use seher::sdk::{PiRunner, PiRunnerOptions, StreamChunk};
+
+let runner = PiRunner::new(PiRunnerOptions {
+    provider: Some("anthropic".to_string()),
+    model: Some("claude-sonnet-4-5".to_string()),
+    api_key: std::env::var("ANTHROPIC_API_KEY").ok(),
+    ..PiRunnerOptions::default()
+});
+
+let rx = runner.stream("say hi".to_string());
+loop {
+    match rx.recv() {
+        Ok(StreamChunk::Delta(d)) => print!("{d}"),
+        Ok(StreamChunk::Done(text)) => {
+            println!("{text}");
+            break;
+        }
+        Ok(StreamChunk::Limit(e)) => {
+            eprintln!("rate limited: {e}");
+            break;
+        }
+        Ok(StreamChunk::Error(msg)) => {
+            eprintln!("error: {msg}");
+            break;
+        }
+        Err(_) => break, // channel closed
+    }
+}
+```
+
+### High level — resolve a non-limited provider, then run
+
+`resolve_agent` applies the same priority + rate-limit logic as the CLI and returns
+the winning `ResolvedAgent`. It is async; pair it with `CookieProbe` (cookie-based
+checks) and a `BrowserSession`:
+
+```rust
+use seher::sdk::{
+    BrowserSession, CookieProbe, ResolveOptions, load_config, resolve_agent,
+};
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let config = load_config(None)?; // ~/.config/seher/config.yaml (or $SEHER_CONFIG)
+let session = BrowserSession::detect(None, None);
+let mut probe = CookieProbe { session: &session };
+
+let resolved = resolve_agent(
+    ResolveOptions {
+        mode_key: "build".to_string(),
+        config: Some(config),
+        ..Default::default()
+    },
+    &mut probe,
+)
+.await?;
+
+println!("selected {} (pi/{})", resolved.provider, resolved.model_id);
+// Feed `resolved.model_id` / `resolved.api` into PiRunnerOptions to execute.
+# Ok(())
+# }
+```
+
+See `crates/seher-sdk/examples/` (`pi_mvp.rs`, `test_codex.rs`, …) for runnable
+examples, and `crates/seher-cli/src/run_mode.rs` for the full
+resolve → stream → retry-on-limit loop.
+
+
 ## Configuration
 
 Seher reads a YAML config resolved in this order:
