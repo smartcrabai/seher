@@ -34,6 +34,7 @@ hmac = { workspace = true, optional = true }
 reqwest.workspace = true
 rusqlite = { workspace = true, optional = true }
 indexmap.workspace = true
+regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
@@ -60,6 +61,10 @@ required-features = ["browser"]
 
 [[example]]
 name = "test_codex"
+required-features = ["browser"]
+
+[[example]]
+name = "test_opencode_go"
 required-features = ["browser"]
 
 [[example]]

@@ -99,7 +99,7 @@ impl Agent {
             Some("kimi-k2") => self.check_kimik2_limit().await,
             Some("warp") => self.check_warp_limit().await,
             Some("kiro") => self.check_kiro_limit().await,
-            Some("opencode-go") => self.check_opencode_go_limit(),
+            Some("opencode-go") => self.check_opencode_go_limit().await,
             None => Ok(AgentLimit::NotLimited),
             Some(p) => Err(format!("Unknown provider: {p}").into()),
         }
@@ -407,7 +407,29 @@ impl Agent {
         }
     }
 
-    fn check_opencode_go_limit(&self) -> Result<AgentLimit, Box<dyn std::error::Error>> {
+    async fn check_opencode_go_limit(&self) -> Result<AgentLimit, Box<dyn std::error::Error>> {
+        // Prefer the authoritative hosted dashboard (real account usage) when an
+        // opencode.ai session cookie is available; the local SQLite heuristic
+        // only sees this machine's spend and badly undercounts a multi-device
+        // account. Fall back to the local snapshot if the remote fetch fails
+        // (no cookie, signed out, network error).
+        if !self.cookies.is_empty() {
+            match crate::opencode_go::fetch_remote_usage(&self.cookies).await {
+                Ok(usage) => {
+                    return Ok(if usage.is_limited() {
+                        AgentLimit::Limited {
+                            reset_time: usage.reset_time(Utc::now()),
+                        }
+                    } else {
+                        AgentLimit::NotLimited
+                    });
+                }
+                Err(_) => {
+                    // fall through to local heuristic
+                }
+            }
+        }
+
         let snapshot = self.opencode_go_usage_snapshot()?;
         if snapshot
             .windows

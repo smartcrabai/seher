@@ -4679,6 +4679,7 @@ dependencies = [
  "hmac 0.13.0",
  "indexmap",
  "pi_agent_rust",
+ "regex",
  "reqwest",
  "rusqlite",
  "secret-service",

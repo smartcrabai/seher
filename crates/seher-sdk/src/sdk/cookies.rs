@@ -100,6 +100,9 @@ pub(crate) fn has_session_cookie(domain: &str, cookie: &Cookie) -> bool {
         "github.com" => {
             cookie.name == "user_session" || cookie.name == "__Host-user_session_same_site"
         }
+        // opencode.ai web dashboard session (OpenCode Go usage); see CodexBar's
+        // OpenCodeCookieImporter which keys on the `auth` / `__Host-auth` cookie.
+        "opencode.ai" => cookie.name == "auth" || cookie.name == "__Host-auth",
         _ => false,
     }
 }
@@ -141,6 +144,7 @@ pub fn provider_to_domain(provider: &str) -> Option<&'static str> {
         "claude" => Some("claude.ai"),
         "codex" => Some("chatgpt.com"),
         "copilot" => Some("github.com"),
+        "opencode-go" => Some("opencode.ai"),
         _ => None,
     }
 }
