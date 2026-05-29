@@ -3,18 +3,38 @@
     "config:best-practices"
   ],
   dependencyDashboard: false,
+  minimumReleaseAge: "3 days",
+  lockFileMaintenance: {
+    minimumReleaseAge: null,
+    addLabels: [
+      "automerge"
+    ]
+  },
+  vulnerabilityAlerts: {
+    minimumReleaseAge: null,
+    addLabels: [
+      "automerge"
+    ]
+  },
   packageRules: [
     {
       matchUpdateTypes: [
         "minor",
         "patch",
-        "digest"
+        "digest",
+        "pinDigest"
       ],
       groupName: "all minor, patch, and digest updates",
       groupSlug: "all-minor-patch-digest-updates",
       addLabels: [
         "automerge"
       ]
+    },
+    {
+      matchManagers: [
+        "github-actions"
+      ],
+      minimumReleaseAge: "7 days"
     }
   ]
 }
