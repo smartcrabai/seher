@@ -1,4 +1,4 @@
-//! MVP smoke test for the pi_agent_rust bridge (M1).
+//! MVP smoke test for the `pi_agent_rust` bridge (M1).
 //!
 //! Usage:
 //!   `ANTHROPIC_API_KEY=sk-... cargo run -p seher-sdk --example pi_mvp -- "say hi"`

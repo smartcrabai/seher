@@ -61,12 +61,12 @@ pub struct Args {
     pub quiet: bool,
     pub browser: Option<BrowserType>,
     pub profile: Option<String>,
-    pub prompt_args: Vec<String>,
+    pub prompt_tokens: Vec<String>,
 }
 
 /// Convert clap-parsed `RawArgs` into the normalized [`Args`].
 pub fn normalize(raw: RawArgs) -> Result<Args, String> {
-    let (mode, prompt_args) = match raw.trailing.first().map(String::as_str) {
+    let (mode, prompt_tokens) = match raw.trailing.first().map(String::as_str) {
         Some("plan") => (Mode::Plan, raw.trailing[1..].to_vec()),
         Some("build") => (Mode::Build, raw.trailing[1..].to_vec()),
         _ => (Mode::Build, raw.trailing),
@@ -96,16 +96,12 @@ pub fn normalize(raw: RawArgs) -> Result<Args, String> {
         quiet: raw.quiet,
         browser,
         profile: raw.profile,
-        prompt_args,
+        prompt_tokens,
     })
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    reason = "tests may panic on unexpected fixtures"
-)]
+#[expect(clippy::expect_used, reason = "tests may panic on unexpected fixtures")]
 mod tests {
     use super::*;
 
@@ -119,14 +115,14 @@ mod tests {
     fn defaults_to_build_mode_with_no_args() {
         let a = parse(&[]).expect("ok");
         assert!(matches!(a.mode, Mode::Build));
-        assert!(a.prompt_args.is_empty());
+        assert!(a.prompt_tokens.is_empty());
     }
 
     #[test]
     fn build_keyword_selects_build_mode_and_drops_token() {
         let a = parse(&["build", "do", "thing"]).expect("ok");
         assert!(matches!(a.mode, Mode::Build));
-        assert_eq!(a.prompt_args, vec!["do".to_string(), "thing".to_string()]);
+        assert_eq!(a.prompt_tokens, vec!["do".to_string(), "thing".to_string()]);
     }
 
     #[test]
@@ -135,7 +131,7 @@ mod tests {
         assert!(matches!(a.mode, Mode::Plan));
         // "build" here is a prompt word, not a mode token (only the first one matters).
         assert_eq!(
-            a.prompt_args,
+            a.prompt_tokens,
             vec!["build".to_string(), "a".to_string(), "thing".to_string()],
         );
     }
@@ -145,7 +141,7 @@ mod tests {
         let a = parse(&["hello", "world"]).expect("ok");
         assert!(matches!(a.mode, Mode::Build));
         assert_eq!(
-            a.prompt_args,
+            a.prompt_tokens,
             vec!["hello".to_string(), "world".to_string()]
         );
     }

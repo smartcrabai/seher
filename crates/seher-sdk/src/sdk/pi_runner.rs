@@ -1,4 +1,4 @@
-//! pi_agent_rust bridge.
+//! `pi_agent_rust` bridge.
 //!
 //! Runs prompts on a dedicated `std::thread` driven by `futures::executor::block_on`
 //! to avoid nested-runtime panics when the caller is also driving a tokio runtime
@@ -112,7 +112,7 @@ impl PiRunner {
     pub fn stream(&self, prompt: String) -> Receiver<StreamChunk> {
         let (tx, rx) = channel();
         let opts = self.opts.clone();
-        thread::spawn(move || run_on_thread(opts, prompt, tx));
+        thread::spawn(move || run_on_thread(&opts, &prompt, &tx));
         rx
     }
 
@@ -158,25 +158,26 @@ impl PiRunner {
     }
 }
 
-fn run_on_thread(opts: PiRunnerOptions, prompt: String, tx: Sender<StreamChunk>) {
+fn run_on_thread(opts: &PiRunnerOptions, prompt: &str, tx: &Sender<StreamChunk>) {
     use pi::model::AssistantMessageEvent;
     use pi::sdk::{AgentEvent, SessionOptions, create_agent_session};
 
     let prompt_text = match opts.system_prompt.as_deref() {
         Some(sys) => format!("{sys}\n\n{prompt}"),
-        None => prompt,
+        None => prompt.to_string(),
     };
 
     let provider_label = opts.provider.clone().unwrap_or_else(|| "pi".to_string());
-    let tx_for_close = tx.clone();
 
     let outcome: Result<(), CloseOutcome> = futures::executor::block_on(async {
-        let mut session_opts = SessionOptions::default();
-        session_opts.provider = opts.provider.clone();
-        session_opts.model = opts.model.clone();
-        session_opts.api_key = opts.api_key.clone();
-        session_opts.no_session = true;
-        session_opts.tool_factory = opts.tool_factory.clone();
+        let session_opts = SessionOptions {
+            provider: opts.provider.clone(),
+            model: opts.model.clone(),
+            api_key: opts.api_key.clone(),
+            no_session: true,
+            tool_factory: opts.tool_factory.clone(),
+            ..Default::default()
+        };
 
         let mut handle = create_agent_session(session_opts)
             .await
@@ -202,13 +203,13 @@ fn run_on_thread(opts: PiRunnerOptions, prompt: String, tx: Sender<StreamChunk>)
 
     match outcome {
         Ok(()) => {
-            let _ = tx_for_close.send(StreamChunk::Done(String::new()));
+            let _ = tx.send(StreamChunk::Done(String::new()));
         }
         Err(CloseOutcome::Limit(e)) => {
-            let _ = tx_for_close.send(StreamChunk::Limit(e));
+            let _ = tx.send(StreamChunk::Limit(e));
         }
         Err(CloseOutcome::Error(msg)) => {
-            let _ = tx_for_close.send(StreamChunk::Error(msg));
+            let _ = tx.send(StreamChunk::Error(msg));
         }
     }
 }

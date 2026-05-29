@@ -33,12 +33,9 @@ fn run() -> i32 {
         }
     };
 
-    let prompt = match prompt::resolve(&args.prompt_args) {
-        Some(p) => p,
-        None => {
-            eprintln!("Empty prompt; nothing to do.");
-            return 1;
-        }
+    let Some(prompt) = prompt::resolve(&args.prompt_tokens) else {
+        eprintln!("Empty prompt; nothing to do.");
+        return 1;
     };
 
     let logger = logger::Logger::new(args.quiet);
@@ -54,7 +51,7 @@ fn run() -> i32 {
         }
     };
 
-    let outcome = dispatch(&rt, prompt, &args, &logger);
+    let outcome = dispatch(&rt, &prompt, &args, &logger);
     match outcome {
         Ok(()) => 0,
         Err(msg) => {
@@ -66,7 +63,7 @@ fn run() -> i32 {
 
 fn dispatch(
     rt: &tokio::runtime::Runtime,
-    prompt: String,
+    prompt: &str,
     args: &Args,
     logger: &logger::Logger,
 ) -> Result<(), String> {

@@ -1,7 +1,7 @@
-//! Authoritative OpenCode Go (zen/go) usage via the `opencode.ai` web dashboard.
+//! Authoritative `OpenCode` Go (zen/go) usage via the `opencode.ai` web dashboard.
 //!
-//! Ported from CodexBar's `OpenCodeGoUsageFetcher`
-//! (steipete/codexbar): the local SQLite DB only records *this machine's*
+//! Ported from `CodexBar`'s `OpenCodeGoUsageFetcher`
+//! (steipete/codexbar): the local `SQLite` DB only records *this machine's*
 //! spend, so it badly undercounts an account whose real usage spans multiple
 //! machines/sessions. The hosted dashboard is the source of truth.
 //!
@@ -125,7 +125,14 @@ fn extract_window(text: &str, key: &str) -> Option<RemoteWindow> {
         _ => return None,
     };
     let percent = extract_number(text, key, "usagePercent")?;
-    let reset = extract_number(text, key, "resetInSec").map(|v| v as i64);
+    let reset = extract_number(text, key, "resetInSec").map(|v| {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "resetInSec is a whole-second countdown; truncation is intended"
+        )]
+        let secs = v as i64;
+        secs
+    });
     Some(RemoteWindow {
         name,
         used_percent: percent,
@@ -134,7 +141,7 @@ fn extract_window(text: &str, key: &str) -> Option<RemoteWindow> {
 }
 
 /// Find `<block_key> ... <field>: <number>` within the same `{...}` object,
-/// mirroring CodexBar's `<block>[^}]*?<field>\s*:\s*([0-9.]+)`.
+/// mirroring `CodexBar`'s `<block>[^}]*?<field>\s*:\s*([0-9.]+)`.
 fn extract_number(text: &str, block_key: &str, field: &str) -> Option<f64> {
     let pattern = format!(r"{block_key}[^}}]*?{field}\s*:\s*([0-9]+(?:\.[0-9]+)?)");
     let re = regex::Regex::new(&pattern).ok()?;
@@ -237,7 +244,7 @@ async fn fetch_usage_page(
     Ok(text)
 }
 
-/// Fetch authoritative OpenCode Go usage from the hosted dashboard using the
+/// Fetch authoritative `OpenCode` Go usage from the hosted dashboard using the
 /// given `opencode.ai` session cookies.
 ///
 /// # Errors
@@ -275,11 +282,11 @@ mod tests {
 
     #[test]
     fn parses_rolling_weekly_monthly_usage() {
-        let text = r#"
+        let text = r"
           rollingUsage: { usagePercent: 100, resetInSec: 3600 },
           weeklyUsage: { usagePercent: 42.5, resetInSec: 86400 },
           monthlyUsage: { usagePercent: 7, resetInSec: 1000000 }
-        "#;
+        ";
         let usage = parse_usage(text).expect("parse");
         assert_eq!(usage.windows.len(), 3);
         let rolling = usage.windows.iter().find(|w| w.name == "rolling").unwrap();
@@ -291,7 +298,7 @@ mod tests {
 
     #[test]
     fn not_limited_when_all_below_100() {
-        let text = r#"rollingUsage: { usagePercent: 20.5, resetInSec: 100 } weeklyUsage: { usagePercent: 80, resetInSec: 200 }"#;
+        let text = r"rollingUsage: { usagePercent: 20.5, resetInSec: 100 } weeklyUsage: { usagePercent: 80, resetInSec: 200 }";
         let usage = parse_usage(text).expect("parse");
         assert!(!usage.is_limited());
     }

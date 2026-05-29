@@ -16,7 +16,7 @@ const PLAN_SYSTEM_PROMPT: &str = "You are an implementation planner. The user wi
 /// Stringified errors from any stage (resolve/timeout/editor/build run).
 pub fn run(
     rt: &tokio::runtime::Runtime,
-    prompt: String,
+    prompt: &str,
     args: &Args,
     logger: &Logger,
 ) -> Result<(), String> {
@@ -24,14 +24,8 @@ pub fn run(
     let build_key = args.model.as_deref().unwrap_or("build");
 
     // 1) stream the plan
-    let plan_text = resolve_and_stream(
-        rt,
-        prompt,
-        args,
-        plan_key,
-        Some(PLAN_SYSTEM_PROMPT.to_string()),
-        logger,
-    )?;
+    let plan_text =
+        resolve_and_stream(rt, prompt, args, plan_key, Some(PLAN_SYSTEM_PROMPT), logger)?;
 
     // 2) edit in $EDITOR seeded with the streamed plan
     let edited = prompt::edit_with_seed(&plan_text).map_err(|e| e.to_string())?;
@@ -43,6 +37,6 @@ pub fn run(
 
     // 3) re-resolve under build mode and run the approved plan
     let build_prompt = format!("<plan>\n{trimmed}\n</plan>\n\nExecute the plan above.");
-    resolve_and_stream(rt, build_prompt, args, build_key, None, logger)?;
+    resolve_and_stream(rt, &build_prompt, args, build_key, None, logger)?;
     Ok(())
 }

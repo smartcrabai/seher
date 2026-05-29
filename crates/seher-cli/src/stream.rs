@@ -20,6 +20,10 @@ pub enum Outcome {
 /// in-flight worker thread; on timeout, the receiver is dropped and the worker
 /// is left to finish in the background. Returns `Outcome::Done` with the
 /// concatenated text on success.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "takes ownership of the receiver so it is dropped on return, signaling the worker the consumer is gone"
+)]
 pub fn drain_to_stdout(rx: Receiver<StreamChunk>, timeout_ms: Option<u64>) -> Outcome {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
@@ -72,11 +76,7 @@ pub fn drain_to_stdout(rx: Receiver<StreamChunk>, timeout_ms: Option<u64>) -> Ou
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    reason = "tests may panic on unexpected fixtures"
-)]
+#[expect(clippy::unwrap_used, reason = "tests may panic on unexpected fixtures")]
 mod tests {
     use super::*;
     use std::sync::mpsc::channel;
@@ -195,7 +195,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     struct OutcomeDebug<'a>(&'a Outcome);
-    impl<'a> std::fmt::Debug for OutcomeDebug<'a> {
+    impl std::fmt::Debug for OutcomeDebug<'_> {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self.0 {
                 Outcome::Done(s) => write!(f, "Done({s:?})"),

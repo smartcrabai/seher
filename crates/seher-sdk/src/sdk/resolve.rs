@@ -388,8 +388,8 @@ pub(crate) fn synthesize_agent_config(limit_provider: &str, entry: &ProviderEntr
     let mut glm_api_key: Option<String> = None;
 
     match limit_provider {
-        "openrouter" => openrouter_management_key = api_key.clone(),
-        "glm" => glm_api_key = api_key.clone(),
+        "openrouter" => openrouter_management_key.clone_from(&api_key),
+        "glm" => glm_api_key.clone_from(&api_key),
         "zai" => {
             if let Some(k) = api_key.clone() {
                 env.insert("Z_AI_API_KEY".to_string(), k);
@@ -426,7 +426,7 @@ pub struct CookieProbe<'s> {
     pub session: &'s BrowserSession,
 }
 
-impl<'s> LimitProbe for CookieProbe<'s> {
+impl LimitProbe for CookieProbe<'_> {
     fn probe<'a>(
         &'a mut self,
         entry: &'a ProviderEntry,
@@ -468,11 +468,7 @@ pub async fn resolve_agent_with_cookies(
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    reason = "tests may panic on unexpected fixtures"
-)]
+#[expect(clippy::expect_used, reason = "tests may panic on unexpected fixtures")]
 mod tests {
     use super::*;
     use crate::sdk::config::{ModelEntry, ProviderApi, ProviderEntry, SkillsConfig};
@@ -608,7 +604,7 @@ mod tests {
             r.api.as_ref().and_then(|a| a.key.as_deref()),
             Some("sk-test")
         );
-        assert_eq!(r.skills.include_claude, false);
+        assert!(!r.skills.include_claude);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -618,17 +614,19 @@ mod tests {
             entry("b", "b", Some(3), &[("build", "y", None)]),
             entry("c", "c", Some(2), &[("build", "z", None)]),
         ]);
-        let mut outs = HashMap::new();
-        outs.insert(
+        let mut limits = HashMap::new();
+        limits.insert(
             "b".to_string(),
             AgentLimit::Limited {
                 reset_time: Some(Utc::now() + chrono::Duration::seconds(60)),
             },
         );
-        let mut probe = MockProbe { outcomes: outs };
-        let mut opts = ResolveOptions::default();
-        opts.config = Some(c);
-        opts.no_wait = true;
+        let mut probe = MockProbe { outcomes: limits };
+        let opts = ResolveOptions {
+            config: Some(c),
+            no_wait: true,
+            ..Default::default()
+        };
         let resolved = resolve_agent(opts, &mut probe).await.expect("resolve");
         assert_eq!(resolved.provider, "c");
     }
@@ -639,9 +637,11 @@ mod tests {
         let mut probe = MockProbe {
             outcomes: HashMap::new(),
         };
-        let mut opts = ResolveOptions::default();
-        opts.config = Some(c);
-        opts.mode_key = "plan".to_string();
+        let opts = ResolveOptions {
+            config: Some(c),
+            mode_key: "plan".to_string(),
+            ..Default::default()
+        };
         let err = resolve_agent(opts, &mut probe)
             .await
             .expect_err("should fail");
@@ -651,17 +651,19 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn resolve_throws_all_limited_when_no_wait() {
         let c = cfg(vec![entry("a", "a", Some(1), &[("build", "x", None)])]);
-        let mut outs = HashMap::new();
-        outs.insert(
+        let mut limits = HashMap::new();
+        limits.insert(
             "a".to_string(),
             AgentLimit::Limited {
                 reset_time: Some(Utc::now() + chrono::Duration::seconds(60)),
             },
         );
-        let mut probe = MockProbe { outcomes: outs };
-        let mut opts = ResolveOptions::default();
-        opts.config = Some(c);
-        opts.no_wait = true;
+        let mut probe = MockProbe { outcomes: limits };
+        let opts = ResolveOptions {
+            config: Some(c),
+            no_wait: true,
+            ..Default::default()
+        };
         let err = resolve_agent(opts, &mut probe)
             .await
             .expect_err("should fail");
@@ -836,9 +838,11 @@ mod tests {
         let mut probe = MockProbe {
             outcomes: HashMap::new(),
         };
-        let mut opts = PollOptions::default();
-        opts.config = Some(c);
-        opts.cancel = Some(Arc::new(AtomicBool::new(true)));
+        let opts = PollOptions {
+            config: Some(c),
+            cancel: Some(Arc::new(AtomicBool::new(true))),
+            ..Default::default()
+        };
         let err = poll_for_agent(opts, &mut probe)
             .await
             .expect_err("should be canceled");
@@ -851,8 +855,10 @@ mod tests {
         let mut probe = MockProbe {
             outcomes: HashMap::new(),
         };
-        let mut opts = PollOptions::default();
-        opts.config = Some(c);
+        let opts = PollOptions {
+            config: Some(c),
+            ..Default::default()
+        };
         let resolved = poll_for_agent(opts, &mut probe).await.expect("ok");
         assert_eq!(resolved.provider, "a");
     }
@@ -863,9 +869,11 @@ mod tests {
         let mut probe = MockProbe {
             outcomes: HashMap::new(),
         };
-        let mut opts = PollOptions::default();
-        opts.config = Some(c);
-        opts.provider_filter = Some("nope".to_string());
+        let opts = PollOptions {
+            config: Some(c),
+            provider_filter: Some("nope".to_string()),
+            ..Default::default()
+        };
         let err = poll_for_agent(opts, &mut probe)
             .await
             .expect_err("should fail");
@@ -878,11 +886,6 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn scan_no_agents_carries_probe_error_messages() {
-        let c = cfg(vec![
-            entry("a", "a", Some(1), &[("build", "x", None)]),
-            entry("b", "b", Some(2), &[("build", "y", None)]),
-        ]);
-
         struct AlwaysErr;
         impl LimitProbe for AlwaysErr {
             fn probe<'a>(
@@ -898,6 +901,10 @@ mod tests {
             }
         }
 
+        let c = cfg(vec![
+            entry("a", "a", Some(1), &[("build", "x", None)]),
+            entry("b", "b", Some(2), &[("build", "y", None)]),
+        ]);
         let candidates = build_candidates(&c, "build", None, &[]);
         let mut probe = AlwaysErr;
         let outcome = scan(&candidates, &c.providers, &mut probe).await;
@@ -921,8 +928,6 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn resolve_agent_surfaces_probe_errors_in_message() {
-        let c = cfg(vec![entry("a", "a", Some(1), &[("build", "x", None)])]);
-
         struct AlwaysErr;
         impl LimitProbe for AlwaysErr {
             fn probe<'a>(
@@ -937,9 +942,12 @@ mod tests {
             }
         }
 
+        let c = cfg(vec![entry("a", "a", Some(1), &[("build", "x", None)])]);
         let mut probe = AlwaysErr;
-        let mut opts = ResolveOptions::default();
-        opts.config = Some(c);
+        let opts = ResolveOptions {
+            config: Some(c),
+            ..Default::default()
+        };
         let err = resolve_agent(opts, &mut probe)
             .await
             .expect_err("should fail");
