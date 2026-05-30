@@ -140,7 +140,6 @@ fn build_runner(resolved: &ResolvedAgent, system_prompt: Option<String>) -> PiRu
         model,
         api_key,
         system_prompt,
-        tool_factory: None,
     })
 }
 
