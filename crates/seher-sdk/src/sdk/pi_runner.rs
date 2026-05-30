@@ -4,11 +4,8 @@
 //! to avoid nested-runtime panics when the caller is also driving a tokio runtime
 //! for cookie-based limit checks.
 
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
-
-use pi::sdk::ToolFactory;
 
 use crate::sdk::errors::{LimitError, RunError};
 
@@ -80,8 +77,6 @@ pub struct PiRunnerOptions {
     pub model: Option<String>,
     pub api_key: Option<String>,
     pub system_prompt: Option<String>,
-    /// Optional in-process tool factory (see [`crate::sdk::tools`]).
-    pub tool_factory: Option<Arc<dyn ToolFactory>>,
 }
 
 impl std::fmt::Debug for PiRunnerOptions {
@@ -91,7 +86,6 @@ impl std::fmt::Debug for PiRunnerOptions {
             .field("model", &self.model)
             .field("api_key", &self.api_key.as_ref().map(|_| "***"))
             .field("system_prompt", &self.system_prompt)
-            .field("tool_factory", &self.tool_factory.as_ref().map(|_| "<set>"))
             .finish()
     }
 }
@@ -175,7 +169,6 @@ fn run_on_thread(opts: &PiRunnerOptions, prompt: &str, tx: &Sender<StreamChunk>)
             model: opts.model.clone(),
             api_key: opts.api_key.clone(),
             no_session: true,
-            tool_factory: opts.tool_factory.clone(),
             ..Default::default()
         };
 
