@@ -5567,6 +5567,9 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "unicode-normalization",
+ "unicode-width 0.2.2",
+ "uuid",
  "windows",
  "zzsleep",
 ]

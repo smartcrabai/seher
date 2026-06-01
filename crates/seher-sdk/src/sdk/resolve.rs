@@ -122,12 +122,12 @@ pub struct Candidate {
 
 /// Supported `sdk` values that can actually be executed by this implementation.
 ///
-/// `pi_agent_rust` is the sole in-process execution engine, so providers tagged
-/// with the seher-ts-only SDK kinds (`claude`, `claude-terminal`, `codex`,
-/// `copilot`, `cursor`, `kimi`, `opencode`) cannot be run here. The config
-/// still accepts them (so the same `config.yaml` works in both
-/// implementations); they are silently filtered out of the candidate list.
-pub const SUPPORTED_SDK_KINDS: &[&str] = &["pi"];
+/// `pi_agent_rust` is the in-process execution engine; `claude-terminal` drives
+/// the local `claude` CLI via tmux. Providers tagged with other seher-ts-only SDK
+/// kinds (`claude`, `codex`, `copilot`, `cursor`, `kimi`, `opencode`) cannot be
+/// run here. The config still accepts them (so the same `config.yaml` works in
+/// both implementations); they are silently filtered out of the candidate list.
+pub const SUPPORTED_SDK_KINDS: &[&str] = &["pi", "claude-terminal"];
 
 #[must_use]
 pub fn is_supported_sdk(sdk: &str) -> bool {
@@ -179,6 +179,7 @@ pub fn build_candidates(
                 provider: entry.provider.clone(),
                 model_id: model.model.clone(),
                 mode_key: mode_key.to_string(),
+                sdk: entry.sdk.clone(),
                 api: entry.api.clone(),
                 skills,
             };
@@ -776,7 +777,7 @@ mod tests {
     }
 
     #[test]
-    fn build_candidates_filters_out_non_pi_sdks() {
+    fn build_candidates_filters_out_unsupported_sdks() {
         let c = cfg(vec![
             entry_with_sdk("claude", "claude", "claude", &[("build", "opus", None)]),
             entry_with_sdk("zai", "zai", "pi", &[("build", "anthropic/zai", None)]),
@@ -820,8 +821,9 @@ mod tests {
     }
 
     #[test]
-    fn is_supported_sdk_only_accepts_pi() {
+    fn is_supported_sdk_accepts_pi_and_claude_terminal() {
         assert!(is_supported_sdk("pi"));
+        assert!(is_supported_sdk("claude-terminal"));
         assert!(!is_supported_sdk("claude"));
         assert!(!is_supported_sdk("codex"));
         assert!(!is_supported_sdk(""));

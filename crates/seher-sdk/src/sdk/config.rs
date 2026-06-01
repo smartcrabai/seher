@@ -175,6 +175,8 @@ pub struct ResolvedAgent {
     pub model_id: String,
     /// Mode key used during resolution (plan / build / custom).
     pub mode_key: String,
+    /// SDK kind (e.g. "pi", "claude-terminal").
+    pub sdk: String,
     /// API config to forward.
     pub api: Option<ProviderApi>,
     /// Skill discovery flags resolved from per-provider > root > defaults.
