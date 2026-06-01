@@ -2,14 +2,14 @@
 
 Seher picks the highest-priority coding agent that is **not** currently rate-limited, then runs a `plan` / `build` prompt through it. If every configured agent is at its limit, seher waits until the earliest reset and tries again.
 
-Prompts are executed in-process by the [`pi`](https://github.com/Dicklesworthstone/pi_agent_rust) agent engine — seher does not shell out to external CLIs. Provider selection, rate-limit detection, and execution all happen inside one binary.
+Prompts are executed in-process by the [`pi`](https://github.com/Dicklesworthstone/pi_agent_rust) agent engine. Rate-limit detection is delegated to the external [`codexbar`](https://codexbar.app/) binary, which seher invokes per provider.
 
 The repository is a Cargo workspace with two crates:
 
 | Crate | Artifact | Purpose |
 |-------|----------|---------|
 | `crates/seher-cli` | `seher` binary | CLI entry point (argument parsing, plan/build modes, streaming) |
-| `crates/seher-sdk` | `seher` library | Agent resolution, rate-limit checks, provider clients, the pi runner |
+| `crates/seher-sdk` | `seher` library | Agent resolution, codexbar-backed rate-limit checks, the pi runner |
 
 
 ## How it works
@@ -20,35 +20,9 @@ The repository is a Cargo workspace with two crates:
 4. If all candidates are limited, seher sleeps until the earliest reset time and rescans.
 5. The chosen provider streams the prompt via pi. If pi reports a rate/usage limit mid-run, that provider is excluded and seher re-resolves with the next candidate.
 
-Rate-limit detection uses one of two strategies depending on the provider:
+Rate-limit detection is delegated to [`codexbar`](https://codexbar.app/): for each candidate, seher runs `codexbar usage --format json --provider <provider>` and treats the provider as limited when any reported usage window is at 100%. The `claude-terminal` SDK shares the `claude` codexbar account. If codexbar is not installed, returns no entry for a provider, or errors transiently, that provider is treated as available so resolution still proceeds.
 
-- **Cookie-based** — seher reads browser cookies for the provider's domain and calls its usage API. Used by `claude` (`claude.ai`), `codex` (`chatgpt.com`), `copilot` (`github.com`), and `opencode-go` (`opencode.ai`).
-- **API-key based** — seher uses a key/endpoint from the config (no browser cookies). Used by `openrouter`, `glm`, `zai`, `kimi-k2`, `warp`, and `kiro`.
-
-Providers not recognized as limit-checkable are always treated as available.
-
-
-## Supported Browsers
-
-Cookie-based providers read cookies from the following browsers (select with `--browser`):
-
-### Chromium-based browsers
-- Chrome
-- Microsoft Edge
-- Brave
-- Chromium
-- Vivaldi
-- Comet (Perplexity AI browser)
-- Dia (The Browser Company)
-- ChatGPT Atlas (OpenAI browser)
-
-### Other browsers
-- Firefox (all platforms)
-- Safari (macOS only — uses the sandboxed cookies location)
-
-All Chromium-based browsers share the same cookie storage format and encryption. Firefox uses an unencrypted SQLite schema. Safari uses a proprietary binary format on macOS.
-
-**Note:** On recent versions of macOS, Safari cookies live in a sandboxed location: `~/Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies`
+codexbar must be installed and on `PATH` (or pointed to via `SEHER_CODEXBAR_BIN`); see [codexbar.app](https://codexbar.app/).
 
 
 ## Installation
@@ -100,11 +74,6 @@ seher --config ./my-config.yaml "fix bugs"
 
 # Per-run timeout (milliseconds) and quiet output
 seher --timeout 600000 --quiet "fix bugs"
-
-# Choose which browser / profile cookies are read from
-seher --browser edge --profile "Profile 1" "fix bugs"
-seher --browser firefox --profile "default-release" "fix bugs"
-seher --browser safari "fix bugs"   # macOS only
 ```
 
 ### Flags
@@ -116,8 +85,6 @@ seher --browser safari "fix bugs"   # macOS only
 | `--config <path>` | `-c` | Path to a YAML config file |
 | `--timeout <ms>` | `-t` | Per-run timeout in milliseconds |
 | `--quiet` | `-q` | Suppress informational output |
-| `--browser <name>` | | Browser to read cookies from (see *Supported Browsers*) |
-| `--profile <name>` | | Browser profile name |
 
 ### Prompt resolution
 
@@ -137,7 +104,7 @@ The first trailing token (`plan` or `build`) selects the mode; anything else is 
 It is convenient to alias frequently used options:
 
 ```sh
-alias shr="seher --browser chrome --profile 'Profile 1'"
+alias shr="seher --model high --quiet"
 ```
 
 
@@ -146,17 +113,15 @@ alias shr="seher --browser chrome --profile 'Profile 1'"
 The `seher-sdk` crate is published as a library named `seher`. The CLI is a thin
 wrapper around it, so anything the binary does is reachable from Rust.
 
-Because the crate depends on `pi_agent_rust` via git, it is not on crates.io yet —
-add it as a git (or path) dependency:
+Add it as a git (or path) dependency:
 
 ```toml
 [dependencies]
 seher-sdk = { git = "https://github.com/smartcrabai/seher" }
-
-# Cookie-based rate-limit checks (claude.ai, chatgpt.com, …) need the `browser`
-# feature, which is on by default. Disable it if you only run API-key providers:
-# seher-sdk = { git = "https://github.com/smartcrabai/seher", default-features = false }
 ```
+
+Rate-limit checks shell out to the external `codexbar` binary, so it must be
+installed on the host (or pointed to via `SEHER_CODEXBAR_BIN`).
 
 The library exposes two layers.
 
@@ -200,18 +165,16 @@ loop {
 ### High level — resolve a non-limited provider, then run
 
 `resolve_agent` applies the same priority + rate-limit logic as the CLI and returns
-the winning `ResolvedAgent`. It is async; pair it with `CookieProbe` (cookie-based
-checks) and a `BrowserSession`:
+the winning `ResolvedAgent`. It is async; pair it with `CodexBarProbe` (which queries
+the external codexbar binary), or use the `resolve_agent_with_codexbar` convenience
+wrapper:
 
 ```rust
-use seher::sdk::{
-    BrowserSession, CookieProbe, ResolveOptions, load_config, resolve_agent,
-};
+use seher::sdk::{CodexBarProbe, ResolveOptions, load_config, resolve_agent};
 
 # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 let config = load_config(None)?; // ~/.config/seher/config.yaml (or $SEHER_CONFIG)
-let session = BrowserSession::detect(None, None);
-let mut probe = CookieProbe { session: &session };
+let mut probe = CodexBarProbe;
 
 let resolved = resolve_agent(
     ResolveOptions {
@@ -229,8 +192,8 @@ println!("selected {} (pi/{})", resolved.provider, resolved.model_id);
 # }
 ```
 
-See `crates/seher-sdk/examples/` (`pi_mvp.rs`, `test_codex.rs`, …) for runnable
-examples, and `crates/seher-cli/src/run_mode.rs` for the full
+See `crates/seher-sdk/examples/pi_mvp.rs` for a runnable example, and
+`crates/seher-cli/src/run_mode.rs` for the full
 resolve → stream → retry-on-limit loop.
 
 
@@ -313,22 +276,15 @@ For each candidate, the effective priority is: the model entry's `priority`, els
 
 ## Providers and rate-limit tracking
 
-The provider name (the map key, or the explicit `provider` field) determines how seher checks for rate limits:
+Rate-limit checks are delegated to the external `codexbar` binary. For each candidate, seher runs:
 
-| Provider | Strategy | Notes |
-|----------|----------|-------|
-| `claude` | Cookie (`claude.ai`) | Reads the `sessionKey` cookie and calls Claude's usage API |
-| `codex` | Cookie (`chatgpt.com`) | Fetches an access token from `chatgpt.com/api/auth/session`, then calls the usage endpoint |
-| `copilot` | Cookie (`github.com`) | GitHub Copilot usage |
-| `opencode-go` | Local + cookie (`opencode.ai`) | Tracks spend against the documented Go caps; the `opencode`/`opencodego` aliases also map here |
-| `openrouter` | API key | Uses `api.key` as the OpenRouter Management key to check credit balance |
-| `glm` | API key | Zhipu AI quota API via `api.key` |
-| `zai` | API key | Z.ai quota API; `api.key`→`Z_AI_API_KEY`, `api.endpoint`→`Z_AI_QUOTA_URL` |
-| `kimi-k2` | API key | `api.key`→`KIMI_K2_API_KEY` (the `kimi` alias also maps here) |
-| `warp` | API key | `api.key`→`WARP_API_KEY` |
-| `kiro` | API key / local | |
+```sh
+codexbar usage --format json --provider <provider>
+```
 
-Any provider name outside this list is treated as always-available (no limit check), which is useful for routing a custom backend purely by priority.
+The provider name passed to codexbar is the resolved provider (the map key, or the explicit `provider` field); the `claude-terminal` SDK is mapped to the `claude` codexbar account. A provider is considered limited when any usage window codexbar reports (primary / secondary / tertiary / extra windows) is at 100%, and seher waits until the earliest reset.
+
+Whichever providers codexbar can report on are limit-checked; any provider codexbar has no entry for (or any codexbar error / missing binary) is treated as always-available, which is also useful for routing a custom backend purely by priority.
 
 ### Example: an API-key provider
 

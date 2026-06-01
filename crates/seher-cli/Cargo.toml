@@ -13,14 +13,9 @@ formula = "seher"
 [[bin]]
 name = "seher"
 path = "src/main.rs"
-required-features = ["browser"]
-
-[features]
-default = ["browser"]
-browser = ["seher-sdk/browser"]
 
 [dependencies]
-seher-sdk = { path = "../seher-sdk", version = "0.0.32", default-features = false }
+seher-sdk = { path = "../seher-sdk", version = "0.0.32" }
 chrono.workspace = true
 clap.workspace = true
 serde_json.workspace = true

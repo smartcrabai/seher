@@ -3,11 +3,11 @@
 //! Mirrors `seher-ts/packages/sdk/src/sdk/resolve.ts`:
 //!  * Candidate list = providers that define `models[mode_key]`, filtered by
 //!    `provider`/`exclude`, sorted by `priority` desc then YAML `order` asc.
-//!  * Probe each in order via the existing cookie-based [`Agent::check_limit`];
+//!  * Probe each in order via [`CodexBarProbe`] (the external `codexbar` binary);
 //!    first non-limited wins. If all limited and `!no_wait`/within `max_rescans`,
 //!    sleep until earliest reset and rescan.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::future::Future;
 use std::path::PathBuf;
@@ -17,13 +17,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::{DateTime, Utc};
 
-use crate::agent::{Agent, AgentLimit};
-use crate::browser::BrowserType;
-use crate::config::{AgentConfig, ProviderConfig};
+use crate::codexbar::AgentLimit;
 
 use super::config::{Config, ProviderEntry, ResolvedAgent};
 use super::config_loader::{ConfigError, load_config};
-use super::cookies::{BrowserSession, provider_to_domain};
 use super::sleep::sleep_until;
 
 /// Boxed probe future returned by [`LimitProbe::probe`].
@@ -31,7 +28,7 @@ pub type ProbeFuture<'a> =
     Pin<Box<dyn Future<Output = Result<AgentLimit, Box<dyn std::error::Error>>> + 'a>>;
 
 /// Trait for "ask whether this provider candidate is at-limit." Production uses
-/// [`CookieProbe`] (cookie-based `Agent::check_limit`); tests inject mocks.
+/// [`CodexBarProbe`] (the external `codexbar` binary); tests inject mocks.
 pub trait LimitProbe {
     fn probe<'a>(
         &'a mut self,
@@ -357,120 +354,64 @@ pub async fn poll_for_agent(
 }
 
 // ---------------------------------------------------------------------------
-// Cookie-based probe (the production limit checker)
+// CodexBar-based probe (mirrors seher-ts, the production limit checker)
 // ---------------------------------------------------------------------------
 
-/// Normalize a YAML provider name to one of the built-in limit checkers, if any.
+/// Map a YAML `(sdk, provider)` pair to the provider name codexbar expects.
+///
+/// Mirrors seher-ts `codexbarProviderName`: the `claude-terminal` SDK drives the
+/// Claude CLI which authenticates as the `claude` account, so it shares that
+/// account's codexbar quota.
 #[must_use]
-pub fn alias_limit_provider(provider: &str) -> Option<&'static str> {
-    match provider {
-        "claude" => Some("claude"),
-        "codex" => Some("codex"),
-        "copilot" => Some("copilot"),
-        "openrouter" => Some("openrouter"),
-        "glm" => Some("glm"),
-        "zai" => Some("zai"),
-        "kimi" | "kimi-k2" => Some("kimi-k2"),
-        "warp" => Some("warp"),
-        "kiro" => Some("kiro"),
-        "opencode" | "opencodego" | "opencode-go" => Some("opencode-go"),
-        _ => None,
+pub fn codexbar_provider_name(sdk: &str, provider: &str) -> String {
+    match sdk {
+        "claude-terminal" => "claude".to_string(),
+        _ => provider.to_string(),
     }
 }
 
-/// Build an `AgentConfig` that mirrors what the legacy CLI would have produced
-/// for this provider, so the existing [`Agent::check_limit`] dispatch works.
-pub(crate) fn synthesize_agent_config(limit_provider: &str, entry: &ProviderEntry) -> AgentConfig {
-    let api_key = entry.api.as_ref().and_then(|a| a.key.clone());
-    let api_endpoint = entry.api.as_ref().and_then(|a| a.endpoint.clone());
+/// Limit probe backed by the external `codexbar` binary. This is the production
+/// probe: it mirrors seher-ts, where limit determination is delegated entirely
+/// to `CodexBar` rather than per-provider cookie/API checks.
+pub struct CodexBarProbe;
 
-    let mut env: HashMap<String, String> = HashMap::new();
-    let mut openrouter_management_key: Option<String> = None;
-    let mut glm_api_key: Option<String> = None;
-
-    match limit_provider {
-        "openrouter" => openrouter_management_key.clone_from(&api_key),
-        "glm" => glm_api_key.clone_from(&api_key),
-        "zai" => {
-            if let Some(k) = api_key.clone() {
-                env.insert("Z_AI_API_KEY".to_string(), k);
-            }
-            if let Some(e) = api_endpoint.clone() {
-                env.insert("Z_AI_QUOTA_URL".to_string(), e);
-            }
-        }
-        "kimi-k2" => {
-            if let Some(k) = api_key.clone() {
-                env.insert("KIMI_K2_API_KEY".to_string(), k);
-            }
-        }
-        "warp" => {
-            if let Some(k) = api_key.clone() {
-                env.insert("WARP_API_KEY".to_string(), k);
-            }
-        }
-        _ => {}
-    }
-
-    AgentConfig {
-        command: limit_provider.to_string(),
-        env: if env.is_empty() { None } else { Some(env) },
-        provider: Some(ProviderConfig::Explicit(limit_provider.to_string())),
-        openrouter_management_key,
-        glm_api_key,
-    }
-}
-
-/// Cookie-backed probe used in production. Borrows a [`BrowserSession`] for the
-/// duration of resolution.
-pub struct CookieProbe<'s> {
-    pub session: &'s BrowserSession,
-}
-
-impl LimitProbe for CookieProbe<'_> {
+impl LimitProbe for CodexBarProbe {
     fn probe<'a>(
         &'a mut self,
         entry: &'a ProviderEntry,
-        _resolved: &'a ResolvedAgent,
+        resolved: &'a ResolvedAgent,
     ) -> ProbeFuture<'a> {
         Box::pin(async move {
-            let Some(limit_provider) = alias_limit_provider(&entry.provider) else {
-                return Ok(AgentLimit::NotLimited);
-            };
-            let cookies = match provider_to_domain(limit_provider) {
-                Some(domain) => self
-                    .session
-                    .cookies_for_domain(domain)
-                    .await
-                    .unwrap_or_default(),
-                None => Vec::new(),
-            };
-            let agent_cfg = synthesize_agent_config(limit_provider, entry);
-            let agent = Agent::new(agent_cfg, cookies);
-            agent.check_limit().await
+            let provider = codexbar_provider_name(&resolved.sdk, &entry.provider);
+            match crate::codexbar::check_limit(&provider).await {
+                Ok(limit) => Ok(limit),
+                // A missing codexbar entry (community providers), an absent
+                // binary, or a transient spawn/timeout failure all mean "we
+                // can't prove this provider is limited" — treat it as available
+                // so resolution proceeds rather than dropping the provider.
+                Err(_) => Ok(AgentLimit::NotLimited),
+            }
         })
     }
 }
 
-/// Convenience wrapper: detect browser/profile, build a [`CookieProbe`], and run
-/// [`resolve_agent`].
+/// Convenience wrapper: build a [`CodexBarProbe`] and run [`resolve_agent`].
 ///
 /// # Errors
 ///
 /// Same as [`resolve_agent`].
-pub async fn resolve_agent_with_cookies(
+pub async fn resolve_agent_with_codexbar(
     opts: ResolveOptions,
-    browser: Option<BrowserType>,
-    profile: Option<String>,
 ) -> Result<ResolvedAgent, ResolveError> {
-    let session = BrowserSession::detect(browser, profile);
-    let mut probe = CookieProbe { session: &session };
+    let mut probe = CodexBarProbe;
     resolve_agent(opts, &mut probe).await
 }
 
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "tests may panic on unexpected fixtures")]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use crate::sdk::config::{ModelEntry, ProviderApi, ProviderEntry, SkillsConfig};
     use indexmap::IndexMap;
@@ -672,93 +613,15 @@ mod tests {
     }
 
     #[test]
-    fn alias_table_maps_synonyms_to_canonical_names() {
-        assert_eq!(alias_limit_provider("kimi"), Some("kimi-k2"));
-        assert_eq!(alias_limit_provider("opencode"), Some("opencode-go"));
-        assert_eq!(alias_limit_provider("opencodego"), Some("opencode-go"));
-        assert_eq!(alias_limit_provider("claude"), Some("claude"));
-        assert_eq!(alias_limit_provider("unknown"), None);
-    }
-
-    #[test]
-    fn synthesize_agent_config_routes_keys_per_provider() {
-        let mut e = entry("zai", "zai", None, &[("build", "zai/glm", None)]);
-        e.api = Some(ProviderApi {
-            key: Some("sk".into()),
-            endpoint: Some("https://x".into()),
-        });
-        let cfg = synthesize_agent_config("zai", &e);
-        let env = cfg.env.as_ref().expect("env present");
-        assert_eq!(env.get("Z_AI_API_KEY").map(String::as_str), Some("sk"));
+    fn codexbar_provider_name_aliases_claude_terminal() {
+        // claude-terminal shares the `claude` codexbar account.
         assert_eq!(
-            env.get("Z_AI_QUOTA_URL").map(String::as_str),
-            Some("https://x"),
+            codexbar_provider_name("claude-terminal", "claude"),
+            "claude"
         );
-
-        let mut e2 = entry("or", "openrouter", None, &[("build", "or/x", None)]);
-        e2.api = Some(ProviderApi {
-            key: Some("orkey".into()),
-            endpoint: None,
-        });
-        let cfg2 = synthesize_agent_config("openrouter", &e2);
-        assert_eq!(cfg2.openrouter_management_key.as_deref(), Some("orkey"));
-        assert!(cfg2.env.is_none());
-
-        let mut e3 = entry("glm", "glm", None, &[("build", "glm-1", None)]);
-        e3.api = Some(ProviderApi {
-            key: Some("glmkey".into()),
-            endpoint: None,
-        });
-        let cfg3 = synthesize_agent_config("glm", &e3);
-        assert_eq!(cfg3.glm_api_key.as_deref(), Some("glmkey"));
-    }
-
-    #[test]
-    fn synthesize_agent_config_kimi_k2_uses_env_var() {
-        let mut e = entry("kimi-k2", "kimi-k2", None, &[("build", "k2", None)]);
-        e.api = Some(ProviderApi {
-            key: Some("kimikey".into()),
-            endpoint: None,
-        });
-        let cfg = synthesize_agent_config("kimi-k2", &e);
-        assert_eq!(
-            cfg.env
-                .as_ref()
-                .and_then(|m| m.get("KIMI_K2_API_KEY"))
-                .map(String::as_str),
-            Some("kimikey"),
-        );
-    }
-
-    #[test]
-    fn synthesize_agent_config_warp_uses_env_var() {
-        let mut e = entry("warp", "warp", None, &[("build", "warp", None)]);
-        e.api = Some(ProviderApi {
-            key: Some("wkey".into()),
-            endpoint: None,
-        });
-        let cfg = synthesize_agent_config("warp", &e);
-        assert_eq!(
-            cfg.env
-                .as_ref()
-                .and_then(|m| m.get("WARP_API_KEY"))
-                .map(String::as_str),
-            Some("wkey"),
-        );
-    }
-
-    #[test]
-    fn synthesize_agent_config_claude_codex_copilot_have_empty_env() {
-        // Cookie-based providers — synthesize doesn't inject any env, the cookies
-        // are fetched separately by the BrowserSession.
-        for p in ["claude", "codex", "copilot", "kiro"] {
-            let e = entry(p, p, None, &[("build", "m", None)]);
-            let cfg = synthesize_agent_config(p, &e);
-            assert!(cfg.env.is_none(), "expected no env for {p}");
-            assert!(cfg.openrouter_management_key.is_none());
-            assert!(cfg.glm_api_key.is_none());
-            assert_eq!(cfg.command, p);
-        }
+        // Any other sdk passes the provider name through unchanged.
+        assert_eq!(codexbar_provider_name("pi", "zai"), "zai");
+        assert_eq!(codexbar_provider_name("pi", "codex"), "codex");
     }
 
     // -----------------------------------------------------------------------

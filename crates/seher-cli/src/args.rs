@@ -1,8 +1,6 @@
 use std::path::PathBuf;
-use std::str::FromStr;
 
 use clap::Parser;
-use seher::BrowserType;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -38,14 +36,6 @@ pub struct RawArgs {
     #[arg(short = 'q', long)]
     pub quiet: bool,
 
-    /// Browser to read cookies from
-    #[arg(long)]
-    pub browser: Option<String>,
-
-    /// Browser profile name
-    #[arg(long)]
-    pub profile: Option<String>,
-
     /// Optional `plan`/`build` followed by prompt text
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub trailing: Vec<String>,
@@ -59,8 +49,6 @@ pub struct Args {
     pub config: Option<PathBuf>,
     pub timeout: Option<u64>,
     pub quiet: bool,
-    pub browser: Option<BrowserType>,
-    pub profile: Option<String>,
     pub prompt_tokens: Vec<String>,
 }
 
@@ -70,13 +58,6 @@ pub fn normalize(raw: RawArgs) -> Result<Args, String> {
         Some("plan") => (Mode::Plan, raw.trailing[1..].to_vec()),
         Some("build") => (Mode::Build, raw.trailing[1..].to_vec()),
         _ => (Mode::Build, raw.trailing),
-    };
-
-    let browser = match raw.browser.as_deref() {
-        None => None,
-        Some(s) => {
-            Some(BrowserType::from_str(s).map_err(|e| format!("invalid --browser '{s}': {e}"))?)
-        }
     };
 
     if let Some(t) = raw.timeout
@@ -94,8 +75,6 @@ pub fn normalize(raw: RawArgs) -> Result<Args, String> {
         config: raw.config,
         timeout: raw.timeout,
         quiet: raw.quiet,
-        browser,
-        profile: raw.profile,
         prompt_tokens,
     })
 }
@@ -166,12 +145,6 @@ mod tests {
         let a = parse(&["-p", "claude", "-m", "low", "build", "x"]).expect("ok");
         assert_eq!(a.provider.as_deref(), Some("claude"));
         assert_eq!(a.model.as_deref(), Some("low"));
-    }
-
-    #[test]
-    fn unknown_browser_value_errors() {
-        let err = parse(&["--browser", "lynx", "build", "x"]).expect_err("should reject");
-        assert!(err.contains("--browser"), "got: {err}");
     }
 
     #[test]
