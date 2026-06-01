@@ -5,9 +5,8 @@ use super::detect::{build_needles, detect_session_limit, paste_is_consumed};
 use super::normalizer::normalize_text;
 use super::transcript::{FileSystemTranscriptReader, default_transcript_root};
 use super::types::{
-    ClaudeTerminalError, ClaudeTerminalResponse, ClaudeTranscriptReader,
-    FindClaudeSessionOptions, TerminalBackend, TerminalSession, TerminalStartOptions,
-    WaitForAssistantResponseOptions,
+    ClaudeTerminalError, ClaudeTerminalResponse, ClaudeTranscriptReader, FindClaudeSessionOptions,
+    TerminalBackend, TerminalSession, TerminalStartOptions, WaitForAssistantResponseOptions,
 };
 
 const DEFAULT_TIMEOUT_MS: u64 = 15 * 60 * 1000;
@@ -74,9 +73,14 @@ impl ClaudeTerminalSdk {
                 .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().into_owned())
         });
         let timeout_ms = self.config.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
-        let poll_ms = self.config.poll_interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS);
-        let ready_timeout_ms =
-            self.config.ready_timeout_ms.unwrap_or(DEFAULT_READY_TIMEOUT_MS);
+        let poll_ms = self
+            .config
+            .poll_interval_ms
+            .unwrap_or(DEFAULT_POLL_INTERVAL_MS);
+        let ready_timeout_ms = self
+            .config
+            .ready_timeout_ms
+            .unwrap_or(DEFAULT_READY_TIMEOUT_MS);
         let paste_visible_ms = self
             .config
             .paste_visible_timeout_ms
@@ -142,7 +146,10 @@ impl ClaudeTerminalSdk {
         result
     }
 
-    #[expect(clippy::too_many_arguments, reason = "timeline parameters mirror the TS design")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "timeline parameters mirror the TS design"
+    )]
     fn run_session(
         &self,
         session: &TerminalSession,
@@ -174,7 +181,10 @@ impl ClaudeTerminalSdk {
 
         self.reader().wait_for_assistant_response(
             &session_ref,
-            WaitForAssistantResponseOptions { timeout_ms, poll_interval_ms: poll_ms },
+            WaitForAssistantResponseOptions {
+                timeout_ms,
+                poll_interval_ms: poll_ms,
+            },
         )
     }
 
@@ -215,7 +225,11 @@ impl ClaudeTerminalSdk {
         let mut consecutive_failures = 0usize;
         loop {
             let screen = self
-                .capture_with_retry(session, &mut consecutive_failures, "waiting for Claude TUI to render")?
+                .capture_with_retry(
+                    session,
+                    &mut consecutive_failures,
+                    "waiting for Claude TUI to render",
+                )?
                 .unwrap_or_default();
 
             // Check for session limit BEFORE checking the ready indicator
@@ -318,21 +332,19 @@ pub fn stream_via_thread(
 ) -> std::sync::mpsc::Receiver<crate::sdk::StreamChunk> {
     use crate::sdk::{LimitError, StreamChunk};
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        match sdk.run(&prompt) {
-            Ok(text) => {
-                let _ = tx.send(StreamChunk::Delta(text));
-                let _ = tx.send(StreamChunk::Done(String::new()));
-            }
-            Err(ClaudeTerminalError::SessionLimit { reset_info: _ }) => {
-                let _ = tx.send(StreamChunk::Limit(LimitError {
-                    provider: provider_label,
-                    reset_at: None,
-                }));
-            }
-            Err(e) => {
-                let _ = tx.send(StreamChunk::Error(e.to_string()));
-            }
+    std::thread::spawn(move || match sdk.run(&prompt) {
+        Ok(text) => {
+            let _ = tx.send(StreamChunk::Delta(text));
+            let _ = tx.send(StreamChunk::Done(String::new()));
+        }
+        Err(ClaudeTerminalError::SessionLimit { reset_info: _ }) => {
+            let _ = tx.send(StreamChunk::Limit(LimitError {
+                provider: provider_label,
+                reset_at: None,
+            }));
+        }
+        Err(e) => {
+            let _ = tx.send(StreamChunk::Error(e.to_string()));
         }
     });
     rx

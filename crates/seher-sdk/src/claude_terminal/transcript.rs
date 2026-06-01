@@ -13,12 +13,17 @@ use super::types::{
 pub fn encode_project_dir(cwd: &str) -> String {
     // canonicalize so relative paths are resolved before encoding
     let path = std::fs::canonicalize(cwd).unwrap_or_else(|_| {
-        std::env::current_dir()
-            .map_or_else(|_| PathBuf::from(cwd), |base| base.join(cwd))
+        std::env::current_dir().map_or_else(|_| PathBuf::from(cwd), |base| base.join(cwd))
     });
     path.to_string_lossy()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 
@@ -94,21 +99,19 @@ impl ClaudeTranscriptReader for FileSystemTranscriptReader {
 
             let mut candidates: Vec<(PathBuf, u64)> = entries
                 .into_iter()
-                .filter(|name| {
-                    has_jsonl_extension(name) && !options.exclude_names.contains(name)
-                })
+                .filter(|name| has_jsonl_extension(name) && !options.exclude_names.contains(name))
                 .filter_map(|name| {
                     let path = dir.join(&name);
                     let mtime = std::fs::metadata(&path)
                         .and_then(|m| m.modified())
                         .ok()
-                        .map(|t| {
-                            t.duration_since(UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_millis()
-                        })
+                        .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_millis())
                         .and_then(|ms| u64::try_from(ms).ok())?;
-                    if mtime >= options.after_ms { Some((path, mtime)) } else { None }
+                    if mtime >= options.after_ms {
+                        Some((path, mtime))
+                    } else {
+                        None
+                    }
                 })
                 .collect();
 
@@ -141,8 +144,7 @@ impl ClaudeTranscriptReader for FileSystemTranscriptReader {
     ) -> Result<ClaudeTerminalResponse, ClaudeTerminalError> {
         let deadline = now_ms().saturating_add(options.timeout_ms);
         loop {
-            let raw =
-                std::fs::read_to_string(&session.transcript_path).unwrap_or_default();
+            let raw = std::fs::read_to_string(&session.transcript_path).unwrap_or_default();
             let messages = parse_jsonl(&raw);
             let scan = scan_transcript(&messages);
             if scan.last_result.is_some() {
@@ -197,7 +199,11 @@ fn scan_transcript(messages: &[TranscriptMessage]) -> TranscriptScan {
             _ => {}
         }
     }
-    TranscriptScan { assistant_messages, last_result, turn_complete }
+    TranscriptScan {
+        assistant_messages,
+        last_result,
+        turn_complete,
+    }
 }
 
 #[must_use]

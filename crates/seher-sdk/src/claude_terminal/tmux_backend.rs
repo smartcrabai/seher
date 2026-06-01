@@ -50,10 +50,7 @@ impl TmuxBackend {
 }
 
 impl TerminalBackend for TmuxBackend {
-    fn start(
-        &self,
-        options: TerminalStartOptions,
-    ) -> Result<TerminalSession, ClaudeTerminalError> {
+    fn start(&self, options: TerminalStartOptions) -> Result<TerminalSession, ClaudeTerminalError> {
         // Use full UUID to avoid session-name guessing attacks
         let id = format!("{}-{}", self.session_prefix, Uuid::new_v4());
         let mut args: Vec<&str> = vec!["new-session", "-d", "-s", &id, "-c", &options.cwd];
@@ -61,10 +58,9 @@ impl TerminalBackend for TmuxBackend {
             args.push(cmd.as_str());
         }
 
-        let res = spawn(&self.tmux_bin, &args, None, options.env.as_ref())
-            .map_err(|e| {
-                ClaudeTerminalError::Other(format!("failed to spawn tmux new-session: {e}"))
-            })?;
+        let res = spawn(&self.tmux_bin, &args, None, options.env.as_ref()).map_err(|e| {
+            ClaudeTerminalError::Other(format!("failed to spawn tmux new-session: {e}"))
+        })?;
         if res.exit_code != Some(0) {
             return Err(ClaudeTerminalError::Other(format!(
                 "tmux new-session failed (exit {:?}): {}",
@@ -75,11 +71,7 @@ impl TerminalBackend for TmuxBackend {
         Ok(TerminalSession { id })
     }
 
-    fn paste_text(
-        &self,
-        session: &TerminalSession,
-        text: &str,
-    ) -> Result<(), ClaudeTerminalError> {
+    fn paste_text(&self, session: &TerminalSession, text: &str) -> Result<(), ClaudeTerminalError> {
         let buffer_name = format!("{}-prompt", session.id);
         // load-buffer reads text from stdin
         self.run_tmux(
@@ -105,7 +97,11 @@ impl TerminalBackend for TmuxBackend {
     }
 
     fn submit(&self, session: &TerminalSession) -> Result<(), ClaudeTerminalError> {
-        self.run_tmux("send-keys Enter", &["send-keys", "-t", &session.id, "Enter"], None)?;
+        self.run_tmux(
+            "send-keys Enter",
+            &["send-keys", "-t", &session.id, "Enter"],
+            None,
+        )?;
         Ok(())
     }
 
@@ -140,7 +136,11 @@ fn spawn(
     let stdin_pipe = stdin.is_some();
     let mut cmd = Command::new(bin);
     cmd.args(args);
-    cmd.stdin(if stdin_pipe { Stdio::piped() } else { Stdio::null() });
+    cmd.stdin(if stdin_pipe {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     if let Some(extra_env) = env {

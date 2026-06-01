@@ -1,8 +1,12 @@
 use super::types::ClaudeTerminalError;
 
 /// Allowed values for `--permission-mode` passed to the `claude` CLI.
-const ALLOWED_PERMISSION_MODES: &[&str] =
-    &["bypassPermissions", "default", "acceptEdits", "acceptEditsAndAutoApprove"];
+const ALLOWED_PERMISSION_MODES: &[&str] = &[
+    "bypassPermissions",
+    "default",
+    "acceptEdits",
+    "acceptEditsAndAutoApprove",
+];
 
 pub struct BuildClaudeCommandOptions {
     pub claude_bin: String,
@@ -70,7 +74,13 @@ mod tests {
         });
         assert_eq!(
             args,
-            ["claude", "--model", "claude-opus-4-7", "--permission-mode", "bypassPermissions"]
+            [
+                "claude",
+                "--model",
+                "claude-opus-4-7",
+                "--permission-mode",
+                "bypassPermissions"
+            ]
         );
     }
 

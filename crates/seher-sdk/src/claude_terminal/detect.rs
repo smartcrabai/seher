@@ -13,8 +13,7 @@ fn make_regex(pattern: &str) -> Regex {
 
 // ── ANSI escape stripping ────────────────────────────────────────────────────
 
-static ANSI_ESCAPE: LazyLock<Regex> =
-    LazyLock::new(|| make_regex(r"\x1b\[[\d;?]*[A-Za-z]"));
+static ANSI_ESCAPE: LazyLock<Regex> = LazyLock::new(|| make_regex(r"\x1b\[[\d;?]*[A-Za-z]"));
 
 fn strip_ansi(s: &str) -> String {
     ANSI_ESCAPE.replace_all(s, "").into_owned()
@@ -74,8 +73,7 @@ static COLLAPSED_PASTE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 static TRAILING_TRIM_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| make_regex(r"(?u)[\s*`_~。．、，！？!?,\\.;:　・]+$"));
 
-static LEADING_TRIM_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| make_regex(r"(?u)^[\s*`_~]+"));
+static LEADING_TRIM_PATTERN: LazyLock<Regex> = LazyLock::new(|| make_regex(r"(?u)^[\s*`_~]+"));
 
 #[derive(Debug, Clone)]
 pub struct PasteNeedles {
@@ -97,7 +95,11 @@ fn suffix_needle(prompt: &str) -> String {
         return String::new();
     }
     let stripped = TRAILING_TRIM_PATTERN.replace(trimmed, "");
-    let source = if stripped.is_empty() { trimmed } else { &stripped };
+    let source = if stripped.is_empty() {
+        trimmed
+    } else {
+        &stripped
+    };
     let last_line = source.split('\n').next_back().unwrap_or("");
     if last_line.is_empty() {
         return String::new();
@@ -111,7 +113,11 @@ fn prefix_needle(prompt: &str) -> String {
         return String::new();
     }
     let stripped = LEADING_TRIM_PATTERN.replace(trimmed, "");
-    let source = if stripped.is_empty() { trimmed } else { &stripped };
+    let source = if stripped.is_empty() {
+        trimmed
+    } else {
+        &stripped
+    };
     let first_line = source.split('\n').next().unwrap_or("");
     if first_line.is_empty() {
         return String::new();
@@ -296,7 +302,10 @@ mod tests {
         let screen = format!("You've hit your session limit resets {long}");
         let result = detect_session_limit(&screen);
         assert!(result.is_some());
-        assert!(result.unwrap().is_none(), "too-long reset info should be None");
+        assert!(
+            result.unwrap().is_none(),
+            "too-long reset info should be None"
+        );
     }
 
     #[test]
@@ -306,7 +315,10 @@ mod tests {
         let n = build_needles(&prompt);
         let suffix_chars: Vec<char> = n.suffix.chars().collect();
         let width: usize = suffix_chars.iter().map(|c| char_cell_width(*c)).sum();
-        assert!(width <= MAX_NEEDLE_CELLS, "suffix width {width} > {MAX_NEEDLE_CELLS}");
+        assert!(
+            width <= MAX_NEEDLE_CELLS,
+            "suffix width {width} > {MAX_NEEDLE_CELLS}"
+        );
     }
 
     #[test]

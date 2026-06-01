@@ -21,11 +21,7 @@ pub trait TerminalBackend: Send + Sync {
     ///
     /// # Errors
     /// Returns an error if the paste operation fails.
-    fn paste_text(
-        &self,
-        session: &TerminalSession,
-        text: &str,
-    ) -> Result<(), ClaudeTerminalError>;
+    fn paste_text(&self, session: &TerminalSession, text: &str) -> Result<(), ClaudeTerminalError>;
     /// # Errors
     /// Returns an error if the Enter keystroke cannot be sent.
     fn submit(&self, session: &TerminalSession) -> Result<(), ClaudeTerminalError>;

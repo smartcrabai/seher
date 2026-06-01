@@ -46,7 +46,9 @@ fn extract_text_blocks(blocks: &[serde_json::Value]) -> String {
             if obj.get("type")?.as_str() != Some("text") {
                 return None;
             }
-            obj.get("text")?.as_str().map(std::string::ToString::to_string)
+            obj.get("text")?
+                .as_str()
+                .map(std::string::ToString::to_string)
         })
         .collect::<String>()
 }
@@ -54,7 +56,9 @@ fn extract_text_blocks(blocks: &[serde_json::Value]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::claude_terminal::types::{ClaudeTerminalResponse, MessageContent, TranscriptMessage};
+    use crate::claude_terminal::types::{
+        ClaudeTerminalResponse, MessageContent, TranscriptMessage,
+    };
     use serde_json::json;
 
     fn make_assistant(content: serde_json::Value) -> TranscriptMessage {
