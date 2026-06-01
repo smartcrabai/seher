@@ -2,12 +2,8 @@ pub mod config;
 pub mod config_loader;
 pub mod errors;
 pub mod pi_runner;
-pub mod sleep;
-
-#[cfg(feature = "browser")]
-pub mod cookies;
-#[cfg(feature = "browser")]
 pub mod resolve;
+pub mod sleep;
 
 pub use config::{
     Config, ModelEntry, ProviderApi, ProviderEntry, ResolvedAgent, ResolvedSkillsConfig,
@@ -16,13 +12,9 @@ pub use config::{
 pub use config_loader::{ConfigError, load_config, resolve_config_path};
 pub use errors::{LimitError, RunError, TimeoutError};
 pub use pi_runner::{PiRunner, PiRunnerOptions, StreamChunk};
-
-#[cfg(feature = "browser")]
-pub use cookies::{BrowserSession, provider_to_domain};
-#[cfg(feature = "browser")]
 pub use resolve::{
-    AllAgentsLimitedError, Candidate, CookieProbe, LimitProbe, NoMatchingAgentError, PollOptions,
-    ProbeFuture, ResolveError, ResolveOptions, SUPPORTED_SDK_KINDS, ScanOutcome,
-    alias_limit_provider, build_candidates, is_supported_sdk, poll_for_agent, resolve_agent,
-    resolve_agent_with_cookies, scan, unsupported_sdk_providers,
+    AllAgentsLimitedError, Candidate, CodexBarProbe, LimitProbe, NoMatchingAgentError, PollOptions,
+    ProbeFuture, ResolveError, ResolveOptions, SUPPORTED_SDK_KINDS, ScanOutcome, build_candidates,
+    codexbar_provider_name, is_supported_sdk, poll_for_agent, resolve_agent,
+    resolve_agent_with_codexbar, scan, unsupported_sdk_providers,
 };

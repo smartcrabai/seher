@@ -5,8 +5,8 @@
 
 use seher::claude_terminal::{new_sdk_with_defaults, stream_via_thread};
 use seher::sdk::{
-    BrowserSession, Config, CookieProbe, PiRunner, PiRunnerOptions, ResolveOptions, ResolvedAgent,
-    TimeoutError, load_config, resolve_agent, unsupported_sdk_providers,
+    CodexBarProbe, Config, PiRunner, PiRunnerOptions, ResolveOptions, ResolvedAgent, TimeoutError,
+    load_config, resolve_agent, unsupported_sdk_providers,
 };
 
 use crate::args::Args;
@@ -39,10 +39,8 @@ pub fn resolve_and_stream(
         ));
     }
 
-    let browser_session = BrowserSession::detect(args.browser, args.profile.clone());
-
     let resolver = |excluded: &[String]| -> Result<ResolvedAgent, String> {
-        resolve_once(rt, args, mode_key, excluded, &config, &browser_session)
+        resolve_once(rt, args, mode_key, excluded, &config)
     };
     let stream_runner = |resolved: &ResolvedAgent| -> Outcome {
         let rx = dispatch_stream(resolved, prompt, system_prompt, args);
@@ -112,7 +110,6 @@ fn resolve_once(
     mode_key: &str,
     excluded: &[String],
     config: &Config,
-    session: &BrowserSession,
 ) -> Result<ResolvedAgent, String> {
     let opts = ResolveOptions {
         mode_key: mode_key.to_string(),
@@ -123,7 +120,9 @@ fn resolve_once(
         ..Default::default()
     };
 
-    let mut probe = CookieProbe { session };
+    // Limit determination is delegated to the external `codexbar` binary
+    // (mirrors seher-ts), so no browser/cookie session is needed here.
+    let mut probe = CodexBarProbe;
     rt.block_on(async move { resolve_agent(opts, &mut probe).await })
         .map_err(|e| e.to_string())
 }

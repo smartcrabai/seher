@@ -1,6 +1,6 @@
 [package]
 name = "seher-sdk"
-description = "Seher SDK: agent resolution, rate-limit checks, and provider clients"
+description = "Seher SDK: agent resolution and codexbar-backed rate-limit checks"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,34 +11,14 @@ version.workspace = true
 name = "seher"
 path = "src/lib.rs"
 
-[features]
-browser = [
-  "dep:rusqlite",
-  "dep:aes",
-  "dep:aes-gcm",
-  "dep:cbc",
-  "dep:hmac",
-  "dep:sha1",
-]
-default = ["browser"]
-
 [dependencies]
-aes = { workspace = true, optional = true }
-aes-gcm = { workspace = true, optional = true }
-async-trait.workspace = true
-base64.workspace = true
-cbc = { workspace = true, optional = true }
 chrono.workspace = true
 dirs.workspace = true
-hmac = { workspace = true, optional = true }
-reqwest.workspace = true
-rusqlite = { workspace = true, optional = true }
 indexmap.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
-sha1 = { workspace = true, optional = true }
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -48,27 +28,6 @@ pi_agent_rust = "0.1.13"
 uuid = { version = "1", features = ["v4"] }
 unicode-normalization = "0.1"
 unicode-width = "0.2"
-
-[target.'cfg(target_os = "linux")'.dependencies]
-secret-service = { version = "5.0", features = ["rt-tokio-crypto-rust"] }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-security-framework = "3.0"
-
-[target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.62", features = ["Win32_Security_Cryptography"] }
-
-[[example]]
-name = "test_copilot"
-required-features = ["browser"]
-
-[[example]]
-name = "test_codex"
-required-features = ["browser"]
-
-[[example]]
-name = "test_opencode_go"
-required-features = ["browser"]
 
 [[example]]
 name = "pi_mvp"
