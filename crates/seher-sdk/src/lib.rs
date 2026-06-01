@@ -11,6 +11,7 @@ pub mod crypto;
 
 // Always available (public API as a library)
 pub mod claude;
+pub mod claude_terminal;
 pub mod copilot;
 pub mod glm;
 pub mod kimik2;

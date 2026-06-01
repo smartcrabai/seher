@@ -3,6 +3,7 @@
 //! Implements the retry-on-limit loop: on a `LimitError`, the resolved YAML
 //! provider name is added to `exclude_providers` and resolution is retried.
 
+use seher::claude_terminal::{new_sdk_with_defaults, stream_via_thread};
 use seher::sdk::{
     BrowserSession, Config, CookieProbe, PiRunner, PiRunnerOptions, ResolveOptions, ResolvedAgent,
     TimeoutError, load_config, resolve_agent, unsupported_sdk_providers,
@@ -34,7 +35,7 @@ pub fn resolve_and_stream(
     // resolver; we surface the skip here so the user knows why.
     for (provider, sdk) in unsupported_sdk_providers(&config) {
         logger.warn(&format!(
-            "Skipping provider '{provider}' (sdk='{sdk}'): not supported by this build (only 'pi')"
+            "Skipping provider '{provider}' (sdk='{sdk}'): not supported by this build (supported: 'pi', 'claude-terminal')"
         ));
     }
 
@@ -44,8 +45,7 @@ pub fn resolve_and_stream(
         resolve_once(rt, args, mode_key, excluded, &config, &browser_session)
     };
     let stream_runner = |resolved: &ResolvedAgent| -> Outcome {
-        let runner = build_runner(resolved, system_prompt.map(str::to_string));
-        let rx = runner.stream(prompt.to_string());
+        let rx = dispatch_stream(resolved, prompt, system_prompt, args);
         drain_to_stdout(rx, args.timeout)
     };
     stream_with_retry(args.timeout, logger, resolver, stream_runner)
@@ -77,8 +77,8 @@ where
     loop {
         let agent = resolver(&excluded)?;
         logger.info(&format!(
-            "Selected provider: {} (pi/{})",
-            agent.provider, agent.model_id
+            "Selected provider: {} ({}/{})",
+            agent.provider, agent.sdk, agent.model_id
         ));
         match stream_runner(&agent) {
             Outcome::Done(t) => return Ok(t),
@@ -128,7 +128,30 @@ fn resolve_once(
         .map_err(|e| e.to_string())
 }
 
-fn build_runner(resolved: &ResolvedAgent, system_prompt: Option<String>) -> PiRunner {
+fn dispatch_stream(
+    resolved: &ResolvedAgent,
+    prompt: &str,
+    system_prompt: Option<&str>,
+    args: &Args,
+) -> std::sync::mpsc::Receiver<seher::sdk::StreamChunk> {
+    if resolved.sdk == "claude-terminal" {
+        let model = Some(resolved.model_id.clone()).filter(|s| !s.is_empty());
+        let sdk = new_sdk_with_defaults(
+            None,
+            None,
+            model,
+            system_prompt.map(str::to_string),
+            args.timeout,
+            None,
+        );
+        stream_via_thread(sdk, prompt.to_string(), resolved.provider.clone())
+    } else {
+        let runner = build_pi_runner(resolved, system_prompt.map(str::to_string));
+        runner.stream(prompt.to_string())
+    }
+}
+
+fn build_pi_runner(resolved: &ResolvedAgent, system_prompt: Option<String>) -> PiRunner {
     let (provider, model) = parse_provider_model(&resolved.model_id);
     let api_key = resolved
         .api
@@ -172,6 +195,7 @@ mod tests {
             provider: provider.to_string(),
             model_id: model.to_string(),
             mode_key: "build".to_string(),
+            sdk: "pi".to_string(),
             api: None,
             skills: ResolvedSkillsConfig::default(),
         }
