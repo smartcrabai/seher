@@ -3,10 +3,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::command::{BuildClaudeCommandOptions, build_claude_command};
 use super::detect::{build_needles, detect_session_limit, paste_is_consumed};
 use super::normalizer::normalize_text;
-use super::transcript::{FileSystemTranscriptReader, default_transcript_root};
+use super::transcript::{FileSystemTranscriptReader, default_transcript_root, encode_project_dir};
 use super::types::{
-    ClaudeTerminalError, ClaudeTerminalResponse, ClaudeTranscriptReader, FindClaudeSessionOptions,
-    TerminalBackend, TerminalSession, TerminalStartOptions, WaitForAssistantResponseOptions,
+    ClaudeRunOutput, ClaudeSessionRef, ClaudeTerminalError, ClaudeTerminalResponse,
+    ClaudeTranscriptReader, FindClaudeSessionOptions, TerminalBackend, TerminalSession,
+    TerminalStartOptions, WaitForAssistantResponseOptions,
 };
 
 const DEFAULT_TIMEOUT_MS: u64 = 15 * 60 * 1000;
@@ -49,14 +50,24 @@ impl ClaudeTerminalSdk {
         Self { config }
     }
 
-    /// Execute a prompt and return the full text response.
+    /// Execute a prompt and return the full text response plus the session id.
+    ///
+    /// `resume` continues a prior Claude session (`claude --resume <id>`); `None` starts
+    /// a fresh session whose newly generated id is reported in [`ClaudeRunOutput`].
     ///
     /// # Errors
     ///
     /// Returns `ClaudeTerminalError` on tmux/spawn failures, timeouts, or session-limit.
-    pub fn run(&self, prompt: &str) -> Result<String, ClaudeTerminalError> {
-        let response = self.execute(prompt)?;
-        Ok(normalize_text(&response))
+    pub fn run(
+        &self,
+        prompt: &str,
+        resume: Option<&str>,
+    ) -> Result<ClaudeRunOutput, ClaudeTerminalError> {
+        let response = self.execute(prompt, resume)?;
+        Ok(ClaudeRunOutput {
+            text: normalize_text(&response),
+            session_id: response.session_id,
+        })
     }
 
     fn now() -> u64 {
@@ -67,7 +78,11 @@ impl ClaudeTerminalSdk {
         u64::try_from(ms).unwrap_or(u64::MAX)
     }
 
-    fn execute(&self, prompt: &str) -> Result<ClaudeTerminalResponse, ClaudeTerminalError> {
+    fn execute(
+        &self,
+        prompt: &str,
+        resume: Option<&str>,
+    ) -> Result<ClaudeTerminalResponse, ClaudeTerminalError> {
         let cwd = self.config.cwd.clone().unwrap_or_else(|| {
             std::env::current_dir()
                 .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().into_owned())
@@ -112,9 +127,19 @@ impl ClaudeTerminalSdk {
                 .clone()
                 .unwrap_or_else(|| DEFAULT_PERMISSION_MODE.to_string()),
             model: self.config.model.clone(),
-            system_prompt: self.config.system_prompt.clone(),
+            // On resume the system prompt is already part of the persisted session;
+            // re-passing `--append-system-prompt` would duplicate it. Apply it only when
+            // starting a fresh session.
+            system_prompt: if resume.is_some() {
+                None
+            } else {
+                self.config.system_prompt.clone()
+            },
+            resume_session_id: resume.map(str::to_string),
         })?;
 
+        // Only needed for the fresh-session path, which detects the new transcript by
+        // diffing against the names that already existed at launch.
         let exclude_names = self.reader().list_session_names(&transcript_root, &cwd)?;
         let started_at_ms = Self::now();
 
@@ -130,6 +155,7 @@ impl ClaudeTerminalSdk {
             &cwd,
             &transcript_root,
             &exclude_names,
+            resume,
             started_at_ms,
             timeout_ms,
             poll_ms,
@@ -157,6 +183,7 @@ impl ClaudeTerminalSdk {
         cwd: &str,
         transcript_root: &str,
         exclude_names: &std::collections::HashSet<String>,
+        resume: Option<&str>,
         started_at_ms: u64,
         timeout_ms: u64,
         poll_ms: u64,
@@ -170,20 +197,31 @@ impl ClaudeTerminalSdk {
         self.wait_for_paste_visible(session, prompt, paste_visible_ms, ready_poll_ms)?;
         self.backend().submit(session)?;
 
-        let session_ref = self.reader().find_session(FindClaudeSessionOptions {
-            cwd: cwd.to_string(),
-            after_ms: started_at_ms,
-            timeout_ms,
-            poll_interval_ms: poll_ms,
-            root: transcript_root.to_string(),
-            exclude_names: exclude_names.clone(),
-        })?;
+        // Resume appends to the existing `<id>.jsonl`, so there is no new file to find —
+        // the transcript path is derived directly from the id + cwd. A fresh session
+        // instead waits for a brand-new transcript to appear.
+        let session_ref = match resume {
+            Some(id) => ClaudeSessionRef {
+                session_id: id.to_string(),
+                transcript_path: encode_transcript_path(transcript_root, cwd, id),
+            },
+            None => self.reader().find_session(FindClaudeSessionOptions {
+                cwd: cwd.to_string(),
+                after_ms: started_at_ms,
+                timeout_ms,
+                poll_interval_ms: poll_ms,
+                root: transcript_root.to_string(),
+                exclude_names: exclude_names.clone(),
+            })?,
+        };
 
         self.reader().wait_for_assistant_response(
             &session_ref,
             WaitForAssistantResponseOptions {
                 timeout_ms,
                 poll_interval_ms: poll_ms,
+                // Exclude prior turns already present in a resumed transcript.
+                after_ms: started_at_ms,
             },
         )
     }
@@ -299,6 +337,17 @@ impl ClaudeTerminalSdk {
     }
 }
 
+/// Build the transcript file path Claude Code uses for `session_id` under `cwd`:
+/// `<root>/<encoded-cwd>/<session_id>.jsonl`.
+#[must_use]
+pub fn encode_transcript_path(root: &str, cwd: &str, session_id: &str) -> String {
+    std::path::Path::new(root)
+        .join(encode_project_dir(cwd))
+        .join(format!("{session_id}.jsonl"))
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// Convenience builder that wires up real `TmuxBackend` + `FileSystemTranscriptReader`.
 #[must_use]
 pub fn new_sdk_with_defaults(
@@ -324,17 +373,24 @@ pub fn new_sdk_with_defaults(
 
 /// Run a prompt through `ClaudeTerminalSdk` on a dedicated thread,
 /// emitting `StreamChunk`s compatible with seher-cli's `drain_to_stdout`.
+///
+/// `resume` continues a prior Claude session id; `None` starts a fresh one. The
+/// resulting session id is emitted via [`StreamChunk::Session`] before the text chunk —
+/// though, since Claude assigns the id mid-run, nothing is emitted until the run
+/// completes (the whole response arrives as a single `Delta`).
 #[must_use]
 pub fn stream_via_thread(
     sdk: ClaudeTerminalSdk,
     prompt: String,
     provider_label: String,
+    resume: Option<String>,
 ) -> std::sync::mpsc::Receiver<crate::sdk::StreamChunk> {
     use crate::sdk::{LimitError, StreamChunk};
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || match sdk.run(&prompt) {
-        Ok(text) => {
-            let _ = tx.send(StreamChunk::Delta(text));
+    std::thread::spawn(move || match sdk.run(&prompt, resume.as_deref()) {
+        Ok(output) => {
+            let _ = tx.send(StreamChunk::Session(output.session_id));
+            let _ = tx.send(StreamChunk::Delta(output.text));
             let _ = tx.send(StreamChunk::Done(String::new()));
         }
         Err(ClaudeTerminalError::SessionLimit { reset_info: _ }) => {

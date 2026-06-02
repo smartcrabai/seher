@@ -25,7 +25,8 @@ fn main() {
         ..PiRunnerOptions::default()
     };
     let runner = PiRunner::new(opts);
-    let rx = runner.stream(prompt);
+    // `None` = fresh session; pass a prior session id here to continue a conversation.
+    let rx = runner.stream(prompt, None);
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
@@ -34,6 +35,9 @@ fn main() {
             Ok(StreamChunk::Delta(d)) => {
                 let _ = out.write_all(d.as_bytes());
                 let _ = out.flush();
+            }
+            Ok(StreamChunk::Session(id)) => {
+                eprintln!("session: {id}");
             }
             Ok(StreamChunk::Done(text)) => {
                 if !text.is_empty() {

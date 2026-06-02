@@ -45,6 +45,36 @@ fn now_ms() -> u64 {
     u64::try_from(dur).unwrap_or(u64::MAX)
 }
 
+/// Parse an ISO-8601 / RFC-3339 transcript timestamp (e.g. `2026-06-01T21:57:49.050Z`)
+/// into epoch milliseconds.
+fn ts_to_ms(ts: &str) -> Option<u64> {
+    chrono::DateTime::parse_from_rfc3339(ts)
+        .ok()
+        .map(|dt| dt.timestamp_millis())
+        .and_then(|ms| u64::try_from(ms).ok())
+}
+
+/// Whether a transcript message belongs to the current turn (timestamp at or after the
+/// `after_ms` cutoff). Untimestamped lines are conservatively kept — in real Claude
+/// transcripts the scanned line types (`assistant`/`user`/`system`) always carry one.
+fn msg_in_window(m: &TranscriptMessage, after_ms: u64) -> bool {
+    match m.timestamp.as_deref().and_then(ts_to_ms) {
+        Some(ms) => ms >= after_ms,
+        None => true,
+    }
+}
+
+/// Stricter window check for turn-completion markers (`result` / `turn_duration`): with
+/// a cutoff in effect, an untimestamped marker cannot be proven to belong to the current
+/// turn, and accepting a stale one would end the wait with a previous turn's output.
+fn marker_in_window(m: &TranscriptMessage, after_ms: u64) -> bool {
+    after_ms == 0
+        || m.timestamp
+            .as_deref()
+            .and_then(ts_to_ms)
+            .is_some_and(|ms| ms >= after_ms)
+}
+
 fn has_jsonl_extension(name: &str) -> bool {
     std::path::Path::new(name)
         .extension()
@@ -146,7 +176,7 @@ impl ClaudeTranscriptReader for FileSystemTranscriptReader {
         loop {
             let raw = std::fs::read_to_string(&session.transcript_path).unwrap_or_default();
             let messages = parse_jsonl(&raw);
-            let scan = scan_transcript(&messages);
+            let scan = scan_transcript(&messages, options.after_ms);
             if scan.last_result.is_some() {
                 return Ok(ClaudeTerminalResponse {
                     session_id: session.session_id.clone(),
@@ -185,15 +215,22 @@ struct TranscriptScan {
     turn_complete: bool,
 }
 
-fn scan_transcript(messages: &[TranscriptMessage]) -> TranscriptScan {
+fn scan_transcript(messages: &[TranscriptMessage], after_ms: u64) -> TranscriptScan {
     let mut assistant_messages = Vec::new();
     let mut last_result = None;
     let mut turn_complete = false;
     for m in messages {
+        // Skip messages from prior turns (relevant when resuming an existing transcript).
+        if !msg_in_window(m, after_ms) {
+            continue;
+        }
         match m.msg_type.as_str() {
             "assistant" => assistant_messages.push(m.clone()),
-            "result" => last_result = Some(m.clone()),
-            "system" if m.subtype.as_deref() == Some("turn_duration") => {
+            "result" if marker_in_window(m, after_ms) => last_result = Some(m.clone()),
+            "system"
+                if m.subtype.as_deref() == Some("turn_duration")
+                    && marker_in_window(m, after_ms) =>
+            {
                 turn_complete = true;
             }
             _ => {}
@@ -259,7 +296,7 @@ not-json
         let raw = r#"{"type":"assistant","message":{"content":"hello"}}
 {"type":"system","subtype":"turn_duration"}"#;
         let msgs = parse_jsonl(raw);
-        let scan = scan_transcript(&msgs);
+        let scan = scan_transcript(&msgs, 0);
         assert_eq!(scan.assistant_messages.len(), 1);
         assert!(scan.turn_complete);
         assert!(scan.last_result.is_none());
@@ -270,11 +307,61 @@ not-json
         let raw = r#"{"type":"assistant","message":{"content":"hello"}}
 {"type":"result","result":"final answer"}"#;
         let msgs = parse_jsonl(raw);
-        let scan = scan_transcript(&msgs);
+        let scan = scan_transcript(&msgs, 0);
         assert!(scan.last_result.is_some());
         assert_eq!(
             scan.last_result.unwrap().result.as_deref(),
             Some("final answer")
         );
+    }
+
+    #[test]
+    fn scan_transcript_excludes_messages_before_cutoff() {
+        // Simulates a resumed transcript: an older turn (and its turn_duration) sits
+        // before the cutoff, the current turn sits after it.
+        let raw = r#"{"type":"assistant","message":{"content":"old"},"timestamp":"2026-06-01T00:00:00.000Z"}
+{"type":"system","subtype":"turn_duration","timestamp":"2026-06-01T00:00:01.000Z"}
+{"type":"assistant","message":{"content":"new"},"timestamp":"2026-06-01T12:00:00.000Z"}"#;
+        let msgs = parse_jsonl(raw);
+        // Cutoff at 2026-06-01T06:00:00Z (epoch ms) — only the "new" assistant message qualifies.
+        let cutoff = ts_to_ms("2026-06-01T06:00:00.000Z").unwrap();
+        let scan = scan_transcript(&msgs, cutoff);
+        assert_eq!(
+            scan.assistant_messages.len(),
+            1,
+            "only the post-cutoff turn"
+        );
+        assert!(
+            !scan.turn_complete,
+            "the pre-cutoff turn_duration must not count as this turn completing"
+        );
+    }
+
+    #[test]
+    fn ts_to_ms_parses_iso8601() {
+        assert!(ts_to_ms("2026-06-01T21:57:49.050Z").is_some());
+        assert!(ts_to_ms("not-a-timestamp").is_none());
+    }
+
+    #[test]
+    fn scan_transcript_ignores_untimestamped_markers_when_cutoff_active() {
+        // A resumed transcript may contain completion markers without timestamps; with a
+        // cutoff they must not terminate the wait (they could be from a prior turn).
+        let raw = r#"{"type":"result","result":"stale answer"}
+{"type":"system","subtype":"turn_duration"}"#;
+        let msgs = parse_jsonl(raw);
+        let scan = scan_transcript(&msgs, 1);
+        assert!(
+            scan.last_result.is_none(),
+            "untimestamped result must not count"
+        );
+        assert!(
+            !scan.turn_complete,
+            "untimestamped turn_duration must not count"
+        );
+        // Without a cutoff (fresh transcript semantics) they still count.
+        let scan = scan_transcript(&msgs, 0);
+        assert!(scan.last_result.is_some());
+        assert!(scan.turn_complete);
     }
 }

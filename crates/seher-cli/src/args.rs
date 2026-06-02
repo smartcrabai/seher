@@ -36,6 +36,15 @@ pub struct RawArgs {
     #[arg(short = 'q', long)]
     pub quiet: bool,
 
+    /// Working directory for the agent. Multi-turn sessions are bound to it.
+    #[arg(long)]
+    pub cwd: Option<String>,
+
+    /// Resume a prior session by id (printed as `session: <id>` on a previous run).
+    /// Pass the same `--cwd` used to create it.
+    #[arg(short = 'r', long)]
+    pub resume: Option<String>,
+
     /// Optional `plan`/`build` followed by prompt text
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub trailing: Vec<String>,
@@ -49,6 +58,10 @@ pub struct Args {
     pub config: Option<PathBuf>,
     pub timeout: Option<u64>,
     pub quiet: bool,
+    /// Absolute, canonicalized working directory (when `--cwd` was given).
+    pub cwd: Option<String>,
+    /// Session id to resume, if any.
+    pub resume: Option<String>,
     pub prompt_tokens: Vec<String>,
 }
 
@@ -68,6 +81,37 @@ pub fn normalize(raw: RawArgs) -> Result<Args, String> {
         ));
     }
 
+    // Session ids are uuids (or claude-generated ids of the same shape); they are used
+    // to build file paths, so reject anything with path separators or other junk.
+    if let Some(r) = &raw.resume
+        && (r.is_empty()
+            || !r
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+    {
+        return Err(format!(
+            "Invalid --resume value '{r}': expected a session id (alphanumeric, '-', '_')"
+        ));
+    }
+
+    // Canonicalize --cwd to an absolute path up front, so the session<->cwd binding is
+    // stable across turns (a relative `.` and its absolute form must encode identically
+    // for resume to locate the transcript). Errors if the directory does not exist.
+    let cwd = match raw.cwd {
+        Some(c) => Some(
+            std::fs::canonicalize(&c)
+                .map_err(|e| format!("Invalid --cwd '{c}': {e}"))
+                .and_then(|p| {
+                    if p.is_dir() {
+                        Ok(p.to_string_lossy().into_owned())
+                    } else {
+                        Err(format!("Invalid --cwd '{c}': not a directory"))
+                    }
+                })?,
+        ),
+        None => None,
+    };
+
     Ok(Args {
         mode,
         provider: raw.provider,
@@ -75,6 +119,8 @@ pub fn normalize(raw: RawArgs) -> Result<Args, String> {
         config: raw.config,
         timeout: raw.timeout,
         quiet: raw.quiet,
+        cwd,
+        resume: raw.resume,
         prompt_tokens,
     })
 }
@@ -151,5 +197,40 @@ mod tests {
     fn quiet_flag_sets_quiet() {
         let a = parse(&["-q", "build", "x"]).expect("ok");
         assert!(a.quiet);
+    }
+
+    #[test]
+    fn resume_accepts_uuid_like_ids() {
+        let a = parse(&["-r", "963f3c95-78ba-472a-8adf-a5218af2d135", "build", "x"]).expect("ok");
+        assert_eq!(
+            a.resume.as_deref(),
+            Some("963f3c95-78ba-472a-8adf-a5218af2d135")
+        );
+    }
+
+    #[test]
+    fn resume_rejects_path_separators() {
+        let err = parse(&["-r", "../../../etc/passwd", "build", "x"]).expect_err("should reject");
+        assert!(err.contains("Invalid --resume"), "got: {err}");
+        let err = parse(&["-r", "a/b", "build", "x"]).expect_err("should reject");
+        assert!(err.contains("Invalid --resume"), "got: {err}");
+    }
+
+    #[test]
+    fn cwd_must_exist() {
+        let err =
+            parse(&["--cwd", "/nonexistent-dir-xyz", "build", "x"]).expect_err("should reject");
+        assert!(err.contains("Invalid --cwd"), "got: {err}");
+    }
+
+    #[test]
+    fn cwd_is_canonicalized() {
+        let a = parse(&["--cwd", "/tmp", "build", "x"]).expect("ok");
+        // macOS: /tmp is a symlink to /private/tmp — canonicalize resolves it.
+        let expected = std::fs::canonicalize("/tmp")
+            .expect("canonicalize /tmp")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(a.cwd.as_deref(), Some(expected.as_str()));
     }
 }
