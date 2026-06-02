@@ -7,7 +7,7 @@ authors = ["takumi3488"]
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/smartcrabai/seher"
-version = "0.0.35"
+version = "0.0.36"
 
 [workspace.dependencies]
 aes = "0.9"
