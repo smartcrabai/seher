@@ -9,6 +9,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
 use crate::sdk::errors::{LimitError, RunError};
+use crate::sdk::tool::{PiToolAdapter, SeherTool};
 
 /// Phrases that indicate the pi error was caused by a rate / usage limit. Matched
 /// against tokenized words (alphanumeric + `-`) so substrings like `"5429 bytes"`
@@ -84,6 +85,14 @@ pub struct PiRunnerOptions {
     /// Working directory the agent operates in. Also binds where multi-turn session
     /// files live (see [`pi_session_path`]).
     pub working_directory: Option<PathBuf>,
+    /// Custom tools (function calling) injected into the agent session before the
+    /// prompt runs. Empty = no custom tools (pi's built-in tools still apply).
+    ///
+    /// Names must be unique and must not collide with pi's built-in tools
+    /// (the run fails fast with [`StreamChunk::Error`] otherwise). When passing
+    /// tools, resolve the agent with `ResolveOptions::require_tools` so resolution
+    /// never selects `claude-terminal`, which would silently ignore them.
+    pub tools: Vec<SeherTool>,
 }
 
 impl std::fmt::Debug for PiRunnerOptions {
@@ -94,6 +103,14 @@ impl std::fmt::Debug for PiRunnerOptions {
             .field("api_key", &self.api_key.as_ref().map(|_| "***"))
             .field("system_prompt", &self.system_prompt)
             .field("working_directory", &self.working_directory)
+            .field(
+                "tools",
+                &self
+                    .tools
+                    .iter()
+                    .map(|t| t.name.as_str())
+                    .collect::<Vec<_>>(),
+            )
             .finish()
     }
 }
@@ -236,6 +253,26 @@ impl PiRunner {
     }
 }
 
+/// Validate custom tool names: a name colliding with a pi built-in would be
+/// silently shadowed at dispatch (pi's registry returns the first match), and
+/// duplicate names produce duplicate tool definitions that providers reject.
+fn validate_tool_names(tools: &[SeherTool]) -> Result<(), String> {
+    let mut seen = std::collections::HashSet::new();
+    for tool in tools {
+        if pi::sdk::BUILTIN_TOOL_NAMES.contains(&tool.name.as_str()) {
+            return Err(format!(
+                "custom tool '{}' collides with a pi built-in tool ({})",
+                tool.name,
+                pi::sdk::BUILTIN_TOOL_NAMES.join(", ")
+            ));
+        }
+        if !seen.insert(tool.name.as_str()) {
+            return Err(format!("duplicate custom tool name '{}'", tool.name));
+        }
+    }
+    Ok(())
+}
+
 fn run_on_thread(
     opts: &PiRunnerOptions,
     prompt: &str,
@@ -244,6 +281,12 @@ fn run_on_thread(
 ) {
     use pi::model::AssistantMessageEvent;
     use pi::sdk::{AgentEvent, SessionOptions, create_agent_session};
+
+    // Fail fast on invalid tool names, before any session file is created.
+    if let Err(msg) = validate_tool_names(&opts.tools) {
+        let _ = tx.send(StreamChunk::Error(msg));
+        return;
+    }
 
     // Multi-turn: seher owns the session id. `resume` continues a prior turn; otherwise
     // a fresh v4 uuid is generated. The id maps to a deterministic on-disk session file
@@ -300,6 +343,19 @@ fn run_on_thread(
             .await
             .map_err(|e| CloseOutcome::Error(format!("create_agent_session failed: {e}")))?;
 
+        // Inject custom tools into the live agent before prompting. SessionOptions
+        // has no tool-injection field, so we reach the Agent via the session handle.
+        // Must happen before `prompt` so the tool definitions reach the provider.
+        if !opts.tools.is_empty() {
+            let custom: Vec<Box<dyn pi::tools::Tool>> = opts
+                .tools
+                .iter()
+                .cloned()
+                .map(|t| Box::new(PiToolAdapter::new(t)) as Box<dyn pi::tools::Tool>)
+                .collect();
+            handle.session_mut().agent.extend_tools(custom);
+        }
+
         let txd = tx.clone();
         handle
             .prompt(&prompt_text, move |ev: AgentEvent| {
@@ -348,6 +404,7 @@ fn classify_pi_error(provider: &str, msg: &str) -> CloseOutcome {
 }
 
 #[cfg(test)]
+#[expect(clippy::expect_used, reason = "tests may panic on unexpected fixtures")]
 mod tests {
     use super::*;
 
@@ -392,6 +449,75 @@ mod tests {
         assert_eq!(session.header.id, id);
         assert_eq!(session.header.cwd, dir.path().display().to_string());
         assert!(session.entries.is_empty());
+    }
+
+    #[test]
+    fn pi_runner_options_default_has_no_tools() {
+        assert!(PiRunnerOptions::default().tools.is_empty());
+    }
+
+    #[test]
+    fn pi_runner_options_debug_masks_api_key_and_lists_tool_names() {
+        let opts = PiRunnerOptions {
+            api_key: Some("sk-secret".to_string()),
+            tools: vec![SeherTool::new(
+                "echo",
+                "Echo",
+                serde_json::json!({"type": "object"}),
+                std::sync::Arc::new(|_| Ok(String::new())),
+            )],
+            ..Default::default()
+        };
+        let dbg = format!("{opts:?}");
+        assert!(!dbg.contains("sk-secret"), "got: {dbg}");
+        assert!(dbg.contains("***"), "got: {dbg}");
+        assert!(dbg.contains("echo"), "got: {dbg}");
+    }
+
+    fn named_tool(name: &str) -> SeherTool {
+        SeherTool::new(
+            name,
+            "test tool",
+            serde_json::json!({"type": "object"}),
+            std::sync::Arc::new(|_| Ok(String::new())),
+        )
+    }
+
+    #[test]
+    fn validate_tool_names_accepts_unique_custom_names() {
+        let tools = vec![named_tool("alpha"), named_tool("beta")];
+        assert!(validate_tool_names(&tools).is_ok());
+        assert!(validate_tool_names(&[]).is_ok());
+    }
+
+    #[test]
+    fn validate_tool_names_rejects_builtin_collision() {
+        let err = validate_tool_names(&[named_tool("read")]).expect_err("should reject");
+        assert!(err.contains("read"), "got: {err}");
+        assert!(err.contains("built-in"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_tool_names_rejects_duplicates() {
+        let err = validate_tool_names(&[named_tool("alpha"), named_tool("alpha")])
+            .expect_err("should reject");
+        assert!(err.contains("duplicate"), "got: {err}");
+        assert!(err.contains("alpha"), "got: {err}");
+    }
+
+    #[test]
+    fn stream_emits_error_on_builtin_tool_collision() {
+        // The full stream path must fail fast (no session file, no pi call) when a
+        // custom tool shadows a built-in.
+        let runner = PiRunner::new(PiRunnerOptions {
+            tools: vec![named_tool("bash")],
+            ..Default::default()
+        });
+        let rx = runner.stream("hi".to_string(), None);
+        match rx.recv().expect("one chunk") {
+            StreamChunk::Error(msg) => assert!(msg.contains("bash"), "got: {msg}"),
+            other => panic!("expected Error chunk, got {other:?}"),
+        }
     }
 
     #[test]

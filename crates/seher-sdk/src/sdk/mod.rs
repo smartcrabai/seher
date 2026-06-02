@@ -4,6 +4,7 @@ pub mod errors;
 pub mod pi_runner;
 pub mod resolve;
 pub mod sleep;
+pub mod tool;
 
 pub use config::{
     Config, ModelEntry, ProviderApi, ProviderEntry, ResolvedAgent, ResolvedSkillsConfig,
@@ -16,5 +17,6 @@ pub use resolve::{
     AllAgentsLimitedError, Candidate, CodexBarProbe, LimitProbe, NoMatchingAgentError, PollOptions,
     ProbeFuture, ResolveError, ResolveOptions, SUPPORTED_SDK_KINDS, ScanOutcome, build_candidates,
     codexbar_provider_name, is_supported_sdk, poll_for_agent, resolve_agent,
-    resolve_agent_with_codexbar, scan, unsupported_sdk_providers,
+    resolve_agent_with_codexbar, scan, sdk_supports_tools, unsupported_sdk_providers,
 };
+pub use tool::{SeherTool, ToolHandler};

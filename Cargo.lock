@@ -4887,6 +4887,7 @@ dependencies = [
 name = "seher-sdk"
 version = "0.0.36"
 dependencies = [
+ "async-trait",
  "chrono",
  "dirs",
  "futures",

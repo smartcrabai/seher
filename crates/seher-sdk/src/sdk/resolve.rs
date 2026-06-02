@@ -67,6 +67,10 @@ pub struct ResolveOptions {
     pub no_wait: bool,
     pub max_rescans: u32,
     pub quiet: bool,
+    /// When true, the run will pass custom tools, so only SDKs that support
+    /// function calling (`pi`) are eligible. `claude-terminal` candidates are
+    /// dropped (see [`sdk_supports_tools`]).
+    pub require_tools: bool,
 }
 
 impl Default for ResolveOptions {
@@ -80,6 +84,7 @@ impl Default for ResolveOptions {
             no_wait: false,
             max_rescans: 1,
             quiet: false,
+            require_tools: false,
         }
     }
 }
@@ -93,6 +98,10 @@ pub struct PollOptions {
     pub exclude_providers: Vec<String>,
     pub interval_ms: u64,
     pub cancel: Option<Arc<AtomicBool>>,
+    /// When true, the run will pass custom tools, so only SDKs that support
+    /// function calling (`pi`) are eligible. `claude-terminal` candidates are
+    /// dropped (see [`sdk_supports_tools`]).
+    pub require_tools: bool,
 }
 
 impl Default for PollOptions {
@@ -105,6 +114,7 @@ impl Default for PollOptions {
             exclude_providers: Vec::new(),
             interval_ms: 60_000,
             cancel: None,
+            require_tools: false,
         }
     }
 }
@@ -129,6 +139,47 @@ pub const SUPPORTED_SDK_KINDS: &[&str] = &["pi", "claude-terminal"];
 #[must_use]
 pub fn is_supported_sdk(sdk: &str) -> bool {
     SUPPORTED_SDK_KINDS.contains(&sdk)
+}
+
+/// Whether `sdk` can execute custom tools (function calling). Only the in-process
+/// `pi` engine can; `claude-terminal` drives the `claude` CLI via tmux and cannot
+/// inject tool definitions into it.
+#[must_use]
+pub fn sdk_supports_tools(sdk: &str) -> bool {
+    sdk == "pi"
+}
+
+/// Apply the `require_tools` filter to `candidates` and produce the final list,
+/// or a [`NoMatchingAgentError`] explaining why it came up empty. Shared by
+/// [`resolve_agent`] and [`poll_for_agent`].
+fn filter_candidates_for_tools(
+    mut candidates: Vec<Candidate>,
+    mode_key: &str,
+    provider_filter: Option<&str>,
+    require_tools: bool,
+) -> Result<Vec<Candidate>, NoMatchingAgentError> {
+    // Custom tools only run on the in-process pi engine; drop claude-terminal here
+    // so resolution never lands on a backend that can't honor the requested tools.
+    let dropped_for_tools = if require_tools {
+        let before = candidates.len();
+        candidates.retain(|c| sdk_supports_tools(&c.resolved.sdk));
+        before - candidates.len()
+    } else {
+        0
+    };
+    if candidates.is_empty() {
+        let msg = if dropped_for_tools > 0 {
+            format!(
+                "No tool-capable (pi) provider defines models.{mode_key}; {dropped_for_tools} candidate(s) were excluded because custom tools are not supported on claude-terminal"
+            )
+        } else if let Some(p) = provider_filter {
+            format!("No provider \"{p}\" defines models.{mode_key}")
+        } else {
+            format!("No providers define models.{mode_key}")
+        };
+        return Err(NoMatchingAgentError(msg));
+    }
+    Ok(candidates)
 }
 
 /// Enumerate `(provider, sdk)` pairs from the YAML config whose `sdk` value is
@@ -268,20 +319,17 @@ pub async fn resolve_agent(
         Some(c) => c,
         None => load_config(opts.config_path.as_deref())?,
     };
-    let candidates = build_candidates(
-        &config,
+    let candidates = filter_candidates_for_tools(
+        build_candidates(
+            &config,
+            &opts.mode_key,
+            opts.provider_filter.as_deref(),
+            &opts.exclude_providers,
+        ),
         &opts.mode_key,
         opts.provider_filter.as_deref(),
-        &opts.exclude_providers,
-    );
-    if candidates.is_empty() {
-        let msg = if let Some(p) = &opts.provider_filter {
-            format!("No provider \"{}\" defines models.{}", p, opts.mode_key)
-        } else {
-            format!("No providers define models.{}", opts.mode_key)
-        };
-        return Err(NoMatchingAgentError(msg).into());
-    }
+        opts.require_tools,
+    )?;
 
     let mut rescans: u32 = 0;
     loop {
@@ -318,20 +366,17 @@ pub async fn poll_for_agent(
         Some(c) => c,
         None => load_config(opts.config_path.as_deref())?,
     };
-    let candidates = build_candidates(
-        &config,
+    let candidates = filter_candidates_for_tools(
+        build_candidates(
+            &config,
+            &opts.mode_key,
+            opts.provider_filter.as_deref(),
+            &opts.exclude_providers,
+        ),
         &opts.mode_key,
         opts.provider_filter.as_deref(),
-        &opts.exclude_providers,
-    );
-    if candidates.is_empty() {
-        let msg = if let Some(p) = &opts.provider_filter {
-            format!("No provider \"{}\" defines models.{}", p, opts.mode_key)
-        } else {
-            format!("No providers define models.{}", opts.mode_key)
-        };
-        return Err(NoMatchingAgentError(msg).into());
-    }
+        opts.require_tools,
+    )?;
     loop {
         if let Some(c) = &opts.cancel
             && c.load(Ordering::SeqCst)
@@ -690,6 +735,114 @@ mod tests {
         assert!(!is_supported_sdk("claude"));
         assert!(!is_supported_sdk("codex"));
         assert!(!is_supported_sdk(""));
+    }
+
+    // -----------------------------------------------------------------------
+    // require_tools (custom tools restrict candidates to the pi sdk)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sdk_supports_tools_only_pi() {
+        assert!(sdk_supports_tools("pi"));
+        assert!(!sdk_supports_tools("claude-terminal"));
+        assert!(!sdk_supports_tools(""));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn require_tools_drops_claude_terminal_candidates() {
+        // claude-terminal comes first in config order (higher precedence at equal
+        // priority) but must be skipped when tools are required.
+        let c = cfg(vec![
+            entry_with_sdk(
+                "claude",
+                "claude",
+                "claude-terminal",
+                &[("build", "opus", None)],
+            ),
+            entry_with_sdk("zai", "zai", "pi", &[("build", "anthropic/zai", None)]),
+        ]);
+        let mut probe = MockProbe {
+            outcomes: HashMap::new(),
+        };
+        let opts = ResolveOptions {
+            config: Some(c),
+            require_tools: true,
+            ..Default::default()
+        };
+        let resolved = resolve_agent(opts, &mut probe).await.expect("resolve");
+        assert_eq!(resolved.provider, "zai");
+        assert_eq!(resolved.sdk, "pi");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn require_tools_errors_when_only_claude_terminal() {
+        let c = cfg(vec![entry_with_sdk(
+            "claude",
+            "claude",
+            "claude-terminal",
+            &[("build", "opus", None)],
+        )]);
+        let mut probe = MockProbe {
+            outcomes: HashMap::new(),
+        };
+        let opts = ResolveOptions {
+            config: Some(c),
+            require_tools: true,
+            ..Default::default()
+        };
+        let err = resolve_agent(opts, &mut probe)
+            .await
+            .expect_err("should fail");
+        assert!(matches!(err, ResolveError::NoMatching(_)), "got: {err:?}");
+        let msg = err.to_string();
+        assert!(msg.contains("claude-terminal"), "got: {msg}");
+        assert!(msg.contains("custom tools"), "got: {msg}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn require_tools_false_keeps_claude_terminal() {
+        let c = cfg(vec![
+            entry_with_sdk(
+                "claude",
+                "claude",
+                "claude-terminal",
+                &[("build", "opus", None)],
+            ),
+            entry_with_sdk("zai", "zai", "pi", &[("build", "anthropic/zai", None)]),
+        ]);
+        let mut probe = MockProbe {
+            outcomes: HashMap::new(),
+        };
+        let opts = ResolveOptions {
+            config: Some(c),
+            ..Default::default()
+        };
+        let resolved = resolve_agent(opts, &mut probe).await.expect("resolve");
+        assert_eq!(resolved.provider, "claude");
+        assert_eq!(resolved.sdk, "claude-terminal");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn poll_for_agent_require_tools_drops_claude_terminal() {
+        let c = cfg(vec![
+            entry_with_sdk(
+                "claude",
+                "claude",
+                "claude-terminal",
+                &[("build", "opus", None)],
+            ),
+            entry_with_sdk("zai", "zai", "pi", &[("build", "anthropic/zai", None)]),
+        ]);
+        let mut probe = MockProbe {
+            outcomes: HashMap::new(),
+        };
+        let opts = PollOptions {
+            config: Some(c),
+            require_tools: true,
+            ..Default::default()
+        };
+        let resolved = poll_for_agent(opts, &mut probe).await.expect("ok");
+        assert_eq!(resolved.provider, "zai");
     }
 
     // -----------------------------------------------------------------------

@@ -12,6 +12,7 @@ name = "seher"
 path = "src/lib.rs"
 
 [dependencies]
+async-trait.workspace = true
 chrono.workspace = true
 dirs.workspace = true
 indexmap.workspace = true
