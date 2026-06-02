@@ -270,6 +270,8 @@ fn build_pi_runner(
         api_key,
         system_prompt,
         working_directory: args.cwd.as_deref().map(PathBuf::from),
+        // The CLI has no way to define custom tools; only SDK consumers do.
+        tools: Vec::new(),
     })
 }
 
