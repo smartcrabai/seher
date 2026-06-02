@@ -64,6 +64,11 @@ pub fn drain_to_stdout(rx: Receiver<StreamChunk>, timeout_ms: Option<u64>) -> Ou
                 let _ = out.flush();
                 full.push_str(&d);
             }
+            // Session id is metadata — keep stdout clean for piping and surface it on
+            // stderr so a follow-up turn can resume with `--resume <id>`.
+            StreamChunk::Session(id) => {
+                eprintln!("session: {id}");
+            }
             StreamChunk::Done(t) => {
                 let _ = out.write_all(b"\n");
                 let _ = out.flush();

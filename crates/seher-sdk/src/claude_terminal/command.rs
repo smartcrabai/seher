@@ -13,6 +13,9 @@ pub struct BuildClaudeCommandOptions {
     pub permission_mode: String,
     pub model: Option<String>,
     pub system_prompt: Option<String>,
+    /// When set, resume the given Claude session id (`claude --resume <id>`) so the
+    /// conversation continues in the same transcript instead of starting fresh.
+    pub resume_session_id: Option<String>,
 }
 
 /// Build the `claude` CLI argument list.
@@ -31,6 +34,10 @@ pub fn build_claude_command(
         )));
     }
     let mut args = vec![opts.claude_bin.clone()];
+    if let Some(id) = &opts.resume_session_id {
+        args.push("--resume".to_string());
+        args.push(id.clone());
+    }
     if let Some(m) = &opts.model {
         args.push("--model".to_string());
         args.push(m.clone());
@@ -60,6 +67,7 @@ mod tests {
             permission_mode: "bypassPermissions".to_string(),
             model: None,
             system_prompt: None,
+            resume_session_id: None,
         });
         assert_eq!(args, ["claude", "--permission-mode", "bypassPermissions"]);
     }
@@ -71,6 +79,7 @@ mod tests {
             permission_mode: "bypassPermissions".to_string(),
             model: Some("claude-opus-4-7".to_string()),
             system_prompt: None,
+            resume_session_id: None,
         });
         assert_eq!(
             args,
@@ -91,6 +100,7 @@ mod tests {
             permission_mode: "bypassPermissions".to_string(),
             model: None,
             system_prompt: Some("Be concise.".to_string()),
+            resume_session_id: None,
         });
         assert_eq!(
             args,
@@ -111,6 +121,7 @@ mod tests {
             permission_mode: "bypassPermissions".to_string(),
             model: Some("claude-sonnet-4-6".to_string()),
             system_prompt: Some("sys".to_string()),
+            resume_session_id: None,
         });
         assert_eq!(
             args,
@@ -133,7 +144,29 @@ mod tests {
             permission_mode: "dangerousMode".to_string(),
             model: None,
             system_prompt: None,
+            resume_session_id: None,
         });
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn with_resume_session_id() {
+        let args = cmd(&BuildClaudeCommandOptions {
+            claude_bin: "claude".to_string(),
+            permission_mode: "bypassPermissions".to_string(),
+            model: None,
+            system_prompt: None,
+            resume_session_id: Some("abc-123".to_string()),
+        });
+        assert_eq!(
+            args,
+            [
+                "claude",
+                "--resume",
+                "abc-123",
+                "--permission-mode",
+                "bypassPermissions"
+            ]
+        );
     }
 }

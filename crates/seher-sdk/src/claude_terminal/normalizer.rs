@@ -73,6 +73,7 @@ mod tests {
                 content: Some(content),
                 role: None,
             }),
+            timestamp: None,
             extra: std::collections::HashMap::new(),
         }
     }
@@ -86,6 +87,7 @@ mod tests {
             result: Some(text.to_string()),
             is_error: None,
             message: None,
+            timestamp: None,
             extra: std::collections::HashMap::new(),
         }
     }

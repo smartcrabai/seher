@@ -3,10 +3,14 @@
 //! Implements the retry-on-limit loop: on a `LimitError`, the resolved YAML
 //! provider name is added to `exclude_providers` and resolution is retried.
 
-use seher::claude_terminal::{new_sdk_with_defaults, stream_via_thread};
+use std::path::PathBuf;
+
+use seher::claude_terminal::{
+    default_transcript_root, encode_transcript_path, new_sdk_with_defaults, stream_via_thread,
+};
 use seher::sdk::{
     CodexBarProbe, Config, PiRunner, PiRunnerOptions, ResolveOptions, ResolvedAgent, TimeoutError,
-    load_config, resolve_agent, unsupported_sdk_providers,
+    load_config, pi_session_path, resolve_agent, unsupported_sdk_providers,
 };
 
 use crate::args::Args;
@@ -39,14 +43,107 @@ pub fn resolve_and_stream(
         ));
     }
 
+    // Resuming pins to the backend that owns the session — the retry-on-limit provider
+    // switch is disabled, since a session id is meaningless to a different backend.
+    if let Some(resume_id) = args.resume.clone() {
+        return resume_and_stream(
+            rt,
+            prompt,
+            args,
+            mode_key,
+            system_prompt,
+            logger,
+            &config,
+            &resume_id,
+        );
+    }
+
     let resolver = |excluded: &[String]| -> Result<ResolvedAgent, String> {
         resolve_once(rt, args, mode_key, excluded, &config)
     };
     let stream_runner = |resolved: &ResolvedAgent| -> Outcome {
-        let rx = dispatch_stream(resolved, prompt, system_prompt, args);
+        let rx = dispatch_stream(resolved, prompt, system_prompt, args, None);
         drain_to_stdout(rx, args.timeout)
     };
     stream_with_retry(args.timeout, logger, resolver, stream_runner)
+}
+
+/// Effective working directory for this run: the canonicalized `--cwd` if given,
+/// otherwise the canonicalized process cwd. Used to locate session storage.
+fn effective_cwd(args: &Args) -> String {
+    args.cwd.clone().unwrap_or_else(|| {
+        std::env::current_dir()
+            .and_then(|p| p.canonicalize())
+            .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().into_owned())
+    })
+}
+
+/// Detect which backend owns a session id by probing on-disk storage under `cwd`.
+/// Returns the sdk kind (`"claude-terminal"` / `"pi"`) or `None` if neither has it.
+fn probe_session_backend(cwd: &str, session_id: &str) -> Option<&'static str> {
+    let claude_path = encode_transcript_path(&default_transcript_root(), cwd, session_id);
+    if std::path::Path::new(&claude_path).exists() {
+        return Some("claude-terminal");
+    }
+    let pi_path = pi_session_path(Some(std::path::Path::new(cwd)), session_id);
+    if pi_path.exists() {
+        return Some("pi");
+    }
+    None
+}
+
+/// Resume an existing session. Probes storage to pin the owning backend, resolves a
+/// matching agent, and runs a single attempt (no provider-switch retry).
+///
+/// # Errors
+///
+/// Errors if the session is not found, the resolver selects a different backend, or the
+/// run hits a limit / error / timeout.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors resolve_and_stream inputs"
+)]
+fn resume_and_stream(
+    rt: &tokio::runtime::Runtime,
+    prompt: &str,
+    args: &Args,
+    mode_key: &str,
+    system_prompt: Option<&str>,
+    logger: &Logger,
+    config: &Config,
+    resume_id: &str,
+) -> Result<String, String> {
+    let cwd = effective_cwd(args);
+    let pinned = probe_session_backend(&cwd, resume_id).ok_or_else(|| {
+        format!("session '{resume_id}' not found under cwd '{cwd}' (resume requires the same --cwd used to create it)")
+    })?;
+
+    let resolved = resolve_once(rt, args, mode_key, &[], config)?;
+    if resolved.sdk != pinned {
+        return Err(format!(
+            "resumed session '{resume_id}' belongs to backend '{pinned}', but the resolver selected '{}' (provider '{}') — it may be rate-limited or lower priority; pass --provider to force the matching one",
+            resolved.sdk, resolved.provider
+        ));
+    }
+    logger.info(&format!(
+        "Resuming session {resume_id} on provider: {} ({}/{})",
+        resolved.provider, resolved.sdk, resolved.model_id
+    ));
+
+    let rx = dispatch_stream(&resolved, prompt, system_prompt, args, Some(resume_id));
+    match drain_to_stdout(rx, args.timeout) {
+        Outcome::Done(t) => Ok(t),
+        Outcome::Limit => Err(format!(
+            "provider '{}' is rate-limited; cannot switch providers while resuming session {resume_id}",
+            resolved.provider
+        )),
+        Outcome::Error(message) => Err(message),
+        Outcome::Timeout => Err(TimeoutError {
+            ms: args.timeout.unwrap_or(0),
+            label: "stream",
+        }
+        .to_string()),
+    }
 }
 
 /// Retry-on-limit loop. Pure: takes `resolver` (produces a `ResolvedAgent` given
@@ -132,6 +229,7 @@ fn dispatch_stream(
     prompt: &str,
     system_prompt: Option<&str>,
     args: &Args,
+    resume: Option<&str>,
 ) -> std::sync::mpsc::Receiver<seher::sdk::StreamChunk> {
     if resolved.sdk == "claude-terminal" {
         let model = Some(resolved.model_id.clone()).filter(|s| !s.is_empty());
@@ -141,16 +239,25 @@ fn dispatch_stream(
             model,
             system_prompt.map(str::to_string),
             args.timeout,
-            None,
+            args.cwd.clone(),
         );
-        stream_via_thread(sdk, prompt.to_string(), resolved.provider.clone())
+        stream_via_thread(
+            sdk,
+            prompt.to_string(),
+            resolved.provider.clone(),
+            resume.map(str::to_string),
+        )
     } else {
-        let runner = build_pi_runner(resolved, system_prompt.map(str::to_string));
-        runner.stream(prompt.to_string())
+        let runner = build_pi_runner(resolved, system_prompt.map(str::to_string), args);
+        runner.stream(prompt.to_string(), resume.map(str::to_string))
     }
 }
 
-fn build_pi_runner(resolved: &ResolvedAgent, system_prompt: Option<String>) -> PiRunner {
+fn build_pi_runner(
+    resolved: &ResolvedAgent,
+    system_prompt: Option<String>,
+    args: &Args,
+) -> PiRunner {
     let (provider, model) = parse_provider_model(&resolved.model_id);
     let api_key = resolved
         .api
@@ -162,6 +269,7 @@ fn build_pi_runner(resolved: &ResolvedAgent, system_prompt: Option<String>) -> P
         model,
         api_key,
         system_prompt,
+        working_directory: args.cwd.as_deref().map(PathBuf::from),
     })
 }
 

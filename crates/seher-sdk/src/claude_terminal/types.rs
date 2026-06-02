@@ -50,9 +50,17 @@ pub struct FindClaudeSessionOptions {
 }
 
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "every field is a millisecond duration/cutoff"
+)]
 pub struct WaitForAssistantResponseOptions {
     pub timeout_ms: u64,
     pub poll_interval_ms: u64,
+    /// Only messages whose `timestamp` is at or after this epoch-ms cutoff count toward
+    /// completion. For a fresh session this is the launch time (harmless — the transcript
+    /// is empty); for a resumed session it excludes the prior turns already in the file.
+    pub after_ms: u64,
 }
 
 pub trait ClaudeTranscriptReader: Send + Sync {
@@ -94,6 +102,11 @@ pub struct TranscriptMessage {
     pub is_error: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<MessageContent>,
+    /// ISO-8601 timestamp Claude Code stamps on each transcript line (e.g.
+    /// `2026-06-01T21:57:49.050Z`). Used to find the boundary of the current turn when
+    /// resuming, since `--resume` appends to the existing transcript file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
     #[serde(flatten)]
     pub extra: std::collections::HashMap<String, Value>,
 }
@@ -111,6 +124,14 @@ pub struct ClaudeTerminalResponse {
     pub session_id: String,
     pub assistant_messages: Vec<TranscriptMessage>,
     pub last_result_message: Option<TranscriptMessage>,
+}
+
+/// Output of a completed [`super::ClaudeTerminalSdk::run`]: the normalized assistant
+/// text plus the session id (newly created for a fresh run, or the resumed id).
+#[derive(Debug, Clone)]
+pub struct ClaudeRunOutput {
+    pub text: String,
+    pub session_id: String,
 }
 
 // ── Errors ──────────────────────────────────────────────────────────────────
