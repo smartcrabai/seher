@@ -74,6 +74,10 @@ seher --config ./my-config.yaml "fix bugs"
 
 # Per-run timeout (milliseconds) and quiet output
 seher --timeout 600000 --quiet "fix bugs"
+
+# Multi-turn: a fresh run prints `session: <id>` to stderr; resume it with -r
+seher --cwd /path/to/project "implement the feature"   # stderr: session: <uuid>
+seher --cwd /path/to/project -r <uuid> "now add tests"
 ```
 
 ### Flags
@@ -85,6 +89,8 @@ seher --timeout 600000 --quiet "fix bugs"
 | `--config <path>` | `-c` | Path to a YAML config file |
 | `--timeout <ms>` | `-t` | Per-run timeout in milliseconds |
 | `--quiet` | `-q` | Suppress informational output |
+| `--cwd <dir>` | | Working directory for the agent. Canonicalized on receipt; must exist. Multi-turn sessions are bound to it |
+| `--resume <id>` | `-r` | Resume a prior session by id (printed as `session: <id>` on a previous run). Pass the same `--cwd` used to create it |
 
 ### Prompt resolution
 
@@ -100,6 +106,14 @@ When no prompt is given on the command line, seher resolves it in this order:
 - **`plan`**: first resolves the `plan` mode key and streams a Markdown implementation plan (the model is instructed to output *only* the plan and touch no files). The plan opens in `$EDITOR` for review/editing; the edited plan is then wrapped and executed under the `build` mode key. Leaving the editor empty cancels the run.
 
 The first trailing token (`plan` or `build`) selects the mode; anything else is treated as the start of the prompt and defaults to build mode. `-m/--model` overrides both the plan and build keys used during resolution.
+
+### Multi-turn sessions
+
+Every run is a persistent session that a follow-up run can continue:
+
+- A fresh run prints `session: <id>` to **stderr** (stdout carries only the assistant text, so piping stays safe).
+- Sessions are bound to the working directory. Pass `-r/--resume <id>` together with the **same `--cwd`** used to create the session (`--cwd` is canonicalized up front so symlinked/relative forms of the same directory resolve identically).
+- On resume, seher probes the on-disk session storage to find the backend that owns the id and **pins** it: the retry-on-limit provider switch is disabled (a session id is meaningless to a different backend), and a missing session is a hard error. If the resolver would pick a different backend (e.g. the owner is rate-limited), pass `--provider` to force the matching one.
 
 It is convenient to alias frequently used options:
 
@@ -128,8 +142,8 @@ The library exposes two layers.
 ### Low level — run a prompt through pi
 
 `PiRunner` streams a prompt through the `pi` engine. `stream` returns a channel of
-`StreamChunk` values (`Delta`, `Done`, `Limit`, `Error`) and runs pi on its own
-thread, so it works whether or not the caller hosts a tokio runtime:
+`StreamChunk` values (`Delta`, `Done`, `Session`, `Limit`, `Error`) and runs pi on
+its own thread, so it works whether or not the caller hosts a tokio runtime:
 
 ```rust
 use seher::sdk::{PiRunner, PiRunnerOptions, StreamChunk};
@@ -141,10 +155,12 @@ let runner = PiRunner::new(PiRunnerOptions {
     ..PiRunnerOptions::default()
 });
 
-let rx = runner.stream("say hi".to_string());
+// `None` = fresh session; pass a prior session id to continue a conversation.
+let rx = runner.stream("say hi".to_string(), None);
 loop {
     match rx.recv() {
         Ok(StreamChunk::Delta(d)) => print!("{d}"),
+        Ok(StreamChunk::Session(id)) => eprintln!("session: {id}"),
         Ok(StreamChunk::Done(text)) => {
             println!("{text}");
             break;
@@ -161,6 +177,87 @@ loop {
     }
 }
 ```
+
+### Working directory and multi-turn sessions
+
+`PiRunnerOptions.working_directory` sets the directory the agent operates in, and
+also binds where multi-turn session files live. Both `stream` and the blocking
+`run` convenience take a `resume` argument: `None` starts a fresh session (a new
+id is generated and emitted as the first chunk via `StreamChunk::Session`), and
+`Some(id)` continues a prior turn — pass the same `working_directory` the session
+was created with:
+
+```rust
+use seher::sdk::{PiRunner, PiRunnerOptions};
+
+let runner = PiRunner::new(PiRunnerOptions {
+    provider: Some("anthropic".to_string()),
+    model: Some("claude-sonnet-4-5".to_string()),
+    api_key: std::env::var("ANTHROPIC_API_KEY").ok(),
+    working_directory: Some("/path/to/project".into()),
+    ..PiRunnerOptions::default()
+});
+
+// Turn 1 — fresh session. `run` returns the full text plus the session id.
+let first = runner.run("implement the feature".to_string(), None)?;
+
+// Turn 2 — same runner options, resumed by id.
+let second = runner.run("now add tests".to_string(), Some(first.session_id))?;
+```
+
+Session files are stored at a deterministic per-`(cwd, id)` path (see
+`pi_session_path`), so the same pair always resumes the same conversation. The
+`claude-terminal` backend supports the same contract via `claude --resume <id>`.
+
+### Custom tools (function calling)
+
+`PiRunnerOptions.tools` injects custom tools into the agent session before the
+prompt runs. A `SeherTool` pairs a name/description and a JSON Schema
+(`type: object` with `properties`) with a synchronous handler. The handler
+receives the raw JSON input the model produced; `Ok(text)` becomes the tool
+result, and `Err(message)` is fed back to the model with `is_error: true` —
+standard function-calling behavior, so the model can recover or retry without
+aborting the turn:
+
+```rust
+use std::sync::Arc;
+use seher::sdk::{PiRunner, PiRunnerOptions, SeherTool};
+
+let weather = SeherTool::new(
+    "get_weather",
+    "Get the current weather for a city",
+    serde_json::json!({
+        "type": "object",
+        "properties": { "city": { "type": "string" } },
+        "required": ["city"],
+    }),
+    Arc::new(|input| {
+        let city = input["city"]
+            .as_str()
+            .ok_or_else(|| "missing city".to_string())?;
+        Ok(format!("Sunny in {city}"))
+    }),
+);
+
+let runner = PiRunner::new(PiRunnerOptions {
+    provider: Some("anthropic".to_string()),
+    model: Some("claude-sonnet-4-5".to_string()),
+    api_key: std::env::var("ANTHROPIC_API_KEY").ok(),
+    tools: vec![weather],
+    ..PiRunnerOptions::default()
+});
+```
+
+Tool names must be unique and must not collide with pi's built-in tools; an
+invalid set fails fast with `StreamChunk::Error` before any session file is
+created.
+
+Custom tools only run on the in-process `pi` engine — the `claude-terminal`
+backend drives the `claude` CLI via tmux and cannot honor them. When resolving an
+agent for a run that passes tools, set `require_tools: true` on
+`ResolveOptions`/`PollOptions` so resolution drops `claude-terminal` candidates
+instead of silently ignoring the tools; if every candidate is dropped, resolution
+fails with a `NoMatching` error explaining why.
 
 ### High level — resolve a non-limited provider, then run
 
@@ -246,7 +343,7 @@ providers:
 |-------|------|-------------|
 | *(map key)* | string | Provider label and default provider name |
 | `provider` | string | Explicit provider name; defaults to the map key |
-| `sdk` | string | Execution engine. Defaults to `"pi"`. Only `pi` is executable in this build (see *Cross-implementation portability*) |
+| `sdk` | string | Execution engine. Defaults to `"pi"`. Executable engines in this build: `pi` (in-process) and `claude-terminal` (drives the local `claude` CLI via tmux); other kinds are filtered out (see *Cross-implementation portability*) |
 | `priority` | integer (`i32`) | Provider-level priority. Used when a model entry omits its own `priority` |
 | `api.key` | string | API key (for API-key-based limit checks and pi execution) |
 | `api.endpoint` | string | API endpoint override |
@@ -300,7 +397,7 @@ providers:
 
 ## Cross-implementation portability
 
-Seher has a TypeScript counterpart (`seher-ts`) that supports additional `sdk` engines (`claude`, `codex`, `copilot`, `cursor`, `kimi`, `opencode`, …). To keep a single `config.yaml` portable between both implementations, this Rust build **accepts** providers tagged with those SDK kinds but silently filters them out of the candidate list (only `sdk: pi` is executable here). A one-time warning is printed at startup for each skipped provider.
+Seher has a TypeScript counterpart (`seher-ts`) that supports additional `sdk` engines (`claude`, `codex`, `copilot`, `cursor`, `kimi`, `opencode`, …). To keep a single `config.yaml` portable between both implementations, this Rust build **accepts** providers tagged with those SDK kinds but silently filters them out of the candidate list (only `sdk: pi` and `sdk: claude-terminal` are executable here). A one-time warning is printed at startup for each skipped provider.
 
 
 ## License
