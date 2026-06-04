@@ -10,7 +10,7 @@ use seher::claude_terminal::{
 };
 use seher::sdk::{
     CodexBarProbe, Config, PiRunner, PiRunnerOptions, ResolveOptions, ResolvedAgent, TimeoutError,
-    load_config, pi_session_path, resolve_agent, unsupported_sdk_providers,
+    load_config, pi_session_path, resolve_agent, split_thinking_suffix, unsupported_sdk_providers,
 };
 
 use crate::args::Args;
@@ -232,7 +232,10 @@ fn dispatch_stream(
     resume: Option<&str>,
 ) -> std::sync::mpsc::Receiver<seher::sdk::StreamChunk> {
     if resolved.sdk == "claude-terminal" {
-        let model = Some(resolved.model_id.clone()).filter(|s| !s.is_empty());
+        // claude-terminal has no thinking-level support; strip a recognized
+        // `:level` suffix so it never leaks into the model name.
+        let (model_name, _) = split_thinking_suffix(&resolved.model_id);
+        let model = Some(model_name.to_string()).filter(|s| !s.is_empty());
         let sdk = new_sdk_with_defaults(
             None,
             None,
@@ -258,7 +261,7 @@ fn build_pi_runner(
     system_prompt: Option<String>,
     args: &Args,
 ) -> PiRunner {
-    let (provider, model) = parse_provider_model(&resolved.model_id);
+    let (provider, model, thinking) = parse_provider_model(&resolved.model_id);
     let api_key = resolved
         .api
         .as_ref()
@@ -268,6 +271,7 @@ fn build_pi_runner(
         provider,
         model,
         api_key,
+        thinking,
         system_prompt,
         working_directory: args.cwd.as_deref().map(PathBuf::from),
         // The CLI has no way to define custom tools; only SDK consumers do.
@@ -275,12 +279,22 @@ fn build_pi_runner(
     })
 }
 
-fn parse_provider_model(model_id: &str) -> (Option<String>, Option<String>) {
-    if let Some((p, m)) = model_id.split_once('/') {
-        (Some(p.to_string()), Some(m.to_string()))
-    } else {
-        (None, Some(model_id.to_string()))
-    }
+/// Splits a config model id into `(provider, model, thinking)`.
+///
+/// The segment before the first `/` is the provider. A trailing `:` suffix on
+/// the remainder selects pi's thinking level (e.g. `anthropic/opus-4.7:high`),
+/// but only when it is a recognized level — see [`split_thinking_suffix`].
+fn parse_provider_model(model_id: &str) -> (Option<String>, Option<String>, Option<String>) {
+    let (provider, rest) = match model_id.split_once('/') {
+        Some((p, m)) => (Some(p.to_string()), m),
+        None => (None, model_id),
+    };
+    let (model, thinking) = split_thinking_suffix(rest);
+    (
+        provider,
+        Some(model.to_string()),
+        thinking.map(str::to_string),
+    )
 }
 
 fn env_api_key_for(provider: Option<&str>) -> Option<String> {
@@ -404,16 +418,44 @@ mod tests {
 
     #[test]
     fn parse_provider_model_with_slash() {
-        let (p, m) = parse_provider_model("anthropic/claude-sonnet");
+        let (p, m, t) = parse_provider_model("anthropic/claude-sonnet");
         assert_eq!(p.as_deref(), Some("anthropic"));
         assert_eq!(m.as_deref(), Some("claude-sonnet"));
+        assert_eq!(t, None);
     }
 
     #[test]
     fn parse_provider_model_without_slash() {
-        let (p, m) = parse_provider_model("just-a-model");
+        let (p, m, t) = parse_provider_model("just-a-model");
         assert_eq!(p, None);
         assert_eq!(m.as_deref(), Some("just-a-model"));
+        assert_eq!(t, None);
+    }
+
+    #[test]
+    fn parse_provider_model_with_thinking() {
+        let (p, m, t) = parse_provider_model("anthropic/claude-sonnet:high");
+        assert_eq!(p.as_deref(), Some("anthropic"));
+        assert_eq!(m.as_deref(), Some("claude-sonnet"));
+        assert_eq!(t.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn parse_provider_model_with_thinking_without_slash() {
+        let (p, m, t) = parse_provider_model("just-a-model:medium");
+        assert_eq!(p, None);
+        assert_eq!(m.as_deref(), Some("just-a-model"));
+        assert_eq!(t.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn parse_provider_model_keeps_unrecognized_suffix_in_model() {
+        // OpenRouter-style variant suffixes are not thinking levels and must
+        // stay part of the model name.
+        let (p, m, t) = parse_provider_model("openrouter/meta-llama/llama-3.1-8b-instruct:free");
+        assert_eq!(p.as_deref(), Some("openrouter"));
+        assert_eq!(m.as_deref(), Some("meta-llama/llama-3.1-8b-instruct:free"));
+        assert_eq!(t, None);
     }
 
     #[test]
