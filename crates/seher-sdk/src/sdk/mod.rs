@@ -12,7 +12,9 @@ pub use config::{
 };
 pub use config_loader::{ConfigError, load_config, resolve_config_path};
 pub use errors::{LimitError, RunError, TimeoutError};
-pub use pi_runner::{PiRunOutput, PiRunner, PiRunnerOptions, StreamChunk, pi_session_path};
+pub use pi_runner::{
+    PiRunOutput, PiRunner, PiRunnerOptions, StreamChunk, pi_session_path, split_thinking_suffix,
+};
 pub use resolve::{
     AllAgentsLimitedError, Candidate, CodexBarProbe, LimitProbe, NoMatchingAgentError, PollOptions,
     ProbeFuture, ResolveError, ResolveOptions, SUPPORTED_SDK_KINDS, ScanOutcome, build_candidates,

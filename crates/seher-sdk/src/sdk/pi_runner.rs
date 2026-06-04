@@ -81,6 +81,10 @@ pub struct PiRunnerOptions {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub api_key: Option<String>,
+    /// Thinking level passed to pi (e.g. `"off"`, `"low"`, `"medium"`, `"high"`).
+    /// Parsed with [`pi::model::ThinkingLevel::FromStr`]; an invalid value fails
+    /// the run fast with [`StreamChunk::Error`]. `None` keeps pi's default.
+    pub thinking: Option<String>,
     pub system_prompt: Option<String>,
     /// Working directory the agent operates in. Also binds where multi-turn session
     /// files live (see [`pi_session_path`]).
@@ -101,6 +105,7 @@ impl std::fmt::Debug for PiRunnerOptions {
             .field("provider", &self.provider)
             .field("model", &self.model)
             .field("api_key", &self.api_key.as_ref().map(|_| "***"))
+            .field("thinking", &self.thinking)
             .field("system_prompt", &self.system_prompt)
             .field("working_directory", &self.working_directory)
             .field(
@@ -273,6 +278,34 @@ fn validate_tool_names(tools: &[SeherTool]) -> Result<(), String> {
     Ok(())
 }
 
+/// Parses an optional thinking-level string into pi's [`pi::model::ThinkingLevel`].
+/// `None` stays `None` (pi's default); an unrecognized value is an error.
+/// Splits a trailing `:level` thinking suffix off a model name, returning
+/// `(model, thinking)`.
+///
+/// The suffix is recognized **only** when it parses as a pi thinking level
+/// (`off`, `minimal`, `low`, `medium`, `high`, `xhigh` and their aliases —
+/// see [`pi::model::ThinkingLevel`]'s `FromStr`). Anything else stays part of
+/// the model name, so model ids with a legitimate `:` — e.g. `OpenRouter`
+/// variants like `meta-llama/llama-3.1-8b-instruct:free` — pass through
+/// untouched.
+#[must_use]
+pub fn split_thinking_suffix(model: &str) -> (&str, Option<&str>) {
+    match model.rsplit_once(':') {
+        Some((m, t)) if t.parse::<pi::model::ThinkingLevel>().is_ok() => (m, Some(t)),
+        _ => (model, None),
+    }
+}
+
+fn parse_thinking(thinking: Option<&str>) -> Result<Option<pi::model::ThinkingLevel>, String> {
+    thinking
+        .map(|t| {
+            t.parse::<pi::model::ThinkingLevel>()
+                .map_err(|e| format!("invalid thinking level '{t}': {e}"))
+        })
+        .transpose()
+}
+
 fn run_on_thread(
     opts: &PiRunnerOptions,
     prompt: &str,
@@ -287,6 +320,15 @@ fn run_on_thread(
         let _ = tx.send(StreamChunk::Error(msg));
         return;
     }
+
+    // Same fail-fast treatment for an invalid thinking level.
+    let thinking = match parse_thinking(opts.thinking.as_deref()) {
+        Ok(t) => t,
+        Err(msg) => {
+            let _ = tx.send(StreamChunk::Error(msg));
+            return;
+        }
+    };
 
     // Multi-turn: seher owns the session id. `resume` continues a prior turn; otherwise
     // a fresh v4 uuid is generated. The id maps to a deterministic on-disk session file
@@ -332,6 +374,7 @@ fn run_on_thread(
             provider: opts.provider.clone(),
             model: opts.model.clone(),
             api_key: opts.api_key.clone(),
+            thinking,
             system_prompt: opts.system_prompt.clone(),
             working_directory: opts.working_directory.clone(),
             no_session: false,
@@ -420,6 +463,54 @@ mod tests {
     fn rejects_unrelated_messages() {
         assert!(!is_pi_limit("unexpected end of stream"));
         assert!(!is_pi_limit("connection refused"));
+    }
+
+    #[test]
+    fn parse_thinking_accepts_known_levels() {
+        assert_eq!(parse_thinking(None), Ok(None));
+        assert_eq!(
+            parse_thinking(Some("high")),
+            Ok(Some(pi::model::ThinkingLevel::High))
+        );
+        assert_eq!(
+            parse_thinking(Some("off")),
+            Ok(Some(pi::model::ThinkingLevel::Off))
+        );
+    }
+
+    #[test]
+    fn split_thinking_suffix_extracts_known_levels() {
+        assert_eq!(
+            split_thinking_suffix("opus-4.7:high"),
+            ("opus-4.7", Some("high"))
+        );
+        // FromStr aliases are recognized too.
+        assert_eq!(
+            split_thinking_suffix("opus-4.7:med"),
+            ("opus-4.7", Some("med"))
+        );
+        // Only the last `:` is considered; earlier ones stay in the model name.
+        assert_eq!(
+            split_thinking_suffix("llama-3.1:free:low"),
+            ("llama-3.1:free", Some("low"))
+        );
+    }
+
+    #[test]
+    fn split_thinking_suffix_keeps_unrecognized_suffix() {
+        assert_eq!(
+            split_thinking_suffix("meta-llama/llama-3.1-8b-instruct:free"),
+            ("meta-llama/llama-3.1-8b-instruct:free", None)
+        );
+        assert_eq!(split_thinking_suffix("opus-4.7"), ("opus-4.7", None));
+        // A trailing empty suffix is not a level; left untouched.
+        assert_eq!(split_thinking_suffix("opus-4.7:"), ("opus-4.7:", None));
+    }
+
+    #[test]
+    fn parse_thinking_rejects_unknown_level() {
+        let err = parse_thinking(Some("turbo")).expect_err("'turbo' must not parse");
+        assert!(err.contains("invalid thinking level 'turbo'"), "{err}");
     }
 
     #[test]

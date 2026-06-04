@@ -358,9 +358,12 @@ A `models` value is either a bare model-id string or an object `{ model, priorit
 models:
   build: anthropic/claude-sonnet-4-5          # bare string
   plan: { model: anthropic/claude-opus-4-5, priority: 10 }   # full form
+  high: anthropic/claude-opus-4-5:high        # with a thinking level
 ```
 
 The **model id** uses a `provider/model` shape. The segment before the first `/` is passed to pi as the provider (e.g. `anthropic`, `openai`); the rest is the model name. A model id without a `/` is passed through as the model with no explicit provider.
+
+A trailing `:` suffix on the model name selects pi's **thinking level**: `model:thinking` (e.g. `anthropic/claude-opus-4-5:high`, `opus-4.7:medium`). Recognized levels are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh` (plus the aliases pi accepts: `none`/`0`, `min`, `1`, `med`/`2`, `3`, `4`). A suffix that is not a recognized level stays part of the model name, so OpenRouter-style variants like `openrouter/meta-llama/llama-3.1-8b-instruct:free` keep working. The level only applies to pi execution — with the `claude-terminal` SDK a recognized suffix is stripped and ignored. Without a suffix, pi's default (no extended thinking) is used.
 
 For pi execution, the API key comes from `api.key`, falling back to `ANTHROPIC_API_KEY` (when the model provider is `anthropic`) or `OPENAI_API_KEY` (when it is `openai`).
 
