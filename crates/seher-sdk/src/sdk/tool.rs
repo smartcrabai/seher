@@ -176,7 +176,7 @@ mod tests {
         assert_eq!(adapter.label(), "echo");
         assert_eq!(adapter.description(), "Echo the input back");
         assert_eq!(adapter.parameters(), params);
-        assert!(!adapter.is_read_only());
+        assert_eq!(adapter.effects(), pi::tools::ToolEffects::write());
     }
 
     #[test]

@@ -25,7 +25,7 @@ thiserror.workspace = true
 tokio.workspace = true
 zzsleep.workspace = true
 futures = "0.3"
-pi_agent_rust = "0.1.13"
+pi_agent_rust = { version = "0.1.18", default-features = false, features = ["sqlite-sessions"] }
 uuid = { version = "1", features = ["v4"] }
 unicode-normalization = "0.1"
 unicode-width = "0.2"
