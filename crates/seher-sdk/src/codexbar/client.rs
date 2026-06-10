@@ -6,6 +6,7 @@
 //! `process` feature. A hard timeout is enforced by polling `try_wait` and
 //! killing the child once the deadline passes.
 
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -133,6 +134,9 @@ fn run_blocking(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // New process group so terminal-generated signals (e.g. Ctrl-C SIGINT)
+        // don't reach codexbar; our timeout kill targets the child directly.
+        .process_group(0)
         .spawn()
     {
         Ok(c) => c,
