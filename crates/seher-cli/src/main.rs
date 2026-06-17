@@ -99,12 +99,14 @@ fn show_resolution(args: &Args) -> Result<(), String> {
             let codexbar_name = codexbar_provider_name(&c.resolved.sdk, &c.resolved.provider);
             let limit_tag = match rt.block_on(seher::check_limit(&codexbar_name)) {
                 Ok(seher::AgentLimit::Limited { reset_time }) => {
-                    let reset = reset_time
-                        .map(|t| {
-                            let local = t.with_timezone(&chrono::Local);
-                            local.format("%Y-%m-%d %H:%M %Z").to_string()
-                        })
-                        .unwrap_or_else(|| "unknown".to_string());
+                    let reset = reset_time.map_or_else(
+                        || "unknown".to_string(),
+                        |t| {
+                            t.with_timezone(&chrono::Local)
+                                .format("%Y-%m-%d %H:%M %Z")
+                                .to_string()
+                        },
+                    );
                     format!(" [LIMITED until {reset}]")
                 }
                 Ok(seher::AgentLimit::NotLimited) => String::new(),
