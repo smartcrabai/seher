@@ -1,214 +1,175 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/smartcrabai/seher/main/schemas/settings.schema.json",
-  "title": "seher settings",
-  "description": "Configuration for seher. The loader accepts both settings.json and settings.jsonc, and it supports comments and trailing commas even though those are outside standard JSON.",
+  "title": "seher config",
+  "description": "Configuration for seher. The config is loaded as YAML from (in order) `-c <path>`, `$SEHER_CONFIG`, or `~/.config/seher/config.yaml`. This JSON Schema describes the same shape so editors that validate YAML against JSON Schema (e.g. the redhat.vscode-yaml extension) can offer completion and validation.",
   "type": "object",
-  "required": ["agents"],
   "properties": {
     "$schema": {
       "type": "string",
       "description": "Optional JSON Schema URI for editor validation and completion."
     },
-    "priority": {
-      "type": "array",
-      "description": "Priority rules used to choose among non-limited agents.",
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/priorityRule"
-      }
+    "skills": {
+      "$ref": "#/$defs/skillsConfig",
+      "description": "Top-level skill-discovery defaults. Each provider may override this via its own `skills` block."
     },
-    "agents": {
-      "type": "array",
-      "description": "List of agents to use.",
-      "items": {
-        "$ref": "#/$defs/agentConfig"
+    "providers": {
+      "type": "object",
+      "description": "Map of provider entries. The map key doubles as the provider label and the default provider name.",
+      "additionalProperties": {
+        "$ref": "#/$defs/providerEntry"
       }
     }
   },
   "$defs": {
-    "provider": {
-      "description": "Provider used for rate-limit tracking. Omit to infer from command, use null to disable provider-based checks, or use any string to override the provider name.",
-      "type": ["string", "null"],
-      "examples": ["claude", "codex", "copilot", "openrouter", "glm", "opencode-go", null]
-    },
-    "agentConfig": {
+    "skillsConfig": {
       "type": "object",
-      "required": ["command"],
+      "description": "Opt-in / opt-out flags for skill auto-discovery.",
       "properties": {
-        "command": {
-          "type": "string",
-          "description": "Executable name to run.",
-          "examples": ["claude", "codex", "opencode"]
-        },
-        "args": {
-          "type": "array",
-          "description": "Additional arguments. Entries containing {model} are omitted when --model is not set.",
-          "default": [],
-          "items": {
-            "type": "string"
-          }
-        },
-        "pre_command": {
-          "type": "array",
-          "description": "Command to run before the agent. First element is the executable, remaining elements are arguments.",
-          "default": [],
-          "items": {
-            "type": "string"
-          }
-        },
-        "models": {
-          "description": "Optional mapping from user-facing model keys to backend model identifiers.",
-          "default": null,
-          "anyOf": [
-            {
-              "type": "object",
-              "additionalProperties": {
-                "type": "string"
-              }
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "arg_maps": {
-          "type": "object",
-          "description": "Exact-match mapping from trailing CLI tokens to replacement token arrays.",
-          "default": {},
-          "additionalProperties": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        },
-        "env": {
-          "description": "Optional environment variables injected when launching the agent.",
-          "default": null,
-          "anyOf": [
-            {
-              "type": "object",
-              "additionalProperties": {
-                "type": "string"
-              }
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "provider": {
-          "$ref": "#/$defs/provider"
-        },
-        "openrouter_management_key": {
-          "type": "string",
-          "description": "Management API key for OpenRouter provider. Required when provider is \"openrouter\"."
-        },
-        "glm_api_key": {
-          "type": "string",
-          "description": "API key for GLM (Zhipu AI) provider. Required when provider is \"glm\"."
-        },
-        "active": {
-          "description": "If set, the agent is active only during the specified schedule; completely disabled outside it.",
-          "$ref": "#/$defs/scheduleRule"
-        },
-        "inactive": {
-          "description": "If set, the agent is completely disabled during the specified schedule; active otherwise.",
-          "$ref": "#/$defs/scheduleRule"
+        "includeClaude": {
+          "type": "boolean",
+          "description": "Whether to auto-discover Claude skills. Default: true."
         }
       },
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "provider": {
-                "const": "openrouter"
-              }
-            },
-            "required": ["provider"]
-          },
-          "then": {
-            "required": ["openrouter_management_key"]
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "provider": {
-                "const": "glm"
-              }
-            },
-            "required": ["provider"]
-          },
-          "then": {
-            "required": ["glm_api_key"]
-          }
-        }
-      ]
+      "additionalProperties": false
     },
-    "priorityRule": {
+    "providerEntry": {
       "type": "object",
-      "required": ["command", "priority"],
+      "required": ["models"],
       "properties": {
-        "command": {
-          "type": "string",
-          "description": "Executable name to match.",
-          "examples": ["claude", "codex", "opencode"]
-        },
         "provider": {
-          "$ref": "#/$defs/provider"
+          "type": "string",
+          "description": "Explicit provider name. Defaults to the map key when omitted. This is the name reported to codexbar for rate-limit checks and to pi for execution.",
+          "examples": ["claude", "codex", "zai", "openrouter"]
         },
-        "model": {
-          "type": ["string", "null"],
-          "description": "Model key to match. Omit or set to null to match runs without --model."
+        "sdk": {
+          "type": "string",
+          "description": "Execution engine. Defaults to \"pi\". Executable in this build: `pi` (in-process pi_agent_rust), `claude-terminal` (drives the local `claude` CLI via tmux), `claude-headless` (runs `claude -p` as a subprocess). The seher-ts-only kinds (`claude`, `codex`, `copilot`, `cursor`, `kimi`, `opencode`) are accepted for cross-implementation portability but silently filtered out of the candidate list at startup.",
+          "default": "pi",
+          "examples": [
+            "pi",
+            "claude-terminal",
+            "claude-headless",
+            "claude",
+            "codex",
+            "copilot",
+            "cursor",
+            "kimi",
+            "opencode"
+          ]
         },
         "priority": {
           "type": "integer",
-          "description": "Priority value. Higher values win when multiple agents are available.",
+          "description": "Provider-level priority shorthand (`i32`). Used when a model entry omits its own `priority`. Higher wins; ties are broken by the provider's order in the YAML file.",
           "minimum": -2147483648,
           "maximum": 2147483647
+        },
+        "api": {
+          "$ref": "#/$defs/providerApi",
+          "description": "Per-provider API config forwarded to the underlying SDK."
+        },
+        "skills": {
+          "$ref": "#/$defs/skillsConfig",
+          "description": "Per-provider override of the top-level skills config."
+        },
+        "models": {
+          "type": "object",
+          "description": "Map from a mode key (`plan`, `build`, or any custom key passed via `-m`) to a model entry. A provider with no models is rejected at load time.",
+          "minProperties": 1,
+          "additionalProperties": {
+            "$ref": "#/$defs/modelEntry"
+          }
         }
       },
-      "allOf": [{ "$ref": "#/$defs/scheduleRule" }]
+      "additionalProperties": false
     },
-    "scheduleRule": {
+    "providerApi": {
       "type": "object",
+      "description": "Per-provider API config forwarded to the underlying SDK constructor.",
       "properties": {
-        "weekdays": {
-          "type": "array",
-          "description": "Weekday ranges in 'start-end' format (0=Sun, 1=Mon, ..., 6=Sat, inclusive). e.g. ['1-5'] means Mon-Fri.",
-          "items": { "type": "string" }
+        "key": {
+          "type": "string",
+          "description": "API key. For pi execution, falls back to ANTHROPIC_API_KEY / OPENAI_API_KEY when omitted."
         },
-        "hours": {
-          "type": "array",
-          "description": "Hour ranges in 'start-end' format, half-open [start, end), 0-48. e.g. ['21-27'] means 21:00-03:00 next day.",
-          "items": { "type": "string" }
+        "endpoint": {
+          "type": "string",
+          "description": "API endpoint override."
         }
-      }
+      },
+      "additionalProperties": false
+    },
+    "modelEntry": {
+      "description": "Either a bare model-id string or a full `{ model, priority }` object. Model ids use a `provider/model` shape; a trailing `:level` suffix (`off`/`minimal`/`low`/`medium`/`high`/`xhigh` and pi aliases) selects pi's thinking level when running through pi.",
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Bare model id, e.g. `anthropic/claude-sonnet-4-5` or `anthropic/claude-opus-4-5:high`.",
+          "minLength": 1
+        },
+        {
+          "type": "object",
+          "required": ["model"],
+          "properties": {
+            "model": {
+              "type": "string",
+              "description": "Model id passed to the SDK.",
+              "minLength": 1
+            },
+            "priority": {
+              "type": "integer",
+              "description": "Model-level priority. Takes precedence over the provider-level `priority` when set.",
+              "minimum": -2147483648,
+              "maximum": 2147483647
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
     }
   },
   "examples": [
     {
       "$schema": "https://raw.githubusercontent.com/smartcrabai/seher/main/schemas/settings.schema.json",
-      "priority": [
-        {
-          "command": "claude",
-          "model": "high",
-          "priority": 100
-        }
-      ],
-      "agents": [
-        {
-          "command": "claude",
-          "args": ["--model", "{model}"],
+      "skills": {
+        "includeClaude": true
+      },
+      "providers": {
+        "claude": {
+          "priority": 100,
           "models": {
-            "high": "opus",
-            "medium": "sonnet",
-            "low": "haiku"
+            "plan": "anthropic/claude-opus-4-5",
+            "build": "anthropic/claude-sonnet-4-5"
+          }
+        },
+        "codex": {
+          "models": {
+            "plan": { "model": "openai/gpt-5.5", "priority": 50 },
+            "build": { "model": "openai/gpt-5.5", "priority": 40 }
+          }
+        },
+        "claude-headless": {
+          "sdk": "claude-headless",
+          "priority": 50,
+          "models": {
+            "plan": "claude-opus-4-7",
+            "build": "claude-sonnet-4-6"
+          }
+        },
+        "zai": {
+          "provider": "zai",
+          "sdk": "pi",
+          "api": {
+            "key": "sk-your-key",
+            "endpoint": "https://api.z.ai/..."
+          },
+          "skills": {
+            "includeClaude": false
+          },
+          "models": {
+            "build": "zai/glm-4.6"
           }
         }
-      ]
+      }
     }
   ]
 }
