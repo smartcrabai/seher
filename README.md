@@ -75,6 +75,11 @@ seher --config ./my-config.yaml "fix bugs"
 # Per-run timeout (milliseconds) and quiet output
 seher --timeout 600000 --quiet "fix bugs"
 
+# Show which provider/model/SDK would be selected (dry run)
+seher --show-resolution
+seher --show-resolution -m plan
+seher --show-resolution -p codex
+
 # Multi-turn: a fresh run prints `session: <id>` to stderr; resume it with -r
 seher --cwd /path/to/project "implement the feature"   # stderr: session: <uuid>
 seher --cwd /path/to/project -r <uuid> "now add tests"
@@ -89,6 +94,7 @@ seher --cwd /path/to/project -r <uuid> "now add tests"
 | `--config <path>` | `-c` | Path to a YAML config file |
 | `--timeout <ms>` | `-t` | Per-run timeout in milliseconds |
 | `--quiet` | `-q` | Suppress informational output |
+| `--show-resolution` | | Show which provider/model/SDK would be selected and exit (no prompt required). Candidates are listed on stderr; the winner is printed as JSON on stdout |
 | `--cwd <dir>` | | Working directory for the agent. Canonicalized on receipt; must exist. Multi-turn sessions are bound to it |
 | `--resume <id>` | `-r` | Resume a prior session by id (printed as `session: <id>` on a previous run). Pass the same `--cwd` used to create it |
 
