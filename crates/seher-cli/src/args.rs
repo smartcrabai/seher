@@ -36,6 +36,10 @@ pub struct RawArgs {
     #[arg(short = 'q', long)]
     pub quiet: bool,
 
+    /// Show which provider/model/SDK would be selected and exit (no prompt required)
+    #[arg(long)]
+    pub show_resolution: bool,
+
     /// Working directory for the agent. Multi-turn sessions are bound to it.
     #[arg(long)]
     pub cwd: Option<String>,
@@ -58,6 +62,7 @@ pub struct Args {
     pub config: Option<PathBuf>,
     pub timeout: Option<u64>,
     pub quiet: bool,
+    pub show_resolution: bool,
     /// Absolute, canonicalized working directory (when `--cwd` was given).
     pub cwd: Option<String>,
     /// Session id to resume, if any.
@@ -119,6 +124,7 @@ pub fn normalize(raw: RawArgs) -> Result<Args, String> {
         config: raw.config,
         timeout: raw.timeout,
         quiet: raw.quiet,
+        show_resolution: raw.show_resolution,
         cwd,
         resume: raw.resume,
         prompt_tokens,
