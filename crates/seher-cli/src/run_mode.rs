@@ -83,11 +83,9 @@ fn effective_cwd(args: &Args) -> String {
 /// backends (`claude-terminal` and `claude-headless`) share the same Claude CLI
 /// transcript storage and can resume each other's sessions.
 fn sdk_backends_compatible(resolved_sdk: &str, pinned_sdk: &str) -> bool {
-    if resolved_sdk == pinned_sdk {
-        return true;
-    }
     const CLAUDE_SDKS: &[&str] = &["claude-terminal", "claude-headless"];
-    CLAUDE_SDKS.contains(&resolved_sdk) && CLAUDE_SDKS.contains(&pinned_sdk)
+    resolved_sdk == pinned_sdk
+        || (CLAUDE_SDKS.contains(&resolved_sdk) && CLAUDE_SDKS.contains(&pinned_sdk))
 }
 
 /// Detect which backend owns a session id by probing on-disk storage under `cwd`.
