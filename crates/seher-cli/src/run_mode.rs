@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 
+use seher::claude_headless::{ClaudeHeadlessRunner, ClaudeHeadlessRunnerConfig, stream_headless};
 use seher::claude_terminal::{
     default_transcript_root, encode_transcript_path, new_sdk_with_defaults, stream_via_thread,
 };
@@ -39,7 +40,7 @@ pub fn resolve_and_stream(
     // resolver; we surface the skip here so the user knows why.
     for (provider, sdk) in unsupported_sdk_providers(&config) {
         logger.warn(&format!(
-            "Skipping provider '{provider}' (sdk='{sdk}'): not supported by this build (supported: 'pi', 'claude-terminal')"
+            "Skipping provider '{provider}' (sdk='{sdk}'): not supported by this build (supported: 'pi', 'claude-terminal', 'claude-headless')"
         ));
     }
 
@@ -78,8 +79,24 @@ fn effective_cwd(args: &Args) -> String {
     })
 }
 
+/// Whether two SDK backends are compatible for session resume. Both claude-based
+/// backends (`claude-terminal` and `claude-headless`) share the same Claude CLI
+/// transcript storage and can resume each other's sessions.
+fn sdk_backends_compatible(resolved_sdk: &str, pinned_sdk: &str) -> bool {
+    const CLAUDE_SDKS: &[&str] = &["claude-terminal", "claude-headless"];
+    resolved_sdk == pinned_sdk
+        || (CLAUDE_SDKS.contains(&resolved_sdk) && CLAUDE_SDKS.contains(&pinned_sdk))
+}
+
 /// Detect which backend owns a session id by probing on-disk storage under `cwd`.
-/// Returns the sdk kind (`"claude-terminal"` / `"pi"`) or `None` if neither has it.
+/// Returns the sdk kind (`"claude-terminal"` / `"claude-headless"` / `"pi"`) or
+/// `None` if no backend has it.
+///
+/// Both `claude-terminal` and `claude-headless` use the same Claude CLI transcript
+/// storage, so a transcript hit could belong to either. We return
+/// `"claude-terminal"` as the default for that path; if the resolver selected
+/// `"claude-headless"`, the resume pinning in `resume_and_stream` accepts both
+/// claude-based backends interchangeably.
 fn probe_session_backend(cwd: &str, session_id: &str) -> Option<&'static str> {
     let claude_path = encode_transcript_path(&default_transcript_root(), cwd, session_id);
     if std::path::Path::new(&claude_path).exists() {
@@ -119,7 +136,7 @@ fn resume_and_stream(
     })?;
 
     let resolved = resolve_once(rt, args, mode_key, &[], config)?;
-    if resolved.sdk != pinned {
+    if !sdk_backends_compatible(&resolved.sdk, pinned) {
         return Err(format!(
             "resumed session '{resume_id}' belongs to backend '{pinned}', but the resolver selected '{}' (provider '{}') — it may be rate-limited or lower priority; pass --provider to force the matching one",
             resolved.sdk, resolved.provider
@@ -231,7 +248,19 @@ fn dispatch_stream(
     args: &Args,
     resume: Option<&str>,
 ) -> std::sync::mpsc::Receiver<seher::sdk::StreamChunk> {
-    if resolved.sdk == "claude-terminal" {
+    if resolved.sdk == "claude-headless" {
+        let (model_name, _) = split_thinking_suffix(&resolved.model_id);
+        let model = Some(model_name.to_string()).filter(|s| !s.is_empty());
+        let runner = ClaudeHeadlessRunner::new(ClaudeHeadlessRunnerConfig {
+            model,
+            system_prompt: system_prompt.map(str::to_string),
+            timeout_ms: args.timeout,
+            cwd: args.cwd.clone(),
+            resume_session_id: resume.map(str::to_string),
+            ..Default::default()
+        });
+        stream_headless(runner, prompt.to_string(), resolved.provider.clone())
+    } else if resolved.sdk == "claude-terminal" {
         // claude-terminal has no thinking-level support; strip a recognized
         // `:level` suffix so it never leaks into the model name.
         let (model_name, _) = split_thinking_suffix(&resolved.model_id);

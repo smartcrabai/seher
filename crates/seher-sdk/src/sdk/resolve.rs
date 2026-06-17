@@ -130,11 +130,12 @@ pub struct Candidate {
 /// Supported `sdk` values that can actually be executed by this implementation.
 ///
 /// `pi_agent_rust` is the in-process execution engine; `claude-terminal` drives
-/// the local `claude` CLI via tmux. Providers tagged with other seher-ts-only SDK
-/// kinds (`claude`, `codex`, `copilot`, `cursor`, `kimi`, `opencode`) cannot be
-/// run here. The config still accepts them (so the same `config.yaml` works in
-/// both implementations); they are silently filtered out of the candidate list.
-pub const SUPPORTED_SDK_KINDS: &[&str] = &["pi", "claude-terminal"];
+/// the local `claude` CLI via tmux; `claude-headless` drives `claude -p` as a
+/// subprocess. Providers tagged with other seher-ts-only SDK kinds (`claude`,
+/// `codex`, `copilot`, `cursor`, `kimi`, `opencode`) cannot be run here. The
+/// config still accepts them (so the same `config.yaml` works in both
+/// implementations); they are silently filtered out of the candidate list.
+pub const SUPPORTED_SDK_KINDS: &[&str] = &["pi", "claude-terminal", "claude-headless"];
 
 #[must_use]
 pub fn is_supported_sdk(sdk: &str) -> bool {
@@ -170,7 +171,7 @@ fn filter_candidates_for_tools(
     if candidates.is_empty() {
         let msg = if dropped_for_tools > 0 {
             format!(
-                "No tool-capable (pi) provider defines models.{mode_key}; {dropped_for_tools} candidate(s) were excluded because custom tools are not supported on claude-terminal"
+                "No tool-capable (pi) provider defines models.{mode_key}; {dropped_for_tools} candidate(s) were excluded because custom tools are not supported on claude-terminal/claude-headless"
             )
         } else if let Some(p) = provider_filter {
             format!("No provider \"{p}\" defines models.{mode_key}")
@@ -404,13 +405,13 @@ pub async fn poll_for_agent(
 
 /// Map a YAML `(sdk, provider)` pair to the provider name codexbar expects.
 ///
-/// Mirrors seher-ts `codexbarProviderName`: the `claude-terminal` SDK drives the
-/// Claude CLI which authenticates as the `claude` account, so it shares that
-/// account's codexbar quota.
+/// Mirrors seher-ts `codexbarProviderName`: the `claude-terminal` and
+/// `claude-headless` SDKs both drive the Claude CLI which authenticates as the
+/// `claude` account, so they share that account's codexbar quota.
 #[must_use]
 pub fn codexbar_provider_name(sdk: &str, provider: &str) -> String {
     match sdk {
-        "claude-terminal" => "claude".to_string(),
+        "claude-terminal" | "claude-headless" => "claude".to_string(),
         _ => provider.to_string(),
     }
 }
@@ -658,10 +659,14 @@ mod tests {
     }
 
     #[test]
-    fn codexbar_provider_name_aliases_claude_terminal() {
-        // claude-terminal shares the `claude` codexbar account.
+    fn codexbar_provider_name_aliases_claude_terminal_and_headless() {
+        // claude-terminal and claude-headless share the `claude` codexbar account.
         assert_eq!(
             codexbar_provider_name("claude-terminal", "claude"),
+            "claude"
+        );
+        assert_eq!(
+            codexbar_provider_name("claude-headless", "claude"),
             "claude"
         );
         // Any other sdk passes the provider name through unchanged.
@@ -729,9 +734,10 @@ mod tests {
     }
 
     #[test]
-    fn is_supported_sdk_accepts_pi_and_claude_terminal() {
+    fn is_supported_sdk_accepts_pi_and_claude_terminal_and_headless() {
         assert!(is_supported_sdk("pi"));
         assert!(is_supported_sdk("claude-terminal"));
+        assert!(is_supported_sdk("claude-headless"));
         assert!(!is_supported_sdk("claude"));
         assert!(!is_supported_sdk("codex"));
         assert!(!is_supported_sdk(""));
@@ -745,6 +751,7 @@ mod tests {
     fn sdk_supports_tools_only_pi() {
         assert!(sdk_supports_tools("pi"));
         assert!(!sdk_supports_tools("claude-terminal"));
+        assert!(!sdk_supports_tools("claude-headless"));
         assert!(!sdk_supports_tools(""));
     }
 

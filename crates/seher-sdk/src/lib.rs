@@ -1,3 +1,4 @@
+pub mod claude_headless;
 pub mod claude_terminal;
 pub mod codexbar;
 pub mod sdk;
