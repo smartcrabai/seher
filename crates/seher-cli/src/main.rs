@@ -73,8 +73,8 @@ fn run() -> i32 {
 
 fn show_resolution(args: &Args) -> Result<(), String> {
     use seher::sdk::{
-        CodexBarProbe, ResolveOptions, build_candidates, load_config, resolve_agent,
-        unsupported_sdk_providers,
+        CodexBarProbe, ResolveOptions, build_candidates, codexbar_provider_name, load_config,
+        resolve_agent, unsupported_sdk_providers,
     };
 
     let config = load_config(args.config.as_deref()).map_err(|e| e.to_string())?;
@@ -84,15 +84,36 @@ fn show_resolution(args: &Args) -> Result<(), String> {
         Mode::Build => "build".to_string(),
     });
 
-    // Show all candidates
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("Failed to build tokio runtime: {e}"))?;
+
+    // Show all candidates with limit status
     let candidates = build_candidates(&config, &mode_key, args.provider.as_deref(), &[]);
     if candidates.is_empty() {
         eprintln!("No candidates for mode key '{mode_key}'");
     } else {
         eprintln!("Candidates (mode={mode_key}):");
         for (i, c) in candidates.iter().enumerate() {
+            let codexbar_name = codexbar_provider_name(&c.resolved.sdk, &c.resolved.provider);
+            let limit_tag = match rt.block_on(seher::check_limit(&codexbar_name)) {
+                Ok(seher::AgentLimit::Limited { reset_time }) => {
+                    let reset = reset_time.map_or_else(
+                        || "unknown".to_string(),
+                        |t| {
+                            t.with_timezone(&chrono::Local)
+                                .format("%Y-%m-%d %H:%M %Z")
+                                .to_string()
+                        },
+                    );
+                    format!(" [LIMITED until {reset}]")
+                }
+                Ok(seher::AgentLimit::NotLimited) => String::new(),
+                Err(_) => " [probe error]".to_string(),
+            };
             eprintln!(
-                "  {i}. {} (sdk={}, model={}, priority={})",
+                "  {i}. {} (sdk={}, model={}, priority={}){limit_tag}",
                 c.resolved.provider, c.resolved.sdk, c.resolved.model_id, c.priority
             );
         }
@@ -103,12 +124,6 @@ fn show_resolution(args: &Args) -> Result<(), String> {
     for (provider, sdk) in unsupported_sdk_providers(&config) {
         eprintln!("Skipped: {provider} (sdk={sdk}, not supported)");
     }
-
-    // Resolve with codexbar probe
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| format!("Failed to build tokio runtime: {e}"))?;
 
     let opts = ResolveOptions {
         mode_key: mode_key.clone(),
