@@ -1,5 +1,5 @@
 [package]
-name = "claude-agent-sdk"
+name = "seher-claude-agent-sdk"
 description = "Rust port of anthropics/claude-agent-sdk-python: drive the Claude Code CLI as an agent runtime"
 authors.workspace = true
 edition.workspace = true

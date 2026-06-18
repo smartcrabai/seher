@@ -3,7 +3,7 @@
 //! Requires `claude` to be on `$PATH` (or pass `--cli-path` via env).
 //! Run:
 //! ```bash
-//! cargo run -p claude-agent-sdk --example quickstart -- "What is 2+2?"
+//! cargo run -p seher-claude-agent-sdk --example quickstart -- "What is 2+2?"
 //! ```
 
 use std::env;

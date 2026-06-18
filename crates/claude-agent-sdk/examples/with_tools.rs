@@ -3,7 +3,7 @@
 //!
 //! Run:
 //! ```bash
-//! cargo run -p claude-agent-sdk --example with_tools -- \
+//! cargo run -p seher-claude-agent-sdk --example with_tools -- \
 //!   "Use the add tool to compute 17 + 25."
 //! ```
 
