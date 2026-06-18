@@ -113,19 +113,19 @@ mod tests {
 
     #[test]
     fn json_decode_does_not_panic_on_multibyte_boundary() {
-        // Each 'あ' is 3 bytes; 40 of them = 120 bytes — the cut at byte 100
+        // Each U+3042 is 3 bytes; 40 of them = 120 bytes — the cut at byte 100
         // would land mid-codepoint with a naive slice. The safe version must
         // round down to the previous char boundary.
-        let long: String = "あ".repeat(40);
+        let long: String = "\u{3042}".repeat(40);
         let e = ClaudeSDKError::json_decode(&long, fake_serde_err());
         let ClaudeSDKError::JsonDecode { snippet, .. } = e else {
             panic!("wrong variant")
         };
         assert!(snippet.ends_with("..."));
-        // Body must be a valid prefix made of whole 'あ' codepoints (≤ 99 bytes
-        // = 33 chars × 3 bytes).
+        // Body must be a valid prefix made of whole U+3042 codepoints (<= 99 bytes
+        // = 33 chars x 3 bytes).
         let body = snippet.trim_end_matches("...");
         assert!(body.len() % 3 == 0, "len={}", body.len());
-        assert!(body.chars().all(|c| c == 'あ'));
+        assert!(body.chars().all(|c| c == '\u{3042}'));
     }
 }

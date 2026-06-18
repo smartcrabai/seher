@@ -5,14 +5,10 @@
 
 use std::path::PathBuf;
 
-use seher::claude_agent::{ClaudeAgentRunnerConfig, stream_agent};
-use seher::claude_headless::{ClaudeHeadlessRunner, ClaudeHeadlessRunnerConfig, stream_headless};
-use seher::claude_terminal::{
-    default_transcript_root, encode_transcript_path, new_sdk_with_defaults, stream_via_thread,
-};
+use seher::claude_terminal::{default_transcript_root, encode_transcript_path};
 use seher::sdk::{
-    CodexBarProbe, Config, PiRunner, PiRunnerOptions, ResolveOptions, ResolvedAgent, TimeoutError,
-    load_config, pi_session_path, resolve_agent, split_thinking_suffix, unsupported_sdk_providers,
+    CodexBarProbe, Config, ResolveOptions, ResolvedAgent, RunAgentOptions, TimeoutError,
+    load_config, pi_session_path, resolve_agent, stream_for_resolved, unsupported_sdk_providers,
 };
 
 use crate::args::Args;
@@ -250,100 +246,25 @@ fn dispatch_stream(
     args: &Args,
     resume: Option<&str>,
 ) -> std::sync::mpsc::Receiver<seher::sdk::StreamChunk> {
-    if resolved.sdk == "claude" {
-        // Tools-capable `claude` SDK. The CLI binary itself has no way to
-        // define custom tools — SDK consumers do — so `tools` is left empty
-        // here. Function calling still works for any external MCP server the
-        // user configured via `mcp_servers` in their settings, and tool-use
-        // blocks are surfaced through the stream-json protocol.
-        let (model_name, _) = split_thinking_suffix(&resolved.model_id);
-        let model = Some(model_name.to_string()).filter(|s| !s.is_empty());
-        stream_agent(
-            ClaudeAgentRunnerConfig {
-                model,
-                system_prompt: system_prompt.map(str::to_string),
-                cwd: args.cwd.clone(),
-                resume_session_id: resume.map(str::to_string),
-                ..Default::default()
-            },
-            prompt.to_string(),
-            resolved.provider.clone(),
-        )
-    } else if resolved.sdk == "claude-headless" {
-        let (model_name, _) = split_thinking_suffix(&resolved.model_id);
-        let model = Some(model_name.to_string()).filter(|s| !s.is_empty());
-        let runner = ClaudeHeadlessRunner::new(ClaudeHeadlessRunnerConfig {
-            model,
-            system_prompt: system_prompt.map(str::to_string),
-            timeout_ms: args.timeout,
-            cwd: args.cwd.clone(),
-            resume_session_id: resume.map(str::to_string),
-            ..Default::default()
-        });
-        stream_headless(runner, prompt.to_string(), resolved.provider.clone())
-    } else if resolved.sdk == "claude-terminal" {
-        // claude-terminal has no thinking-level support; strip a recognized
-        // `:level` suffix so it never leaks into the model name.
-        let (model_name, _) = split_thinking_suffix(&resolved.model_id);
-        let model = Some(model_name.to_string()).filter(|s| !s.is_empty());
-        let sdk = new_sdk_with_defaults(
-            None,
-            None,
-            model,
-            system_prompt.map(str::to_string),
-            args.timeout,
-            args.cwd.clone(),
-        );
-        stream_via_thread(
-            sdk,
-            prompt.to_string(),
-            resolved.provider.clone(),
-            resume.map(str::to_string),
-        )
-    } else {
-        let runner = build_pi_runner(resolved, system_prompt.map(str::to_string), args);
-        runner.stream(prompt.to_string(), resume.map(str::to_string))
-    }
-}
-
-fn build_pi_runner(
-    resolved: &ResolvedAgent,
-    system_prompt: Option<String>,
-    args: &Args,
-) -> PiRunner {
-    let (provider, model, thinking) = parse_provider_model(&resolved.model_id);
+    // Resolve api_key: YAML config takes precedence, env var as fallback for
+    // well-known providers (applies to the pi runner).
     let api_key = resolved
         .api
         .as_ref()
         .and_then(|a| a.key.clone())
-        .or_else(|| env_api_key_for(provider.as_deref()));
-    PiRunner::new(PiRunnerOptions {
-        provider,
-        model,
-        api_key,
-        thinking,
-        system_prompt,
-        working_directory: args.cwd.as_deref().map(PathBuf::from),
-        // The CLI has no way to define custom tools; only SDK consumers do.
-        tools: Vec::new(),
-    })
-}
+        .or_else(|| env_api_key_for(Some(&resolved.provider)));
 
-/// Splits a config model id into `(provider, model, thinking)`.
-///
-/// The segment before the first `/` is the provider. A trailing `:` suffix on
-/// the remainder selects pi's thinking level (e.g. `anthropic/opus-4.7:high`),
-/// but only when it is a recognized level — see [`split_thinking_suffix`].
-fn parse_provider_model(model_id: &str) -> (Option<String>, Option<String>, Option<String>) {
-    let (provider, rest) = match model_id.split_once('/') {
-        Some((p, m)) => (Some(p.to_string()), m),
-        None => (None, model_id),
-    };
-    let (model, thinking) = split_thinking_suffix(rest);
-    (
-        provider,
-        Some(model.to_string()),
-        thinking.map(str::to_string),
+    stream_for_resolved(
+        resolved,
+        prompt.to_string(),
+        RunAgentOptions {
+            working_dir: args.cwd.as_deref().map(PathBuf::from),
+            resume: resume.map(str::to_string),
+            tools: Vec::new(),
+            api_key,
+            system_prompt: system_prompt.map(str::to_string),
+            timeout_ms: args.timeout,
+        },
     )
 }
 
@@ -464,48 +385,6 @@ mod tests {
         let err =
             stream_with_retry(None, &logger, resolver, stream_runner).expect_err("should error");
         assert_eq!(err, "config broken");
-    }
-
-    #[test]
-    fn parse_provider_model_with_slash() {
-        let (p, m, t) = parse_provider_model("anthropic/claude-sonnet");
-        assert_eq!(p.as_deref(), Some("anthropic"));
-        assert_eq!(m.as_deref(), Some("claude-sonnet"));
-        assert_eq!(t, None);
-    }
-
-    #[test]
-    fn parse_provider_model_without_slash() {
-        let (p, m, t) = parse_provider_model("just-a-model");
-        assert_eq!(p, None);
-        assert_eq!(m.as_deref(), Some("just-a-model"));
-        assert_eq!(t, None);
-    }
-
-    #[test]
-    fn parse_provider_model_with_thinking() {
-        let (p, m, t) = parse_provider_model("anthropic/claude-sonnet:high");
-        assert_eq!(p.as_deref(), Some("anthropic"));
-        assert_eq!(m.as_deref(), Some("claude-sonnet"));
-        assert_eq!(t.as_deref(), Some("high"));
-    }
-
-    #[test]
-    fn parse_provider_model_with_thinking_without_slash() {
-        let (p, m, t) = parse_provider_model("just-a-model:medium");
-        assert_eq!(p, None);
-        assert_eq!(m.as_deref(), Some("just-a-model"));
-        assert_eq!(t.as_deref(), Some("medium"));
-    }
-
-    #[test]
-    fn parse_provider_model_keeps_unrecognized_suffix_in_model() {
-        // OpenRouter-style variant suffixes are not thinking levels and must
-        // stay part of the model name.
-        let (p, m, t) = parse_provider_model("openrouter/meta-llama/llama-3.1-8b-instruct:free");
-        assert_eq!(p.as_deref(), Some("openrouter"));
-        assert_eq!(m.as_deref(), Some("meta-llama/llama-3.1-8b-instruct:free"));
-        assert_eq!(t, None);
     }
 
     #[test]

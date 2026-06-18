@@ -297,6 +297,29 @@ pub fn split_thinking_suffix(model: &str) -> (&str, Option<&str>) {
     }
 }
 
+/// Splits a model reference `"[provider/]model_name[:level]"` into
+/// `(provider, model, thinking)`.
+///
+/// - The provider is the part before the **first** `/`. If there is no `/`,
+///   `fallback_provider` is used as the provider.
+/// - The model is everything between the first `/` and the last `:level` suffix
+///   (so `openrouter/meta-llama/llama-3-8b` keeps the extra `/` in the model).
+/// - The thinking level is recognized only when the last `:suffix` parses as a
+///   [`pi::model::ThinkingLevel`]; any other `:` suffix (e.g. `:free`) stays in
+///   the model name.
+#[must_use]
+pub fn split_model_ref(
+    fallback_provider: &str,
+    model_id: &str,
+) -> (String, String, Option<String>) {
+    let (provider, model_rest) = match model_id.split_once('/') {
+        Some((p, m)) => (p.to_string(), m),
+        None => (fallback_provider.to_string(), model_id),
+    };
+    let (model, thinking) = split_thinking_suffix(model_rest);
+    (provider, model.to_string(), thinking.map(str::to_string))
+}
+
 fn parse_thinking(thinking: Option<&str>) -> Result<Option<pi::model::ThinkingLevel>, String> {
     thinking
         .map(|t| {
@@ -505,6 +528,68 @@ mod tests {
         assert_eq!(split_thinking_suffix("opus-4.7"), ("opus-4.7", None));
         // A trailing empty suffix is not a level; left untouched.
         assert_eq!(split_thinking_suffix("opus-4.7:"), ("opus-4.7:", None));
+    }
+
+    // -- split_model_ref --------------------------------------------------------
+
+    #[test]
+    fn split_model_ref_extracts_provider_model_and_thinking() {
+        // Given: a model reference with provider prefix and thinking level suffix
+        // When: split_model_ref is called
+        // Then: provider, model, and thinking are extracted correctly
+        assert_eq!(
+            split_model_ref("codex", "openai-codex/gpt-5.5:xhigh"),
+            (
+                "openai-codex".to_string(),
+                "gpt-5.5".to_string(),
+                Some("xhigh".to_string())
+            )
+        );
+    }
+
+    #[test]
+    fn split_model_ref_keeps_extra_slashes_in_model() {
+        // Given: a model id with multiple slashes (e.g. openrouter compound path)
+        // When: split_model_ref is called
+        // Then: only the first slash is the provider separator; rest stays in model
+        assert_eq!(
+            split_model_ref("openrouter", "openrouter/moonshotai/kimi-k2.6"),
+            (
+                "openrouter".to_string(),
+                "moonshotai/kimi-k2.6".to_string(),
+                None
+            )
+        );
+    }
+
+    #[test]
+    fn split_model_ref_uses_fallback_provider_when_no_slash() {
+        // Given: a bare model name with no provider prefix
+        // When: split_model_ref is called
+        // Then: fallback_provider is used and model is the full string
+        assert_eq!(
+            split_model_ref("anthropic", "claude-sonnet-4-5"),
+            (
+                "anthropic".to_string(),
+                "claude-sonnet-4-5".to_string(),
+                None
+            )
+        );
+    }
+
+    #[test]
+    fn split_model_ref_does_not_strip_non_thinking_colon_suffix() {
+        // Given: a model id whose `:free` suffix is NOT a pi thinking level
+        // When: split_model_ref is called
+        // Then: `:free` stays in the model name and thinking is None
+        assert_eq!(
+            split_model_ref("openrouter", "openrouter/meta-llama/llama-3-8b:free"),
+            (
+                "openrouter".to_string(),
+                "meta-llama/llama-3-8b:free".to_string(),
+                None
+            )
+        );
     }
 
     #[test]
