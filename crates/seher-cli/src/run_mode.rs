@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 
+use seher::claude_agent::{ClaudeAgentRunnerConfig, stream_agent};
 use seher::claude_headless::{ClaudeHeadlessRunner, ClaudeHeadlessRunnerConfig, stream_headless};
 use seher::claude_terminal::{
     default_transcript_root, encode_transcript_path, new_sdk_with_defaults, stream_via_thread,
@@ -35,12 +36,13 @@ pub fn resolve_and_stream(
     // Load config + detect browser session once; reuse across retry attempts.
     let config: Config = load_config(args.config.as_deref()).map_err(|e| e.to_string())?;
 
-    // One-time warning for non-executable providers (e.g. `sdk: claude` from
-    // seher-ts configs). They are silently filtered out of candidates by the
-    // resolver; we surface the skip here so the user knows why.
+    // One-time warning for non-executable providers (e.g. `sdk: codex` /
+    // `sdk: copilot` from seher-ts configs). They are silently filtered out
+    // of candidates by the resolver; we surface the skip here so the user
+    // knows why.
     for (provider, sdk) in unsupported_sdk_providers(&config) {
         logger.warn(&format!(
-            "Skipping provider '{provider}' (sdk='{sdk}'): not supported by this build (supported: 'pi', 'claude-terminal', 'claude-headless')"
+            "Skipping provider '{provider}' (sdk='{sdk}'): not supported by this build (supported: 'pi', 'claude', 'claude-terminal', 'claude-headless')"
         ));
     }
 
@@ -79,11 +81,11 @@ fn effective_cwd(args: &Args) -> String {
     })
 }
 
-/// Whether two SDK backends are compatible for session resume. Both claude-based
-/// backends (`claude-terminal` and `claude-headless`) share the same Claude CLI
-/// transcript storage and can resume each other's sessions.
+/// Whether two SDK backends are compatible for session resume. All claude-based
+/// backends (`claude`, `claude-terminal`, `claude-headless`) share the same
+/// Claude CLI transcript storage and can resume each other's sessions.
 fn sdk_backends_compatible(resolved_sdk: &str, pinned_sdk: &str) -> bool {
-    const CLAUDE_SDKS: &[&str] = &["claude-terminal", "claude-headless"];
+    const CLAUDE_SDKS: &[&str] = &["claude", "claude-terminal", "claude-headless"];
     resolved_sdk == pinned_sdk
         || (CLAUDE_SDKS.contains(&resolved_sdk) && CLAUDE_SDKS.contains(&pinned_sdk))
 }
@@ -248,7 +250,26 @@ fn dispatch_stream(
     args: &Args,
     resume: Option<&str>,
 ) -> std::sync::mpsc::Receiver<seher::sdk::StreamChunk> {
-    if resolved.sdk == "claude-headless" {
+    if resolved.sdk == "claude" {
+        // Tools-capable `claude` SDK. The CLI binary itself has no way to
+        // define custom tools — SDK consumers do — so `tools` is left empty
+        // here. Function calling still works for any external MCP server the
+        // user configured via `mcp_servers` in their settings, and tool-use
+        // blocks are surfaced through the stream-json protocol.
+        let (model_name, _) = split_thinking_suffix(&resolved.model_id);
+        let model = Some(model_name.to_string()).filter(|s| !s.is_empty());
+        stream_agent(
+            ClaudeAgentRunnerConfig {
+                model,
+                system_prompt: system_prompt.map(str::to_string),
+                cwd: args.cwd.clone(),
+                resume_session_id: resume.map(str::to_string),
+                ..Default::default()
+            },
+            prompt.to_string(),
+            resolved.provider.clone(),
+        )
+    } else if resolved.sdk == "claude-headless" {
         let (model_name, _) = split_thinking_suffix(&resolved.model_id);
         let model = Some(model_name.to_string()).filter(|s| !s.is_empty());
         let runner = ClaudeHeadlessRunner::new(ClaudeHeadlessRunnerConfig {

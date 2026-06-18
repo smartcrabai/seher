@@ -68,8 +68,9 @@ pub struct ResolveOptions {
     pub max_rescans: u32,
     pub quiet: bool,
     /// When true, the run will pass custom tools, so only SDKs that support
-    /// function calling (`pi`) are eligible. `claude-terminal` candidates are
-    /// dropped (see [`sdk_supports_tools`]).
+    /// function calling (`pi` and `claude`) are eligible. `claude-terminal`
+    /// and `claude-headless` candidates are dropped (see
+    /// [`sdk_supports_tools`]).
     pub require_tools: bool,
 }
 
@@ -99,8 +100,9 @@ pub struct PollOptions {
     pub interval_ms: u64,
     pub cancel: Option<Arc<AtomicBool>>,
     /// When true, the run will pass custom tools, so only SDKs that support
-    /// function calling (`pi`) are eligible. `claude-terminal` candidates are
-    /// dropped (see [`sdk_supports_tools`]).
+    /// function calling (`pi` and `claude`) are eligible. `claude-terminal`
+    /// and `claude-headless` candidates are dropped (see
+    /// [`sdk_supports_tools`]).
     pub require_tools: bool,
 }
 
@@ -129,25 +131,33 @@ pub struct Candidate {
 
 /// Supported `sdk` values that can actually be executed by this implementation.
 ///
-/// `pi_agent_rust` is the in-process execution engine; `claude-terminal` drives
-/// the local `claude` CLI via tmux; `claude-headless` drives `claude -p` as a
-/// subprocess. Providers tagged with other seher-ts-only SDK kinds (`claude`,
-/// `codex`, `copilot`, `cursor`, `kimi`, `opencode`) cannot be run here. The
-/// config still accepts them (so the same `config.yaml` works in both
-/// implementations); they are silently filtered out of the candidate list.
-pub const SUPPORTED_SDK_KINDS: &[&str] = &["pi", "claude-terminal", "claude-headless"];
+/// - `pi` — in-process execution engine, supports custom tools.
+/// - `claude-terminal` — drives the local `claude` CLI via tmux.
+/// - `claude-headless` — drives `claude -p` as a subprocess.
+/// - `claude` — drives the `claude` CLI through the `claude-agent-sdk` crate
+///   (stream-json + control protocol); supports in-process MCP tools.
+///
+/// Providers tagged with other seher-ts-only SDK kinds (`codex`, `copilot`,
+/// `cursor`, `kimi`, `opencode`) cannot be run here. The config still accepts
+/// them (so the same `config.yaml` works in both implementations); they are
+/// silently filtered out of the candidate list.
+pub const SUPPORTED_SDK_KINDS: &[&str] = &["pi", "claude", "claude-terminal", "claude-headless"];
 
 #[must_use]
 pub fn is_supported_sdk(sdk: &str) -> bool {
     SUPPORTED_SDK_KINDS.contains(&sdk)
 }
 
-/// Whether `sdk` can execute custom tools (function calling). Only the in-process
-/// `pi` engine can; `claude-terminal` drives the `claude` CLI via tmux and cannot
-/// inject tool definitions into it.
+/// Whether `sdk` can execute custom tools (function calling).
+///
+/// - `pi` injects tool definitions directly into the in-process agent
+///   session.
+/// - `claude` drives the CLI via `claude-agent-sdk` and serves tools through
+///   the SDK MCP control channel.
+/// - `claude-terminal` / `claude-headless` cannot honor custom tools.
 #[must_use]
 pub fn sdk_supports_tools(sdk: &str) -> bool {
-    sdk == "pi"
+    sdk == "pi" || sdk == "claude"
 }
 
 /// Apply the `require_tools` filter to `candidates` and produce the final list,
@@ -159,8 +169,10 @@ fn filter_candidates_for_tools(
     provider_filter: Option<&str>,
     require_tools: bool,
 ) -> Result<Vec<Candidate>, NoMatchingAgentError> {
-    // Custom tools only run on the in-process pi engine; drop claude-terminal here
-    // so resolution never lands on a backend that can't honor the requested tools.
+    // Custom tools only run on the in-process `pi` engine and on the
+    // `claude` SDK (via the in-process MCP toolbox); drop the CLI-only
+    // claude backends so resolution never lands on one that can't honor
+    // the requested tools.
     let dropped_for_tools = if require_tools {
         let before = candidates.len();
         candidates.retain(|c| sdk_supports_tools(&c.resolved.sdk));
@@ -171,7 +183,7 @@ fn filter_candidates_for_tools(
     if candidates.is_empty() {
         let msg = if dropped_for_tools > 0 {
             format!(
-                "No tool-capable (pi) provider defines models.{mode_key}; {dropped_for_tools} candidate(s) were excluded because custom tools are not supported on claude-terminal/claude-headless"
+                "No tool-capable (pi / claude) provider defines models.{mode_key}; {dropped_for_tools} candidate(s) were excluded because custom tools are not supported on claude-terminal/claude-headless"
             )
         } else if let Some(p) = provider_filter {
             format!("No provider \"{p}\" defines models.{mode_key}")
@@ -405,13 +417,13 @@ pub async fn poll_for_agent(
 
 /// Map a YAML `(sdk, provider)` pair to the provider name codexbar expects.
 ///
-/// Mirrors seher-ts `codexbarProviderName`: the `claude-terminal` and
-/// `claude-headless` SDKs both drive the Claude CLI which authenticates as the
+/// Mirrors seher-ts `codexbarProviderName`: the `claude` / `claude-terminal` /
+/// `claude-headless` SDKs all drive the Claude CLI which authenticates as the
 /// `claude` account, so they share that account's codexbar quota.
 #[must_use]
 pub fn codexbar_provider_name(sdk: &str, provider: &str) -> String {
     match sdk {
-        "claude-terminal" | "claude-headless" => "claude".to_string(),
+        "claude" | "claude-terminal" | "claude-headless" => "claude".to_string(),
         _ => provider.to_string(),
     }
 }
@@ -659,8 +671,10 @@ mod tests {
     }
 
     #[test]
-    fn codexbar_provider_name_aliases_claude_terminal_and_headless() {
-        // claude-terminal and claude-headless share the `claude` codexbar account.
+    fn codexbar_provider_name_aliases_claude_family() {
+        // claude, claude-terminal, and claude-headless all share the `claude`
+        // codexbar account (they drive the same `claude` CLI authentication).
+        assert_eq!(codexbar_provider_name("claude", "claude"), "claude");
         assert_eq!(
             codexbar_provider_name("claude-terminal", "claude"),
             "claude"
@@ -692,7 +706,7 @@ mod tests {
     #[test]
     fn build_candidates_filters_out_unsupported_sdks() {
         let c = cfg(vec![
-            entry_with_sdk("claude", "claude", "claude", &[("build", "opus", None)]),
+            entry_with_sdk("kimi", "kimi", "kimi", &[("build", "k", None)]),
             entry_with_sdk("zai", "zai", "pi", &[("build", "anthropic/zai", None)]),
             entry_with_sdk("codex", "codex", "codex", &[("build", "gpt", None)]),
         ]);
@@ -707,7 +721,7 @@ mod tests {
     #[test]
     fn unsupported_sdk_providers_lists_non_pi_entries() {
         let c = cfg(vec![
-            entry_with_sdk("claude", "claude", "claude", &[("build", "opus", None)]),
+            entry_with_sdk("kimi", "kimi", "kimi", &[("build", "k", None)]),
             entry_with_sdk("zai", "zai", "pi", &[("build", "z", None)]),
             entry_with_sdk("codex", "codex", "codex", &[("build", "gpt", None)]),
             entry_with_sdk("copilot", "copilot", "copilot", &[("build", "x", None)]),
@@ -717,9 +731,9 @@ mod tests {
         assert_eq!(
             list,
             vec![
-                ("claude".to_string(), "claude".to_string()),
                 ("codex".to_string(), "codex".to_string()),
                 ("copilot".to_string(), "copilot".to_string()),
+                ("kimi".to_string(), "kimi".to_string()),
             ],
         );
     }
@@ -734,22 +748,23 @@ mod tests {
     }
 
     #[test]
-    fn is_supported_sdk_accepts_pi_and_claude_terminal_and_headless() {
+    fn is_supported_sdk_accepts_pi_claude_and_claude_terminal_and_headless() {
         assert!(is_supported_sdk("pi"));
+        assert!(is_supported_sdk("claude"));
         assert!(is_supported_sdk("claude-terminal"));
         assert!(is_supported_sdk("claude-headless"));
-        assert!(!is_supported_sdk("claude"));
         assert!(!is_supported_sdk("codex"));
         assert!(!is_supported_sdk(""));
     }
 
     // -----------------------------------------------------------------------
-    // require_tools (custom tools restrict candidates to the pi sdk)
+    // require_tools (custom tools restrict candidates to pi and claude)
     // -----------------------------------------------------------------------
 
     #[test]
-    fn sdk_supports_tools_only_pi() {
+    fn sdk_supports_tools_only_pi_and_claude() {
         assert!(sdk_supports_tools("pi"));
+        assert!(sdk_supports_tools("claude"));
         assert!(!sdk_supports_tools("claude-terminal"));
         assert!(!sdk_supports_tools("claude-headless"));
         assert!(!sdk_supports_tools(""));

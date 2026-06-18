@@ -45,3 +45,32 @@ impl RunError {
         }
     }
 }
+
+/// Heuristic rate-limit / usage-limit detector for free-form error messages
+/// emitted by the Claude CLI family (claude-headless, claude-agent-sdk).
+///
+/// Both backends surface identical wording for these conditions, so a single
+/// shared classifier avoids the two copies drifting when new phrases appear.
+#[must_use]
+pub fn is_claude_rate_limit_message(msg: &str) -> bool {
+    let lower = msg.to_lowercase();
+    lower.contains("rate limit")
+        || lower.contains("usage limit")
+        || lower.contains("too many requests")
+        || lower.contains("session limit")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_common_phrases() {
+        assert!(is_claude_rate_limit_message("Error: rate limit exceeded"));
+        assert!(is_claude_rate_limit_message("Too Many Requests"));
+        assert!(is_claude_rate_limit_message("session limit reached"));
+        assert!(is_claude_rate_limit_message("usage limit"));
+        assert!(!is_claude_rate_limit_message("regular text"));
+        assert!(!is_claude_rate_limit_message(""));
+    }
+}
