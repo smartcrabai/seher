@@ -1,5 +1,6 @@
 pub mod config;
 pub mod config_loader;
+pub mod dispatch;
 pub mod errors;
 pub mod pi_runner;
 pub mod resolve;
@@ -11,9 +12,11 @@ pub use config::{
     SkillsConfig,
 };
 pub use config_loader::{ConfigError, load_config, resolve_config_path};
+pub use dispatch::{RunAgentOptions, RunOutput, run_for_resolved, stream_for_resolved};
 pub use errors::{LimitError, RunError, TimeoutError, is_claude_rate_limit_message};
 pub use pi_runner::{
-    PiRunOutput, PiRunner, PiRunnerOptions, StreamChunk, pi_session_path, split_thinking_suffix,
+    PiRunOutput, PiRunner, PiRunnerOptions, StreamChunk, pi_session_path, split_model_ref,
+    split_thinking_suffix,
 };
 pub use resolve::{
     AllAgentsLimitedError, Candidate, CodexBarProbe, LimitProbe, NoMatchingAgentError, PollOptions,
