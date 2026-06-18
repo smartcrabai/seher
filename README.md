@@ -2,14 +2,15 @@
 
 Seher picks the highest-priority coding agent that is **not** currently rate-limited, then runs a `plan` / `build` prompt through it. If every configured agent is at its limit, seher waits until the earliest reset and tries again.
 
-Prompts are executed in-process by the [`pi`](https://github.com/Dicklesworthstone/pi_agent_rust) agent engine, or via the local `claude` CLI (either through tmux or `claude -p`). Rate-limit detection is delegated to the external [`codexbar`](https://codexbar.app/) binary, which seher invokes per provider.
+Prompts are executed in-process by the [`pi`](https://github.com/Dicklesworthstone/pi_agent_rust) agent engine, or via the local `claude` CLI. There are three CLI backends: `claude-terminal` (drives `claude` via tmux), `claude-headless` (runs `claude -p` as a subprocess), and `claude` (drives the CLI through the in-tree [`claude-agent-sdk`](crates/claude-agent-sdk) crate — a Rust port of [`anthropics/claude-agent-sdk-python`](https://github.com/anthropics/claude-agent-sdk-python) — which adds stream-json output, the control protocol, and in-process MCP tools). Rate-limit detection is delegated to the external [`codexbar`](https://codexbar.app/) binary, which seher invokes per provider.
 
-The repository is a Cargo workspace with two crates:
+The repository is a Cargo workspace with three crates:
 
 | Crate | Artifact | Purpose |
 |-------|----------|---------|
 | `crates/seher-cli` | `seher` binary | CLI entry point (argument parsing, plan/build modes, streaming) |
-| `crates/seher-sdk` | `seher` library | Agent resolution, codexbar-backed rate-limit checks, pi / claude-terminal / claude-headless runners |
+| `crates/seher-sdk` | `seher` library | Agent resolution, codexbar-backed rate-limit checks, pi / claude / claude-terminal / claude-headless runners |
+| `crates/claude-agent-sdk` | `claude_agent_sdk` library | Rust port of [`anthropics/claude-agent-sdk-python`](https://github.com/anthropics/claude-agent-sdk-python): drives the `claude` CLI over stream-json with control-protocol support (in-process MCP tools, `query()` / `ClaudeSDKClient`) |
 
 
 ## How it works
@@ -20,7 +21,7 @@ The repository is a Cargo workspace with two crates:
 4. If all candidates are limited, seher sleeps until the earliest reset time and rescans.
 5. The chosen provider streams the prompt via pi. If pi reports a rate/usage limit mid-run, that provider is excluded and seher re-resolves with the next candidate.
 
-Rate-limit detection is delegated to [`codexbar`](https://codexbar.app/): for each candidate, seher runs `codexbar usage --format json --provider <provider>` and treats the provider as limited when any reported usage window is at 100%. The `claude-terminal` and `claude-headless` SDKs share the `claude` codexbar account. If codexbar is not installed, returns no entry for a provider, or errors transiently, that provider is treated as available so resolution still proceeds.
+Rate-limit detection is delegated to [`codexbar`](https://codexbar.app/): for each candidate, seher runs `codexbar usage --format json --provider <provider>` and treats the provider as limited when any reported usage window is at 100%. The `claude`, `claude-terminal`, and `claude-headless` SDKs all share the `claude` codexbar account. If codexbar is not installed, returns no entry for a provider, or errors transiently, that provider is treated as available so resolution still proceeds.
 
 codexbar must be installed and on `PATH` (or pointed to via `SEHER_CODEXBAR_BIN`); see [codexbar.app](https://codexbar.app/).
 
@@ -213,8 +214,8 @@ let second = runner.run("now add tests".to_string(), Some(first.session_id))?;
 
 Session files are stored at a deterministic per-`(cwd, id)` path (see
 `pi_session_path`), so the same pair always resumes the same conversation. The
-`claude-terminal` and `claude-headless` backends support the same contract via
-`claude --resume <id>`.
+`claude`, `claude-terminal`, and `claude-headless` backends support the same
+contract via `claude --resume <id>`.
 
 ### Custom tools (function calling)
 
@@ -259,12 +260,23 @@ Tool names must be unique and must not collide with pi's built-in tools; an
 invalid set fails fast with `StreamChunk::Error` before any session file is
 created.
 
-Custom tools only run on the in-process `pi` engine — the `claude-terminal` and
-`claude-headless` backends drive the `claude` CLI externally and cannot honor them.
-When resolving an agent for a run that passes tools, set `require_tools: true` on
-`ResolveOptions`/`PollOptions` so resolution drops non-pi candidates instead of
-silently ignoring the tools; if every candidate is dropped, resolution fails with
-a `NoMatching` error explaining why.
+Tool-capable SDKs:
+
+- **`pi`** — tools are injected directly into the in-process agent session.
+- **`claude`** — tools are served through the SDK MCP control channel of
+  `claude-agent-sdk` (in-process JSON-RPC, no external server needed). Pass
+  the same `Vec<SeherTool>` via `ClaudeAgentRunnerConfig.tools` in
+  `seher::claude_agent::stream_agent`. The toolbox is auto-registered under
+  `--mcp-config` as `{"type": "sdk", "name": "seher"}`; allow the tools by
+  name (e.g. `mcp__seher__get_weather`) in `allowed_tools` if you want them
+  ungated.
+- **`claude-terminal` / `claude-headless`** drive the `claude` CLI externally
+  and cannot honor custom tools.
+
+When resolving an agent for a run that passes tools, set `require_tools: true`
+on `ResolveOptions`/`PollOptions` so resolution drops non-tool-capable
+candidates instead of silently ignoring the tools; if every candidate is
+dropped, resolution fails with a `NoMatching` error explaining why.
 
 ### High level — resolve a non-limited provider, then run
 
@@ -299,6 +311,70 @@ println!("selected {} (pi/{})", resolved.provider, resolved.model_id);
 See `crates/seher-sdk/examples/pi_mvp.rs` for a runnable example, and
 `crates/seher-cli/src/run_mode.rs` for the full
 resolve → stream → retry-on-limit loop.
+
+### Driving the `claude` CLI directly
+
+For the `claude` SDK, seher-sdk re-exports the underlying
+[`claude-agent-sdk`](crates/claude-agent-sdk) crate and adds a
+[`StreamChunk`](crates/seher-sdk/src/sdk/pi_runner.rs)-compatible bridge so the
+same consumer code that drains pi can drain claude:
+
+```rust
+use seher::claude_agent::{ClaudeAgentRunnerConfig, stream_agent};
+use seher::sdk::{SeherTool, StreamChunk};
+use std::sync::Arc;
+
+let weather = SeherTool::new(
+    "get_weather",
+    "Get the current weather for a city",
+    serde_json::json!({
+        "type": "object",
+        "properties": { "city": { "type": "string" } },
+        "required": ["city"],
+    }),
+    Arc::new(|input| {
+        let city = input["city"].as_str().ok_or_else(|| "missing city".to_string())?;
+        Ok(format!("Sunny in {city}"))
+    }),
+);
+
+let rx = stream_agent(
+    ClaudeAgentRunnerConfig {
+        model: Some("claude-sonnet-4-6".into()),
+        tools: vec![weather],
+        // The toolbox name is `seher`, so allow this prefix to bypass
+        // permission prompts when running with `bypassPermissions` is too
+        // broad.
+        allowed_tools: vec!["mcp__seher__get_weather".into()],
+        ..Default::default()
+    },
+    "What's the weather in Tokyo?".into(),
+    "claude".into(), // provider label, surfaced on rate-limit errors
+);
+```
+
+For the raw async API (`Stream<Item = Message>`, `ClaudeSDKClient`, custom
+`Transport`, etc.) use the crate directly:
+
+```rust
+use seher::claude_agent_sdk::{query, ClaudeAgentOptions, Message, PermissionMode};
+use futures::StreamExt as _;
+
+let opts = ClaudeAgentOptions {
+    permission_mode: Some(PermissionMode::BypassPermissions),
+    ..Default::default()
+};
+let mut stream = query("Summarize the README.", Some(opts), None).await?;
+while let Some(msg) = stream.next().await {
+    if let Message::Assistant(a) = msg? {
+        // …
+    }
+}
+```
+
+Runnable examples: `crates/claude-agent-sdk/examples/quickstart.rs`,
+`crates/claude-agent-sdk/examples/with_tools.rs`, and
+`crates/seher-sdk/examples/claude_agent_via_seher.rs`.
 
 
 ## Configuration
@@ -339,6 +415,13 @@ providers:
       plan: claude-opus-4-7
       build: claude-sonnet-4-6
 
+  claude-sdk:
+    sdk: claude              # claude-agent-sdk: stream-json + in-process MCP tools
+    priority: 60
+    models:
+      plan: claude-opus-4-7
+      build: claude-sonnet-4-6
+
   zai:
     provider: zai            # explicit provider name (overrides the map key)
     sdk: pi                  # execution engine; defaults to "pi"
@@ -357,7 +440,7 @@ providers:
 |-------|------|-------------|
 | *(map key)* | string | Provider label and default provider name |
 | `provider` | string | Explicit provider name; defaults to the map key |
-| `sdk` | string | Execution engine. Defaults to `"pi"`. Executable engines in this build: `pi` (in-process), `claude-terminal` (drives the local `claude` CLI via tmux), and `claude-headless` (runs `claude -p` as a subprocess); other kinds are filtered out (see *Cross-implementation portability*) |
+| `sdk` | string | Execution engine. Defaults to `"pi"`. Executable engines in this build: `pi` (in-process), `claude` (drives the local `claude` CLI through `claude-agent-sdk` — stream-json + in-process MCP tools), `claude-terminal` (via tmux), and `claude-headless` (runs `claude -p` as a subprocess); other kinds are filtered out (see *Cross-implementation portability*). `pi` and `claude` support custom tools; the two CLI-only backends do not |
 | `priority` | integer (`i32`) | Provider-level priority. Used when a model entry omits its own `priority` |
 | `api.key` | string | API key (for API-key-based limit checks and pi execution) |
 | `api.endpoint` | string | API endpoint override |
@@ -377,7 +460,7 @@ models:
 
 The **model id** uses a `provider/model` shape. The segment before the first `/` is passed to pi as the provider (e.g. `anthropic`, `openai`); the rest is the model name. A model id without a `/` is passed through as the model with no explicit provider.
 
-A trailing `:` suffix on the model name selects pi's **thinking level**: `model:thinking` (e.g. `anthropic/claude-opus-4-5:high`, `opus-4.7:medium`). Recognized levels are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh` (plus the aliases pi accepts: `none`/`0`, `min`, `1`, `med`/`2`, `3`, `4`). A suffix that is not a recognized level stays part of the model name, so OpenRouter-style variants like `openrouter/meta-llama/llama-3.1-8b-instruct:free` keep working. The level only applies to pi execution — with the `claude-terminal` and `claude-headless` SDKs a recognized suffix is stripped and ignored. Without a suffix, pi's default (no extended thinking) is used.
+A trailing `:` suffix on the model name selects pi's **thinking level**: `model:thinking` (e.g. `anthropic/claude-opus-4-5:high`, `opus-4.7:medium`). Recognized levels are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh` (plus the aliases pi accepts: `none`/`0`, `min`, `1`, `med`/`2`, `3`, `4`). A suffix that is not a recognized level stays part of the model name, so OpenRouter-style variants like `openrouter/meta-llama/llama-3.1-8b-instruct:free` keep working. The level only applies to pi execution — with the `claude`, `claude-terminal`, and `claude-headless` SDKs a recognized suffix is stripped and ignored. Without a suffix, pi's default (no extended thinking) is used.
 
 For pi execution, the API key comes from `api.key`, falling back to `ANTHROPIC_API_KEY` (when the model provider is `anthropic`) or `OPENAI_API_KEY` (when it is `openai`).
 
@@ -396,7 +479,7 @@ Rate-limit checks are delegated to the external `codexbar` binary. For each cand
 codexbar usage --format json --provider <provider>
 ```
 
-The provider name passed to codexbar is the resolved provider (the map key, or the explicit `provider` field); the `claude-terminal` and `claude-headless` SDKs are mapped to the `claude` codexbar account. A provider is considered limited when any usage window codexbar reports (primary / secondary / tertiary / extra windows) is at 100%, and seher waits until the earliest reset.
+The provider name passed to codexbar is the resolved provider (the map key, or the explicit `provider` field); the `claude`, `claude-terminal`, and `claude-headless` SDKs are mapped to the `claude` codexbar account. A provider is considered limited when any usage window codexbar reports (primary / secondary / tertiary / extra windows) is at 100%, and seher waits until the earliest reset.
 
 Whichever providers codexbar can report on are limit-checked; any provider codexbar has no entry for (or any codexbar error / missing binary) is treated as always-available, which is also useful for routing a custom backend purely by priority.
 
@@ -414,7 +497,7 @@ providers:
 
 ## Cross-implementation portability
 
-Seher has a TypeScript counterpart (`seher-ts`) that supports additional `sdk` engines (`claude`, `codex`, `copilot`, `cursor`, `kimi`, `opencode`, …). To keep a single `config.yaml` portable between both implementations, this Rust build **accepts** providers tagged with those SDK kinds but silently filters them out of the candidate list (only `sdk: pi`, `sdk: claude-terminal`, and `sdk: claude-headless` are executable here). A one-time warning is printed at startup for each skipped provider.
+Seher has a TypeScript counterpart (`seher-ts`) that supports additional `sdk` engines (`codex`, `copilot`, `cursor`, `kimi`, `opencode`, …). To keep a single `config.yaml` portable between both implementations, this Rust build **accepts** providers tagged with those SDK kinds but silently filters them out of the candidate list (executable engines here are `pi`, `claude`, `claude-terminal`, and `claude-headless`). A one-time warning is printed at startup for each skipped provider.
 
 
 ## License

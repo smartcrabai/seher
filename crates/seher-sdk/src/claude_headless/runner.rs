@@ -7,7 +7,7 @@
 use std::io::Read as _;
 use std::process::{Command, Stdio};
 
-use crate::sdk::{LimitError, StreamChunk};
+use crate::sdk::{LimitError, StreamChunk, is_claude_rate_limit_message};
 
 const DEFAULT_TIMEOUT_MS: u64 = 15 * 60 * 1000;
 const DEFAULT_PERMISSION_MODE: &str = "bypassPermissions";
@@ -164,7 +164,7 @@ pub fn stream_headless(
             let _ = tx.send(StreamChunk::Done(String::new()));
         }
         Err(e) => {
-            if is_headless_limit(&e) {
+            if is_claude_rate_limit_message(&e) {
                 let _ = tx.send(StreamChunk::Limit(LimitError {
                     provider: provider_label,
                     reset_at: None,
@@ -175,14 +175,6 @@ pub fn stream_headless(
         }
     });
     rx
-}
-
-fn is_headless_limit(msg: &str) -> bool {
-    let lower = msg.to_lowercase();
-    lower.contains("rate limit")
-        || lower.contains("usage limit")
-        || lower.contains("too many requests")
-        || lower.contains("session limit")
 }
 
 #[cfg(test)]
@@ -242,11 +234,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn is_limit_detection() {
-        assert!(is_headless_limit("Error: rate limit exceeded"));
-        assert!(is_headless_limit("Too Many Requests"));
-        assert!(is_headless_limit("session limit reached"));
-        assert!(!is_headless_limit("normal output text"));
-    }
+    // Rate-limit phrase detection is covered by
+    // `sdk::errors::is_claude_rate_limit_message` tests.
 }

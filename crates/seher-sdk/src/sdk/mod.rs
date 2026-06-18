@@ -11,7 +11,7 @@ pub use config::{
     SkillsConfig,
 };
 pub use config_loader::{ConfigError, load_config, resolve_config_path};
-pub use errors::{LimitError, RunError, TimeoutError};
+pub use errors::{LimitError, RunError, TimeoutError, is_claude_rate_limit_message};
 pub use pi_runner::{
     PiRunOutput, PiRunner, PiRunnerOptions, StreamChunk, pi_session_path, split_thinking_suffix,
 };

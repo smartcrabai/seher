@@ -14,6 +14,7 @@ path = "src/lib.rs"
 [dependencies]
 async-trait.workspace = true
 chrono.workspace = true
+claude-agent-sdk.workspace = true
 dirs.workspace = true
 indexmap.workspace = true
 regex.workspace = true
@@ -32,6 +33,9 @@ unicode-width = "0.2"
 
 [[example]]
 name = "pi_mvp"
+
+[[example]]
+name = "claude_agent_via_seher"
 
 [lints]
 workspace = true
