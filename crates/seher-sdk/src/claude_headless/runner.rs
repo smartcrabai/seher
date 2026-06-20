@@ -297,19 +297,25 @@ mod tests {
         // The shebang causes the OS to run `/bin/sh <wrapper> <args...>`, where the
         // remaining args become positional parameters that the script ignores.
         // This avoids relying on `/bin/sh -p` (dash rejects -p as "Illegal option").
-        use std::io::Write as _;
         use std::os::unix::fs::PermissionsExt as _;
 
-        let mut wrapper = tempfile::NamedTempFile::new().expect("create wrapper");
-        writeln!(wrapper, "#!/bin/sh").expect("write shebang");
-        writeln!(wrapper, "sleep 60").expect("write sleep");
-        wrapper.flush().expect("flush wrapper");
-        let wrapper_path = wrapper.path();
-        let mut perms = std::fs::metadata(wrapper_path)
+        // Use TempDir + File so the write FD is closed before exec.
+        // On Linux, executing a file whose write FD is still open yields
+        // ETXTBSY (Text file busy, os error 26).
+        let tmp_dir = tempfile::TempDir::new().expect("create tmpdir");
+        let wrapper_path = tmp_dir.path().join("wrapper.sh");
+        {
+            use std::io::Write as _;
+            let mut f = std::fs::File::create(&wrapper_path).expect("create wrapper");
+            writeln!(f, "#!/bin/sh").expect("write shebang");
+            writeln!(f, "sleep 60").expect("write sleep");
+            // f drops here, closing the FD before exec
+        }
+        let mut perms = std::fs::metadata(&wrapper_path)
             .expect("get perms")
             .permissions();
         perms.set_mode(0o755);
-        std::fs::set_permissions(wrapper_path, perms).expect("set perms");
+        std::fs::set_permissions(&wrapper_path, perms).expect("set perms");
         let wrapper_bin = wrapper_path.to_str().expect("path to str").to_string();
 
         let cancel = CancelToken::new();

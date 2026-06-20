@@ -30,14 +30,13 @@ pub fn drain_to_stdout(
     timeout_ms: Option<u64>,
     cancel: &CancelToken,
 ) -> Outcome {
+    // Short poll interval used when there is no deadline — lets cancel checks
+    // fire even while blocked on recv, instead of waiting for the next chunk.
+    const CANCEL_POLL: Duration = Duration::from_millis(50);
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     let mut full = String::new();
     let deadline = timeout_ms.map(|t| Instant::now() + Duration::from_millis(t));
-
-    // Short poll interval used when there is no deadline — lets cancel checks
-    // fire even while blocked on recv, instead of waiting for the next chunk.
-    const CANCEL_POLL: Duration = Duration::from_millis(50);
 
     loop {
         if cancel.is_cancelled() {
