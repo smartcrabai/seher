@@ -323,17 +323,36 @@ impl Transport for SubprocessCliTransport {
         let (msg_tx, msg_rx) = mpsc::channel::<Result<serde_json::Value>>(64);
         // Reader+demux task: pulls JSON frames off stdout, splits
         // control_request out to the handler, forwards the rest to msg_tx.
-        // It receives a *weak* sender so dropping the caller's `write_tx`
-        // (e.g. from `end_input`) actually closes the writer channel and
-        // shuts down stdin. A strong clone here would keep the writer alive
-        // until the reader exits, defeating `end_input`.
-        let writer_weak = write_tx.downgrade();
+        //
+        // How it holds the stdin writer depends on whether a control handler
+        // is registered:
+        //
+        // * No handler → a *weak* sender. There is no control_response to
+        //   write, so dropping the caller's `write_tx` (e.g. from
+        //   `end_input`) should close the writer channel and shut down stdin
+        //   immediately. A strong clone would keep the writer alive until the
+        //   reader exits, defeating `end_input`.
+        //
+        // * Handler present (e.g. an `sdk_mcp_server` toolbox) → a *strong*
+        //   sender. The CLI sends its `mcp_message: initialize` handshake
+        //   *after* the caller has typically already called `end_input()`,
+        //   which drops the transport's strong `write_tx`. With only a weak
+        //   sender the demux can't upgrade it, so the initialize response is
+        //   silently dropped and the CLI marks the server `failed`. Keeping a
+        //   strong sender lets us answer the handshake; it's dropped when the
+        //   stdout reader hits EOF (after the CLI's `Result` frame), so the
+        //   writer channel still closes naturally.
+        let writer_for_demux = if self.control_handler.is_some() {
+            DemuxSender::Strong(write_tx.clone())
+        } else {
+            DemuxSender::Weak(write_tx.downgrade())
+        };
         tokio::spawn(read_stdout_loop(
             stdout,
             msg_tx,
             max_buf,
             self.control_handler.clone(),
-            writer_weak,
+            writer_for_demux,
         ));
 
         let (etx, erx) = mpsc::channel::<String>(64);
@@ -417,6 +436,28 @@ impl Transport for SubprocessCliTransport {
     }
 }
 
+/// How the demux loop holds the stdin writer.
+///
+/// See the construction site in [`SubprocessCliTransport::connect`] for why
+/// the choice between strong and weak matters for the MCP initialize
+/// handshake.
+enum DemuxSender {
+    /// Keeps the writer channel alive for the lifetime of the stdout reader.
+    Strong(mpsc::Sender<String>),
+    /// Goes dead as soon as the transport's strong `write_tx` is dropped.
+    Weak(mpsc::WeakSender<String>),
+}
+
+impl DemuxSender {
+    /// Obtain a usable sender if the writer channel is still open.
+    fn upgrade(&self) -> Option<mpsc::Sender<String>> {
+        match self {
+            Self::Strong(s) => Some(s.clone()),
+            Self::Weak(w) => w.upgrade(),
+        }
+    }
+}
+
 async fn write_stdin_loop(mut stdin: tokio::process::ChildStdin, mut rx: mpsc::Receiver<String>) {
     while let Some(line) = rx.recv().await {
         if stdin.write_all(line.as_bytes()).await.is_err() {
@@ -434,7 +475,7 @@ async fn read_stdout_loop(
     tx: mpsc::Sender<Result<serde_json::Value>>,
     max_buffer_size: usize,
     control_handler: Option<Arc<dyn ControlHandler>>,
-    write_tx: mpsc::WeakSender<String>,
+    write_tx: DemuxSender,
 ) {
     let mut reader = BufReader::new(stdout);
     let mut buf = String::new();
@@ -493,7 +534,7 @@ async fn drain_accum(
     accum: &mut String,
     tx: &mpsc::Sender<Result<serde_json::Value>>,
     control_handler: Option<&Arc<dyn ControlHandler>>,
-    write_tx: &mpsc::WeakSender<String>,
+    write_tx: &DemuxSender,
     max_buffer_size: usize,
     final_pass: bool,
 ) -> bool {
@@ -554,7 +595,7 @@ async fn dispatch_frame(
     value: serde_json::Value,
     msg_tx: &mpsc::Sender<Result<serde_json::Value>>,
     control_handler: Option<&Arc<dyn ControlHandler>>,
-    write_tx: &mpsc::WeakSender<String>,
+    write_tx: &DemuxSender,
 ) -> bool {
     let is_control = value.get("type").and_then(|v| v.as_str()) == Some("control_request");
     if !is_control {
@@ -581,9 +622,11 @@ async fn dispatch_frame(
     let frame = response.into_frame(&request_id);
     let mut line = frame.to_string();
     line.push('\n');
-    // If the caller already dropped their `write_tx` (`end_input` / `close`)
-    // the upgrade returns `None`; in that case the CLI is no longer expecting
-    // a response anyway, so silently skip.
+    // With a weak sender, if the caller already dropped their `write_tx`
+    // (`end_input` / `close`) the upgrade returns `None`; in that case the CLI
+    // is no longer expecting a response anyway, so silently skip. With a
+    // strong sender (control handler present) the upgrade always succeeds, so
+    // control_responses survive `end_input`.
     if let Some(sender) = write_tx.upgrade() {
         let _ = sender.send(line).await;
     }
@@ -698,7 +741,7 @@ mod tests {
     async fn dispatch_frame_routes_message_to_msg_tx() {
         let (msg_tx, mut msg_rx) = mpsc::channel(4);
         let (write_tx, mut write_rx) = mpsc::channel::<String>(4);
-        let weak = write_tx.downgrade();
+        let weak = DemuxSender::Weak(write_tx.downgrade());
         let value = serde_json::json!({
             "type": "assistant",
             "message": {"content": [{"type": "text", "text": "hi"}]}
@@ -722,7 +765,7 @@ mod tests {
         let handler: Arc<dyn ControlHandler> = Arc::new(ToolboxControlHandler::new(tb));
         let (msg_tx, mut msg_rx) = mpsc::channel(4);
         let (write_tx, mut write_rx) = mpsc::channel::<String>(4);
-        let weak = write_tx.downgrade();
+        let weak = DemuxSender::Weak(write_tx.downgrade());
         let frame = serde_json::json!({
             "type": "control_request",
             "request_id": "req-1",
@@ -756,7 +799,7 @@ mod tests {
     async fn dispatch_frame_errors_without_handler() {
         let (msg_tx, _msg_rx) = mpsc::channel(4);
         let (write_tx, mut write_rx) = mpsc::channel::<String>(4);
-        let weak = write_tx.downgrade();
+        let weak = DemuxSender::Weak(write_tx.downgrade());
         let frame = serde_json::json!({
             "type": "control_request",
             "request_id": "req-x",
@@ -776,7 +819,7 @@ mod tests {
         // panicking or hanging.
         let (msg_tx, _msg_rx) = mpsc::channel(4);
         let (write_tx, _write_rx) = mpsc::channel::<String>(4);
-        let weak = write_tx.downgrade();
+        let weak = DemuxSender::Weak(write_tx.downgrade());
         drop(write_tx);
         let frame = serde_json::json!({
             "type": "control_request",
@@ -786,5 +829,34 @@ mod tests {
         assert!(dispatch_frame(frame, &msg_tx, None, &weak).await);
         // Nothing to verify on write_rx — receiver was dropped too. The
         // success criterion is that the call returned without blocking.
+    }
+
+    #[tokio::test]
+    async fn dispatch_frame_strong_sender_survives_end_input() {
+        // Regression for #221: when an sdk_mcp_server toolbox is registered we
+        // hand the demux a *strong* sender. The CLI's `mcp_message:
+        // initialize` handshake arrives after the caller's `end_input()` has
+        // already dropped the transport's strong `write_tx`; the demux must
+        // still be able to answer it. Drop the transport-side strong sender
+        // and confirm the control_response is still written.
+        let (msg_tx, _msg_rx) = mpsc::channel(4);
+        let (write_tx, mut write_rx) = mpsc::channel::<String>(4);
+        let strong = DemuxSender::Strong(write_tx.clone());
+        // Simulate `end_input()` dropping the transport's only other strong
+        // sender. The demux's strong clone keeps the channel open.
+        drop(write_tx);
+        let frame = serde_json::json!({
+            "type": "control_request",
+            "request_id": "req-init",
+            "request": {"subtype": "mcp_message"}
+        });
+        assert!(dispatch_frame(frame, &msg_tx, None, &strong).await);
+        let line = write_rx
+            .recv()
+            .await
+            .expect("response line survives end_input");
+        let resp: serde_json::Value = serde_json::from_str(line.trim()).expect("valid json");
+        assert_eq!(resp["type"], "control_response");
+        assert_eq!(resp["response"]["request_id"], "req-init");
     }
 }
