@@ -15,6 +15,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use claude_agent_sdk::internal::client::user_message_frame;
 use claude_agent_sdk::tool::{AgentTool, AgentToolbox};
 use claude_agent_sdk::transport::{SubprocessCliTransport, Transport};
 use claude_agent_sdk::{ClaudeAgentOptions, ContentBlock, Message, PermissionMode};
@@ -120,7 +121,23 @@ async fn run_async(
     tx: &Sender<StreamChunk>,
 ) {
     let opts = build_options(&config);
-    let mut transport = SubprocessCliTransport::one_shot(opts, prompt);
+    // When custom tools are registered, the CLI initiates an MCP `initialize`
+    // handshake over stdout/stdin shortly after start; in `--print` mode
+    // (`one_shot`) stdin isn't open for input frames and the CLI marks the
+    // SDK MCP server as `failed`, so the tools never reach the model. Use
+    // streaming mode and push the prompt as a user frame ourselves; the
+    // strong write_tx the demux holds when a control handler is registered
+    // (see claude-agent-sdk subprocess_cli.rs) keeps the control_response
+    // channel alive across `end_input()`.
+    let has_tools = !config.tools.is_empty();
+    // Pre-build the user frame so the no-tools branch can move `prompt` into
+    // the one_shot transport without an extra clone.
+    let user_frame = has_tools.then(|| user_message_frame(&prompt, "default"));
+    let mut transport = if has_tools {
+        SubprocessCliTransport::streaming(opts)
+    } else {
+        SubprocessCliTransport::one_shot(opts, prompt)
+    };
     if let Err(e) = transport.connect().await {
         // No stderr yet — fall back to the SDK message alone.
         send_error_with_stderr(tx, &provider_label, &e.to_string(), &[]);
@@ -132,6 +149,9 @@ async fn run_async(
     // rate-limit messages on stderr are silently dropped. We retain the
     // JoinHandle to await drain completion after the child exits — see the
     // `await_stderr_drain` call below for the race-avoidance rationale.
+    // Spawned before the streaming-mode write so that a write failure
+    // (typically caused by the child dying mid-handshake) still has access to
+    // any rate-limit / auth errors the CLI emitted on stderr.
     let stderr_tail: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
     let drain_handle: Option<tokio::task::JoinHandle<()>> =
         transport.take_stderr_rx().map(|mut rx_stderr| {
@@ -142,6 +162,23 @@ async fn run_async(
                 }
             })
         });
+
+    if let Some(frame) = user_frame {
+        // Match the wire format and session-id convention used by the SDK's
+        // own `query()` (see claude-agent-sdk query.rs) so changes there stay
+        // in sync. The strong write_tx the demux holds for control handlers
+        // keeps MCP `initialize` answerable across `end_input()`.
+        if let Err(e) = transport.write(&frame).await {
+            let tail = snapshot_stderr_tail(&stderr_tail);
+            send_error_with_stderr(tx, &provider_label, &e.to_string(), &tail);
+            return;
+        }
+        if let Err(e) = transport.end_input().await {
+            let tail = snapshot_stderr_tail(&stderr_tail);
+            send_error_with_stderr(tx, &provider_label, &e.to_string(), &tail);
+            return;
+        }
+    }
 
     let mut stream = transport
         .take_message_stream()
