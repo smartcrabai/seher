@@ -7,7 +7,7 @@ authors = ["takumi3488"]
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/smartcrabai/seher"
-version = "0.0.44"
+version = "0.0.45"
 
 [workspace.dependencies]
 aes = "0.9"
@@ -17,7 +17,7 @@ base64 = "0.22"
 cbc = { version = "0.2", features = ["alloc"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
-claude-agent-sdk = { path = "crates/claude-agent-sdk", version = "0.0.44", package = "seher-claude-agent-sdk" }
+claude-agent-sdk = { path = "crates/claude-agent-sdk", version = "0.0.45", package = "seher-claude-agent-sdk" }
 dirs = "6.0"
 hmac = "0.13"
 indexmap = { version = "2", features = ["serde"] }
