@@ -123,14 +123,14 @@ impl ClaudeHeadlessRunner {
                     if self.config.cancel.is_cancelled() {
                         let _ = child.kill();
                         let _ = child.wait();
-                        // Child is dead; its pipe write-ends are now closed so
-                        // the reader threads will see EOF and return quickly.
-                        if let Some(h) = stdout_handle.take() {
-                            let _ = h.join();
-                        }
-                        if let Some(h) = stderr_handle.take() {
-                            let _ = h.join();
-                        }
+                        // Do NOT join reader threads here. Grandchild processes
+                        // (e.g. `sleep` spawned by a shell wrapper) may still hold
+                        // the pipe write-ends open, causing read_to_string to block
+                        // until they exit. Since we're cancelling, we don't need
+                        // the output — drop the handles and let the threads finish
+                        // on their own.
+                        drop(stdout_handle.take());
+                        drop(stderr_handle.take());
                         return Err("cancelled".to_string());
                     }
                     if start.elapsed() > timeout {
