@@ -63,15 +63,19 @@ static COLLAPSED_PASTE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         make_regex(r"\[Pasted\s+text\s+#\d+\s+\+\d+\s+lines\]"),
         make_regex(r"\[Pasted\s+#\d+\]"),
         // Tentative Japanese localization patterns
+        // sakoku-ignore-next-line
         make_regex(r"\[ペースト\s*#?\d*\s*\+\d+\s*行\]"),
+        // sakoku-ignore-next-line
         make_regex(r"\[貼り付け\s*#?\d*\s*\+\d+\s*行\]"),
     ]
 });
 
 // Characters trimmed from the trailing end of a prompt before building the suffix needle.
 // Markdown decoration, CJK/Latin punctuation, whitespace.
-static TRAILING_TRIM_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| make_regex(r"(?u)[\s*`_~。．、，！？!?,\\.;:　・]+$"));
+static TRAILING_TRIM_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    // sakoku-ignore-next-line
+    make_regex(r"(?u)[\s*`_~。．、，！？!?,\\.;:　・]+$")
+});
 
 static LEADING_TRIM_PATTERN: LazyLock<Regex> = LazyLock::new(|| make_regex(r"(?u)^[\s*`_~]+"));
 
@@ -311,6 +315,7 @@ mod tests {
     #[test]
     fn cjk_needle_stays_within_cell_limit() {
         // Each CJK char = 2 cells; 32 cells = max 16 CJK chars
+        // sakoku-ignore-next-line
         let prompt: String = "あ".repeat(20);
         let n = build_needles(&prompt);
         let suffix_chars: Vec<char> = n.suffix.chars().collect();

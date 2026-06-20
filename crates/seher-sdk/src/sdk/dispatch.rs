@@ -14,8 +14,8 @@ use crate::claude_agent::{ClaudeAgentRunnerConfig, stream_agent};
 use crate::claude_headless::{ClaudeHeadlessRunner, ClaudeHeadlessRunnerConfig, stream_headless};
 use crate::claude_terminal::{new_sdk_with_defaults, stream_via_thread};
 use crate::sdk::{
-    PiRunner, PiRunnerOptions, ResolvedAgent, RunError, SeherTool, StreamChunk, sdk_supports_tools,
-    split_model_ref, split_thinking_suffix,
+    CancelToken, PiRunner, PiRunnerOptions, ResolvedAgent, RunError, SeherTool, StreamChunk,
+    sdk_supports_tools, split_model_ref, split_thinking_suffix,
 };
 
 /// Options forwarded to the chosen runner backend.
@@ -39,6 +39,10 @@ pub struct RunAgentOptions {
     pub timeout_ms: Option<u64>,
     /// Extra system-prompt text to append.
     pub system_prompt: Option<String>,
+    /// Cancellation token. When [`CancelToken::cancel`] is called, the
+    /// runner should abort as soon as possible. Currently forwarded to the
+    /// `claude-headless` backend; other backends ignore it.
+    pub cancel: CancelToken,
 }
 
 /// Output of a completed [`run_for_resolved`] call.
@@ -245,6 +249,7 @@ pub fn stream_for_resolved(
                     .map(|p| p.to_string_lossy().into_owned()),
                 resume_session_id: opts.resume,
                 timeout_ms: opts.timeout_ms,
+                cancel: opts.cancel.clone(),
                 ..Default::default()
             };
             stream_headless(

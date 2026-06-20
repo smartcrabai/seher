@@ -33,7 +33,14 @@ serde_yaml = "0.9"
 sha1 = "0.11"
 tempfile = "3"
 thiserror = "2.0"
-tokio = { version = "1.49.0", features = ["rt", "macros", "time", "net"] }
+tokio = { version = "1.49.0", features = [
+  "rt",
+  "macros",
+  "time",
+  "net",
+  "sync",
+  "signal",
+] }
 zzsleep = "0.0.7"
 
 [workspace.lints.clippy]

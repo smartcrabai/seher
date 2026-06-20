@@ -7,12 +7,13 @@
 use std::io::Read as _;
 use std::process::{Command, Stdio};
 
-use crate::sdk::{LimitError, StreamChunk, is_claude_rate_limit_message};
+use crate::sdk::{CancelToken, LimitError, StreamChunk, is_claude_rate_limit_message};
 
 const DEFAULT_TIMEOUT_MS: u64 = 15 * 60 * 1000;
 const DEFAULT_PERMISSION_MODE: &str = "bypassPermissions";
 
 #[derive(Default)]
+#[non_exhaustive]
 pub struct ClaudeHeadlessRunnerConfig {
     pub claude_bin: Option<String>,
     pub model: Option<String>,
@@ -21,6 +22,7 @@ pub struct ClaudeHeadlessRunnerConfig {
     pub timeout_ms: Option<u64>,
     pub cwd: Option<String>,
     pub resume_session_id: Option<String>,
+    pub cancel: CancelToken,
 }
 
 pub struct ClaudeHeadlessRunner {
@@ -85,6 +87,10 @@ impl ClaudeHeadlessRunner {
             cmd.current_dir(cwd);
         }
 
+        if self.config.cancel.is_cancelled() {
+            return Err("cancelled".to_string());
+        }
+
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("failed to spawn {bin}: {e}"))?;
@@ -94,14 +100,14 @@ impl ClaudeHeadlessRunner {
 
         // Read stdout and stderr on separate threads to avoid deadlock when
         // the OS pipe buffer for either stream fills up.
-        let stdout_handle = child.stdout.take().map(|mut r| {
+        let mut stdout_handle = child.stdout.take().map(|mut r| {
             std::thread::spawn(move || {
                 let mut buf = String::new();
                 let _ = r.read_to_string(&mut buf);
                 buf
             })
         });
-        let stderr_handle = child.stderr.take().map(|mut r| {
+        let mut stderr_handle = child.stderr.take().map(|mut r| {
             std::thread::spawn(move || {
                 let mut buf = String::new();
                 let _ = r.read_to_string(&mut buf);
@@ -114,8 +120,29 @@ impl ClaudeHeadlessRunner {
             match child.try_wait() {
                 Ok(Some(_)) => break,
                 Ok(None) => {
+                    if self.config.cancel.is_cancelled() {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        // Do NOT join reader threads here. Grandchild processes
+                        // (e.g. `sleep` spawned by a shell wrapper) may still hold
+                        // the pipe write-ends open, causing read_to_string to block
+                        // until they exit. Since we're cancelling, we don't need
+                        // the output — drop the handles and let the threads finish
+                        // on their own.
+                        drop(stdout_handle.take());
+                        drop(stderr_handle.take());
+                        return Err("cancelled".to_string());
+                    }
                     if start.elapsed() > timeout {
                         let _ = child.kill();
+                        // Wait so the OS can reap the zombie immediately.
+                        let _ = child.wait();
+                        if let Some(h) = stdout_handle.take() {
+                            let _ = h.join();
+                        }
+                        if let Some(h) = stderr_handle.take() {
+                            let _ = h.join();
+                        }
                         return Err(format!(
                             "claude -p timed out after {}ms",
                             timeout.as_millis()
@@ -178,6 +205,7 @@ pub fn stream_headless(
 }
 
 #[cfg(test)]
+#[expect(clippy::expect_used, reason = "tests may panic on unexpected fixtures")]
 mod tests {
     use super::*;
 
@@ -236,4 +264,90 @@ mod tests {
 
     // Rate-limit phrase detection is covered by
     // `sdk::errors::is_claude_rate_limit_message` tests.
+
+    #[test]
+    fn run_returns_err_when_cancel_token_is_already_set() {
+        // Given: a cancel token that has already been cancelled before run() is called
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let runner = ClaudeHeadlessRunner::new(ClaudeHeadlessRunnerConfig {
+            // Use a non-existent bin so that if the cancel check is accidentally
+            // skipped, spawn() fails quickly rather than blocking indefinitely.
+            claude_bin: Some("true".to_string()),
+            cancel,
+            ..Default::default()
+        });
+        // When: run() is called with an already-cancelled token
+        // Then: returns Err containing "cancel" without blocking
+        match runner.run("hello") {
+            Err(e) => assert!(
+                e.contains("cancel"),
+                "expected a cancellation error, got: {e}"
+            ),
+            Ok(_) => panic!("expected Err when cancel token is set"),
+        }
+    }
+
+    #[test]
+    fn run_kills_child_when_cancel_fires_during_wait() {
+        // Given: a long-running subprocess and a cancel that fires concurrently.
+        //
+        // Strategy: use a temporary executable script as `claude_bin` so that
+        // it is invoked as `<wrapper> -p <prompt> --permission-mode bypassPermissions`.
+        // The shebang causes the OS to run `/bin/sh <wrapper> <args...>`, where the
+        // remaining args become positional parameters that the script ignores.
+        // This avoids relying on `/bin/sh -p` (dash rejects -p as "Illegal option").
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // Use TempDir + File so the write FD is closed before exec.
+        // On Linux, executing a file whose write FD is still open yields
+        // ETXTBSY (Text file busy, os error 26).
+        let tmp_dir = tempfile::TempDir::new().expect("create tmpdir");
+        let wrapper_path = tmp_dir.path().join("wrapper.sh");
+        {
+            use std::io::Write as _;
+            let mut f = std::fs::File::create(&wrapper_path).expect("create wrapper");
+            writeln!(f, "#!/bin/sh").expect("write shebang");
+            writeln!(f, "sleep 60").expect("write sleep");
+            // f drops here, closing the FD before exec
+        }
+        let mut perms = std::fs::metadata(&wrapper_path)
+            .expect("get perms")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&wrapper_path, perms).expect("set perms");
+        let wrapper_bin = wrapper_path.to_str().expect("path to str").to_string();
+
+        let cancel = CancelToken::new();
+        let cancel_for_thread = cancel.clone();
+        let runner = ClaudeHeadlessRunner::new(ClaudeHeadlessRunnerConfig {
+            claude_bin: Some(wrapper_bin),
+            cancel,
+            ..Default::default()
+        });
+
+        // Cancel after a short delay from a background thread.
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            cancel_for_thread.cancel();
+        });
+
+        // When: run() is called — it should be interrupted by the cancel
+        // Then: returns Err containing "cancel" well before the 60-second sleep ends
+        let start = std::time::Instant::now();
+        let result = runner.run("ignored-prompt");
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed.as_secs() < 5,
+            "run() should have been cancelled quickly, took {elapsed:?}"
+        );
+        match result {
+            Err(e) => assert!(
+                e.contains("cancel"),
+                "expected cancellation error, got: {e}"
+            ),
+            Ok(_) => panic!("expected Err when cancel fires during wait"),
+        }
+    }
 }
