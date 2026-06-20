@@ -2,7 +2,7 @@ use std::io::Write;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use seher::sdk::StreamChunk;
+use seher::sdk::{CancelToken, StreamChunk};
 
 /// Result of [`drain_to_stdout`]. `Limit` carries no payload — the caller already
 /// has the [`crate::run_mode`] `ResolvedAgent` whose `provider` is what gets
@@ -12,6 +12,7 @@ pub enum Outcome {
     Limit,
     Error(String),
     Timeout,
+    Cancelled,
 }
 
 /// Drain a `Receiver<StreamChunk>` to stdout, writing each delta as it arrives.
@@ -24,13 +25,24 @@ pub enum Outcome {
     clippy::needless_pass_by_value,
     reason = "takes ownership of the receiver so it is dropped on return, signaling the worker the consumer is gone"
 )]
-pub fn drain_to_stdout(rx: Receiver<StreamChunk>, timeout_ms: Option<u64>) -> Outcome {
+pub fn drain_to_stdout(
+    rx: Receiver<StreamChunk>,
+    timeout_ms: Option<u64>,
+    cancel: &CancelToken,
+) -> Outcome {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     let mut full = String::new();
     let deadline = timeout_ms.map(|t| Instant::now() + Duration::from_millis(t));
 
+    // Short poll interval used when there is no deadline — lets cancel checks
+    // fire even while blocked on recv, instead of waiting for the next chunk.
+    const CANCEL_POLL: Duration = Duration::from_millis(50);
+
     loop {
+        if cancel.is_cancelled() {
+            return Outcome::Cancelled;
+        }
         let chunk = match deadline {
             Some(d) => {
                 let now = Instant::now();
@@ -49,12 +61,21 @@ pub fn drain_to_stdout(rx: Receiver<StreamChunk>, timeout_ms: Option<u64>) -> Ou
                     }
                 }
             }
-            None => match rx.recv() {
-                Ok(c) => c,
-                Err(_) => {
-                    return Outcome::Error(
-                        "pi worker disconnected without a terminal chunk".to_string(),
-                    );
+            // Without a deadline, use a short timeout so that cancel signals
+            // are detected promptly rather than waiting for the next chunk.
+            None => loop {
+                match rx.recv_timeout(CANCEL_POLL) {
+                    Ok(c) => break c,
+                    Err(RecvTimeoutError::Timeout) => {
+                        if cancel.is_cancelled() {
+                            return Outcome::Cancelled;
+                        }
+                    }
+                    Err(RecvTimeoutError::Disconnected) => {
+                        return Outcome::Error(
+                            "pi worker disconnected without a terminal chunk".to_string(),
+                        );
+                    }
                 }
             },
         };
@@ -75,7 +96,15 @@ pub fn drain_to_stdout(rx: Receiver<StreamChunk>, timeout_ms: Option<u64>) -> Ou
                 return Outcome::Done(if t.is_empty() { full } else { t });
             }
             StreamChunk::Limit(_) => return Outcome::Limit,
-            StreamChunk::Error(m) => return Outcome::Error(m),
+            StreamChunk::Error(m) => {
+                // If cancellation is active, the error was most likely caused
+                // by the runner aborting due to the cancel signal — report it
+                // as Cancelled rather than a generic error.
+                if cancel.is_cancelled() {
+                    return Outcome::Cancelled;
+                }
+                return Outcome::Error(m);
+            }
         }
     }
 }
@@ -86,6 +115,10 @@ mod tests {
     use super::*;
     use std::sync::mpsc::channel;
 
+    fn no_cancel() -> CancelToken {
+        CancelToken::new()
+    }
+
     #[test]
     fn done_returns_concatenated_deltas() {
         let (tx, rx) = channel();
@@ -93,7 +126,7 @@ mod tests {
         tx.send(StreamChunk::Delta("cd".to_string())).unwrap();
         tx.send(StreamChunk::Done(String::new())).unwrap();
         drop(tx);
-        match drain_to_stdout(rx, None) {
+        match drain_to_stdout(rx, None, &no_cancel()) {
             Outcome::Done(s) => assert_eq!(s, "abcd"),
             other => panic!(
                 "unexpected outcome: {other:?}",
@@ -108,7 +141,7 @@ mod tests {
         tx.send(StreamChunk::Delta("ignored".to_string())).unwrap();
         tx.send(StreamChunk::Done("final".to_string())).unwrap();
         drop(tx);
-        match drain_to_stdout(rx, None) {
+        match drain_to_stdout(rx, None, &no_cancel()) {
             Outcome::Done(s) => assert_eq!(s, "final"),
             other => panic!(
                 "unexpected outcome: {other:?}",
@@ -128,7 +161,7 @@ mod tests {
         }))
         .unwrap();
         drop(tx);
-        match drain_to_stdout(rx, None) {
+        match drain_to_stdout(rx, None, &no_cancel()) {
             Outcome::Limit => {}
             other => panic!(
                 "unexpected outcome: {other:?}",
@@ -142,7 +175,7 @@ mod tests {
         let (tx, rx) = channel();
         tx.send(StreamChunk::Error("boom".to_string())).unwrap();
         drop(tx);
-        match drain_to_stdout(rx, None) {
+        match drain_to_stdout(rx, None, &no_cancel()) {
             Outcome::Error(m) => assert_eq!(m, "boom"),
             other => panic!(
                 "unexpected outcome: {other:?}",
@@ -156,7 +189,7 @@ mod tests {
         // tx is dropped before sending Done/Limit/Error — must NOT be reported as success.
         let (tx, rx) = channel::<StreamChunk>();
         drop(tx);
-        match drain_to_stdout(rx, None) {
+        match drain_to_stdout(rx, None, &no_cancel()) {
             Outcome::Error(m) => assert!(m.contains("disconnected"), "got: {m}"),
             other => panic!(
                 "unexpected outcome: {other:?}",
@@ -171,7 +204,7 @@ mod tests {
         // through recv_timeout must also classify as Error, not Timeout.
         let (tx, rx) = channel::<StreamChunk>();
         drop(tx);
-        match drain_to_stdout(rx, Some(10_000)) {
+        match drain_to_stdout(rx, Some(10_000), &no_cancel()) {
             Outcome::Error(m) => assert!(m.contains("disconnected"), "got: {m}"),
             other => panic!(
                 "unexpected outcome: {other:?}",
@@ -185,10 +218,47 @@ mod tests {
         let (tx, rx) = channel::<StreamChunk>();
         // Keep tx alive in scope so the channel doesn't disconnect; otherwise
         // we'd get the Error branch instead of Timeout.
-        match drain_to_stdout(rx, Some(50)) {
+        match drain_to_stdout(rx, Some(50), &no_cancel()) {
             Outcome::Timeout => {}
             other => panic!(
                 "unexpected outcome: {other:?}",
+                other = OutcomeDebug(&other)
+            ),
+        }
+        drop(tx);
+    }
+
+    #[test]
+    fn cancelled_token_returns_cancelled_outcome_before_any_chunk() {
+        // Given: a token that is already cancelled and a channel with no chunks yet
+        let (tx, rx) = channel::<StreamChunk>();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        // When: drain_to_stdout is called with the already-cancelled token
+        // Then: returns Outcome::Cancelled without blocking
+        match drain_to_stdout(rx, Some(5_000), &cancel) {
+            Outcome::Cancelled => {}
+            other => panic!(
+                "expected Cancelled, got: {other:?}",
+                other = OutcomeDebug(&other)
+            ),
+        }
+        drop(tx);
+    }
+
+    #[test]
+    fn cancelled_token_returns_cancelled_even_with_pending_deltas() {
+        // Given: a cancelled token and a channel that has deltas queued but no Done
+        let (tx, rx) = channel();
+        tx.send(StreamChunk::Delta("partial".to_string())).unwrap();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        // When: drain_to_stdout is called
+        // Then: returns Cancelled (not Done) because the token was cancelled
+        match drain_to_stdout(rx, Some(5_000), &cancel) {
+            Outcome::Cancelled => {}
+            other => panic!(
+                "expected Cancelled, got: {other:?}",
                 other = OutcomeDebug(&other)
             ),
         }
@@ -207,6 +277,7 @@ mod tests {
                 Outcome::Limit => write!(f, "Limit"),
                 Outcome::Error(m) => write!(f, "Error({m:?})"),
                 Outcome::Timeout => write!(f, "Timeout"),
+                Outcome::Cancelled => write!(f, "Cancelled"),
             }
         }
     }

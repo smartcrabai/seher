@@ -1,3 +1,4 @@
+pub mod cancel;
 pub mod config;
 pub mod config_loader;
 pub mod dispatch;
@@ -7,6 +8,7 @@ pub mod resolve;
 pub mod sleep;
 pub mod tool;
 
+pub use cancel::CancelToken;
 pub use config::{
     Config, ModelEntry, ProviderApi, ProviderEntry, ResolvedAgent, ResolvedSkillsConfig,
     SkillsConfig,

@@ -7,8 +7,9 @@ use std::path::PathBuf;
 
 use seher::claude_terminal::{default_transcript_root, encode_transcript_path};
 use seher::sdk::{
-    CodexBarProbe, Config, ResolveOptions, ResolvedAgent, RunAgentOptions, TimeoutError,
-    load_config, pi_session_path, resolve_agent, stream_for_resolved, unsupported_sdk_providers,
+    CancelToken, CodexBarProbe, Config, ResolveOptions, ResolvedAgent, RunAgentOptions,
+    TimeoutError, load_config, pi_session_path, resolve_agent, stream_for_resolved,
+    unsupported_sdk_providers,
 };
 
 use crate::args::Args;
@@ -42,6 +43,27 @@ pub fn resolve_and_stream(
         ));
     }
 
+    // Shared cancel token — signalled by the SIGINT handler below so that
+    // all streaming paths (drain_to_stdout, headless runner) can observe it.
+    let cancel = CancelToken::new();
+    let cancel_for_signal = cancel.clone();
+    // Spawn a dedicated thread with its own tokio runtime to listen for
+    // Ctrl-C. The signal handling code must run inside a tokio context but
+    // the main CLI loop is synchronous, so we isolate it here.
+    std::thread::spawn(move || {
+        let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+        else {
+            return;
+        };
+        rt.block_on(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                cancel_for_signal.cancel();
+            }
+        });
+    });
+
     // Resuming pins to the backend that owns the session — the retry-on-limit provider
     // switch is disabled, since a session id is meaningless to a different backend.
     if let Some(resume_id) = args.resume.clone() {
@@ -54,6 +76,7 @@ pub fn resolve_and_stream(
             logger,
             &config,
             &resume_id,
+            &cancel,
         );
     }
 
@@ -61,8 +84,8 @@ pub fn resolve_and_stream(
         resolve_once(rt, args, mode_key, excluded, &config)
     };
     let stream_runner = |resolved: &ResolvedAgent| -> Outcome {
-        let rx = dispatch_stream(resolved, prompt, system_prompt, args, None);
-        drain_to_stdout(rx, args.timeout)
+        let rx = dispatch_stream(resolved, prompt, system_prompt, args, None, &cancel);
+        drain_to_stdout(rx, args.timeout, &cancel)
     };
     stream_with_retry(args.timeout, logger, resolver, stream_runner)
 }
@@ -127,6 +150,7 @@ fn resume_and_stream(
     logger: &Logger,
     config: &Config,
     resume_id: &str,
+    cancel: &CancelToken,
 ) -> Result<String, String> {
     let cwd = effective_cwd(args);
     let pinned = probe_session_backend(&cwd, resume_id).ok_or_else(|| {
@@ -145,8 +169,15 @@ fn resume_and_stream(
         resolved.provider, resolved.sdk, resolved.model_id
     ));
 
-    let rx = dispatch_stream(&resolved, prompt, system_prompt, args, Some(resume_id));
-    match drain_to_stdout(rx, args.timeout) {
+    let rx = dispatch_stream(
+        &resolved,
+        prompt,
+        system_prompt,
+        args,
+        Some(resume_id),
+        cancel,
+    );
+    match drain_to_stdout(rx, args.timeout, cancel) {
         Outcome::Done(t) => Ok(t),
         Outcome::Limit => Err(format!(
             "provider '{}' is rate-limited; cannot switch providers while resuming session {resume_id}",
@@ -158,6 +189,7 @@ fn resume_and_stream(
             label: "stream",
         }
         .to_string()),
+        Outcome::Cancelled => Err("cancelled".to_string()),
     }
 }
 
@@ -212,6 +244,7 @@ where
                 }
                 .to_string());
             }
+            Outcome::Cancelled => return Err("cancelled".to_string()),
         }
     }
 }
@@ -245,6 +278,7 @@ fn dispatch_stream(
     system_prompt: Option<&str>,
     args: &Args,
     resume: Option<&str>,
+    cancel: &CancelToken,
 ) -> std::sync::mpsc::Receiver<seher::sdk::StreamChunk> {
     // Resolve api_key: YAML config takes precedence, env var as fallback for
     // well-known providers (applies to the pi runner).
@@ -264,6 +298,7 @@ fn dispatch_stream(
             api_key,
             system_prompt: system_prompt.map(str::to_string),
             timeout_ms: args.timeout,
+            cancel: cancel.clone(),
         },
     )
 }
@@ -392,5 +427,41 @@ mod tests {
         assert_eq!(env_api_key_for(None), None);
         assert_eq!(env_api_key_for(Some("cohere")), None);
         assert_eq!(env_api_key_for(Some("google")), None);
+    }
+
+    #[test]
+    fn cancelled_outcome_does_not_retry_and_returns_err() {
+        // Given: a stream_runner that immediately returns Cancelled
+        let logger = silent_logger();
+        let resolver = |_excluded: &[String]| Ok(make_resolved("a", "anthropic/x"));
+        let stream_runner = |_r: &ResolvedAgent| Outcome::Cancelled;
+        // When: stream_with_retry receives Outcome::Cancelled
+        // Then: returns Err immediately without retrying (resolver called exactly once)
+        let err =
+            stream_with_retry(None, &logger, resolver, stream_runner).expect_err("should error");
+        assert!(
+            err.contains("cancel") || err.contains("interrupt"),
+            "expected a cancellation error message, got: {err}"
+        );
+    }
+
+    #[test]
+    fn cancelled_outcome_does_not_add_to_excluded_and_does_not_retry() {
+        // Given: a stream_runner that returns Cancelled on the first call
+        // When: stream_with_retry receives Cancelled
+        // Then: it must NOT treat it as a Limit and must NOT retry with a different provider
+        let logger = silent_logger();
+        let call_count = std::cell::RefCell::new(0u32);
+        let resolver = |_excluded: &[String]| {
+            *call_count.borrow_mut() += 1;
+            Ok(make_resolved("a", "anthropic/x"))
+        };
+        let stream_runner = |_r: &ResolvedAgent| Outcome::Cancelled;
+        let _ = stream_with_retry(None, &logger, resolver, stream_runner);
+        assert_eq!(
+            *call_count.borrow(),
+            1,
+            "resolver must be called exactly once — no retry on Cancelled"
+        );
     }
 }
