@@ -41,7 +41,7 @@ tokio = { version = "1.49.0", features = [
   "sync",
   "signal",
 ] }
-zzsleep = "0.0.7"
+zzsleep = "0.0.9"
 
 [workspace.lints.clippy]
 allow_attributes = "deny"
