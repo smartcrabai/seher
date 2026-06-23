@@ -60,6 +60,18 @@ pub fn is_claude_rate_limit_message(msg: &str) -> bool {
         || lower.contains("session limit")
 }
 
+/// Returns true when `msg` contains `HTTP {status}` followed by a non-digit
+/// (or end of string), avoiding false positives like `HTTP 5002`.
+fn contains_http_status(msg: &str, status: u16) -> bool {
+    let needle = format!("HTTP {status}");
+    msg.match_indices(&needle).any(|(idx, _)| {
+        msg[idx + needle.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_ascii_digit())
+    })
+}
+
 /// Detect transient HTTP errors that are always worth retrying.
 ///
 /// Matches full status-code substrings (`HTTP 429`, `HTTP 500`, `HTTP 502`,
@@ -67,11 +79,11 @@ pub fn is_claude_rate_limit_message(msg: &str) -> bool {
 /// containing `50` or `5029`.
 #[must_use]
 pub fn is_transient_http_error(msg: &str) -> bool {
-    msg.contains("HTTP 429")
-        || msg.contains("HTTP 500")
-        || msg.contains("HTTP 502")
-        || msg.contains("HTTP 503")
-        || msg.contains("HTTP 504")
+    contains_http_status(msg, 429)
+        || contains_http_status(msg, 500)
+        || contains_http_status(msg, 502)
+        || contains_http_status(msg, 503)
+        || contains_http_status(msg, 504)
 }
 
 /// Detect client HTTP errors that should only be retried when explicitly opted in.
@@ -81,7 +93,7 @@ pub fn is_transient_http_error(msg: &str) -> bool {
 /// when `retry_client_errors` is enabled.
 #[must_use]
 pub fn is_client_error_retryable(msg: &str) -> bool {
-    msg.contains("HTTP 401") || msg.contains("HTTP 404")
+    contains_http_status(msg, 401) || contains_http_status(msg, 404)
 }
 
 #[cfg(test)]
@@ -136,6 +148,15 @@ mod tests {
         assert!(!is_transient_http_error("connection refused"));
         assert!(!is_transient_http_error("Read 50029 bytes"));
         assert!(!is_transient_http_error("Read 5029 bytes"));
+        assert!(!is_transient_http_error(
+            "Anthropic API error (HTTP 5002): unknown"
+        ));
+        assert!(!is_transient_http_error(
+            "Anthropic API error (HTTP 5029): unknown"
+        ));
+        assert!(!is_transient_http_error(
+            "Anthropic API error (HTTP 4290): unknown"
+        ));
     }
 
     // -- is_client_error_retryable ----------------------------------------------
@@ -159,5 +180,11 @@ mod tests {
             "Anthropic API error (HTTP 500): internal"
         ));
         assert!(!is_client_error_retryable("connection refused"));
+        assert!(!is_client_error_retryable(
+            "Anthropic API error (HTTP 4012): auth_error"
+        ));
+        assert!(!is_client_error_retryable(
+            "Anthropic API error (HTTP 4040): not found"
+        ));
     }
 }
