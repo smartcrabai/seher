@@ -15,7 +15,7 @@
       {
         "hooks": [
           {
-            "command": "cargo clippy --all-features && cargo fmt --all && cargo sort && taplo fmt Cargo.toml --option reorder_keys=true Cargo.toml",
+            "command": "cargo clippy --all-features && cargo fmt --all && taplo fmt --option reorder_keys=true Cargo.toml crates/*/Cargo.toml",
             "type": "command"
           }
         ],

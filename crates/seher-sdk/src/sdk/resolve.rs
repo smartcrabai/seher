@@ -236,6 +236,7 @@ pub fn build_candidates(
             let model = entry.models.get(mode_key)?;
             let priority = model.priority.or(entry.priority).unwrap_or(0);
             let skills = cfg.resolve_skills(entry);
+            let retry = cfg.resolve_retry(entry);
             let resolved = ResolvedAgent {
                 provider: entry.provider.clone(),
                 model_id: model.model.clone(),
@@ -243,6 +244,7 @@ pub fn build_candidates(
                 sdk: entry.sdk.clone(),
                 api: entry.api.clone(),
                 skills,
+                retry,
             };
             Some(Candidate {
                 priority,
@@ -364,8 +366,9 @@ pub async fn resolve_agent(
     }
 }
 
-/// Like [`resolve_agent`] but loops forever (until cancelled), sleeping
-/// `interval_ms` between scans when every candidate is at-limit.
+/// Like [`resolve_agent`] but loops forever (until cancelled), sleeping until the
+/// earliest rate-limit reset time between scans when every candidate is at-limit.
+/// Falls back to `interval_ms` when no reset time is known.
 ///
 /// # Errors
 ///
@@ -401,11 +404,15 @@ pub async fn poll_for_agent(
             ScanOutcome::NoAgents { probe_errors } => {
                 return Err(NoMatchingAgentError(format_probe_errors(&probe_errors)).into());
             }
-            ScanOutcome::AllLimited { .. } => {
-                let interval = opts.interval_ms.max(1);
-                let until_ms = i64::try_from(interval).unwrap_or(i64::MAX);
-                let until = Utc::now() + chrono::Duration::milliseconds(until_ms);
-                sleep_until(until, true).await;
+            ScanOutcome::AllLimited { reset_time } => {
+                if let Some(when) = reset_time {
+                    sleep_until(when, true).await;
+                } else {
+                    let interval = opts.interval_ms.max(1);
+                    let until_ms = i64::try_from(interval).unwrap_or(i64::MAX);
+                    let until = Utc::now() + chrono::Duration::milliseconds(until_ms);
+                    sleep_until(until, true).await;
+                }
             }
         }
     }
@@ -434,6 +441,11 @@ pub fn codexbar_provider_name(sdk: &str, provider: &str) -> String {
 pub struct CodexBarProbe;
 
 impl LimitProbe for CodexBarProbe {
+    /// # Errors
+    ///
+    /// This implementation never returns an error to the caller: probe failures are
+    /// treated as "not limited" so resolution can fall back to the candidate. A
+    /// warning is emitted via `tracing` so the failure is still observable.
     fn probe<'a>(
         &'a mut self,
         entry: &'a ProviderEntry,
@@ -447,7 +459,14 @@ impl LimitProbe for CodexBarProbe {
                 // binary, or a transient spawn/timeout failure all mean "we
                 // can't prove this provider is limited" — treat it as available
                 // so resolution proceeds rather than dropping the provider.
-                Err(_) => Ok(AgentLimit::NotLimited),
+                Err(e) => {
+                    tracing::warn!(
+                        provider = provider,
+                        error = %e,
+                        "codexbar limit check failed; treating provider as not limited"
+                    );
+                    Ok(AgentLimit::NotLimited)
+                }
             }
         })
     }
@@ -471,7 +490,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::sdk::config::{ModelEntry, ProviderApi, ProviderEntry, SkillsConfig};
+    use crate::sdk::config::{ModelEntry, ProviderApi, ProviderEntry, RetryConfig, SkillsConfig};
     use indexmap::IndexMap;
 
     fn entry(
@@ -498,6 +517,7 @@ mod tests {
             priority,
             api: None,
             skills: None,
+            retry: None,
             models: m,
         }
     }
@@ -514,6 +534,7 @@ mod tests {
         Config {
             providers,
             skills: None,
+            retry: None,
         }
     }
 
@@ -605,6 +626,41 @@ mod tests {
             Some("sk-test")
         );
         assert!(!r.skills.include_claude);
+    }
+
+    #[test]
+    fn resolved_agent_carries_root_retry_config() {
+        let mut e = entry("kimi", "kimi", None, &[("build", "kimi/k1", None)]);
+        e.retry = None;
+        let c = Config {
+            providers: vec![e],
+            skills: None,
+            retry: Some(RetryConfig {
+                retry_client_errors: true,
+                ..RetryConfig::default()
+            }),
+        };
+        let candidates = build_candidates(&c, "build", None, &[]);
+        assert!(candidates[0].resolved.retry.retry_client_errors);
+    }
+
+    #[test]
+    fn resolved_agent_carries_provider_retry_config_over_root() {
+        let mut e = entry("kimi", "kimi", None, &[("build", "kimi/k1", None)]);
+        e.retry = Some(RetryConfig {
+            enabled: false,
+            ..RetryConfig::default()
+        });
+        let c = Config {
+            providers: vec![e],
+            skills: None,
+            retry: Some(RetryConfig {
+                enabled: true,
+                ..RetryConfig::default()
+            }),
+        };
+        let candidates = build_candidates(&c, "build", None, &[]);
+        assert!(!candidates[0].resolved.retry.enabled);
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -1,9 +1,9 @@
 [package]
-name = "seher-cli"
-description = "Seher CLI: pick the highest-priority coding agent and run a plan/build prompt"
 authors.workspace = true
+description = "Seher CLI: pick the highest-priority coding agent and run a plan/build prompt"
 edition.workspace = true
 license.workspace = true
+name = "seher-cli"
 repository.workspace = true
 version.workspace = true
 
@@ -15,9 +15,9 @@ name = "seher"
 path = "src/main.rs"
 
 [dependencies]
-seher-sdk = { path = "../seher-sdk", version = "0.0.45" }
 chrono.workspace = true
 clap.workspace = true
+seher-sdk = { path = "../seher-sdk", version = "0.0.45" }
 serde_json.workspace = true
 tempfile.workspace = true
 tokio.workspace = true

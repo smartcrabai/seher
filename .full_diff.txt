@@ -1,0 +1,2831 @@
+diff --git a/.claude/settings.json b/.claude/settings.json
+index e8f331e..f9ca15a 100644
+--- a/.claude/settings.json
++++ b/.claude/settings.json
+@@ -15,7 +15,7 @@
+       {
+         "hooks": [
+           {
+-            "command": "cargo clippy --all-features && cargo fmt --all && cargo sort && taplo fmt Cargo.toml --option reorder_keys=true Cargo.toml",
++            "command": "cargo clippy --all-features && cargo fmt --all && taplo fmt --option reorder_keys=true Cargo.toml crates/*/Cargo.toml",
+             "type": "command"
+           }
+         ],
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 601b5e2..a9dcf41 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -12,15 +12,15 @@ jobs:
+         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+ 
+       - name: Install taplo
+-        uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2
++        uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2
+         with:
+           tool: taplo-cli
+ 
+-      - name: Lint Cargo.toml
+-        run: taplo lint Cargo.toml
++      - name: Lint Cargo.toml files
++        run: taplo lint Cargo.toml crates/*/Cargo.toml
+ 
+       - name: Check Cargo.toml formatting
+-        run: taplo fmt --check --option reorder_keys=true Cargo.toml
++        run: taplo fmt --check --option reorder_keys=true Cargo.toml crates/*/Cargo.toml
+ 
+       - name: Cache Rust dependencies
+         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index cc61b71..9781be7 100644
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -64,7 +64,7 @@ jobs:
+         # we specify bash to get pipefail; it guards against the `curl` command
+         # failing. otherwise `sh` won't catch that `curl` returned non-0
+         shell: bash
+-        run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.31.0/cargo-dist-installer.sh | sh"
++        run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh | sh"
+       - name: Cache dist
+         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+         with:
+diff --git a/Cargo.lock b/Cargo.lock
+index 5b543a7..4324437 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -102,9 +102,9 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+ 
+ [[package]]
+ name = "ar_archive_writer"
+-version = "0.5.1"
++version = "0.5.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "7eb93bbb63b9c227414f6eb3a0adfddca591a8ce1e9b60661bb08969b87e340b"
++checksum = "4087686b4b0a3427190bae57a1d9a478dbb2d40c5dc1bd6e2b6d797913bdd348"
+ dependencies = [
+  "object",
+ ]
+@@ -225,7 +225,7 @@ dependencies = [
+  "franken-evidence",
+  "franken-kernel",
+  "futures-lite",
+- "getrandom 0.4.2",
++ "getrandom 0.4.3",
+  "hashbrown 0.17.1",
+  "hex",
+  "hkdf",
+@@ -340,7 +340,7 @@ version = "0.72.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
+ dependencies = [
+- "bitflags",
++ "bitflags 2.13.0",
+  "cexpr",
+  "clang-sys",
+  "itertools 0.13.0",
+@@ -369,6 +369,12 @@ version = "0.8.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
+ 
++[[package]]
++name = "bitflags"
++version = "1.3.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
++
+ [[package]]
+ name = "bitflags"
+ version = "2.13.0"
+@@ -386,9 +392,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "block-buffer"
+-version = "0.12.0"
++version = "0.12.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "cdd35008169921d80bc60d3d0ab416eecb028c4cd653352907921d95084790be"
++checksum = "d2f6c7dbe95a6ed67ad9f18e57daf93a2f034c524b99fd2b76d18fdfeb6660aa"
+ dependencies = [
+  "hybrid-array",
+ ]
+@@ -430,9 +436,9 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
+ 
+ [[package]]
+ name = "bytes"
+-version = "1.11.1"
++version = "1.12.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
++checksum = "8ae3f5d315924270530207e2a68396c3cc547f6dca3fbdca317cfb1a51edb593"
+ 
+ [[package]]
+ name = "bytes-str"
+@@ -446,9 +452,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "camino"
+-version = "1.2.2"
++version = "1.2.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "e629a66d692cb9ff1a1c664e41771b3dcaf961985a9774c0eb0bd1b51cf60a48"
++checksum = "b4ce8d3bd5823c7504d3f579f13e7b2f3da252fcb938c594d5680ee508bf846f"
+ dependencies = [
+  "serde_core",
+ ]
+@@ -488,9 +494,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "cc"
+-version = "1.2.63"
++version = "1.2.65"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "556e016178bb5662a08681bbe0f00f8e17631781a4dfc8c45e466e4b185ec27f"
++checksum = "e228eec9be7c17ccb640b59b36a5cd805ea2a564a4c5e162c2f659fea30d3b96"
+ dependencies = [
+  "find-msvc-tools",
+  "shlex 2.0.1",
+@@ -646,15 +652,14 @@ dependencies = [
+ 
+ [[package]]
+ name = "console"
+-version = "0.15.11"
++version = "0.16.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "054ccb5b10f9f2cbf51eb355ca1d05c2d279ce1804688d0db74b4733a5aeafd8"
++checksum = "d64e8af5551369d19cf50138de61f1c42074ab970f74e99be916646777f8fc87"
+ dependencies = [
+  "encode_unicode",
+  "libc",
+- "once_cell",
+  "unicode-width",
+- "windows-sys 0.59.0",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -770,7 +775,7 @@ version = "0.29.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "d8b9f2e4c67f833b660cdb0a3523065869fb35570177239812ed4c905aeff87b"
+ dependencies = [
+- "bitflags",
++ "bitflags 2.13.0",
+  "crossterm_winapi",
+  "derive_more",
+  "document-features",
+@@ -911,6 +916,38 @@ version = "2.11.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
+ 
++[[package]]
++name = "defmt"
++version = "1.1.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a6e524506490a1953d237cb87b1cfc1e46f88c18f10a22dfe0f507dc6bfc7f7f"
++dependencies = [
++ "bitflags 1.3.2",
++ "defmt-macros",
++]
++
++[[package]]
++name = "defmt-macros"
++version = "1.1.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "f0a27770e9c8f719a79d8b638281f4d828f77d8fd61e0bd94451b9b85e576a0b"
++dependencies = [
++ "defmt-parser",
++ "proc-macro-error2",
++ "proc-macro2",
++ "quote",
++ "syn",
++]
++
++[[package]]
++name = "defmt-parser"
++version = "1.0.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "10d60334b3b2e7c9d91ef8150abfb6fa4c1c39ebbcf4a81c2e346aad939fee3e"
++dependencies = [
++ "thiserror",
++]
++
+ [[package]]
+ name = "der"
+ version = "0.7.10"
+@@ -1015,7 +1052,7 @@ version = "0.11.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2"
+ dependencies = [
+- "block-buffer 0.12.0",
++ "block-buffer 0.12.1",
+  "const-oid 0.10.2",
+  "crypto-common 0.2.2",
+  "ctutils",
+@@ -1048,7 +1085,7 @@ version = "0.3.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
+ dependencies = [
+- "bitflags",
++ "bitflags 2.13.0",
+  "block2",
+  "libc",
+  "objc2",
+@@ -1453,16 +1490,14 @@ dependencies = [
+ 
+ [[package]]
+ name = "getrandom"
+-version = "0.4.2"
++version = "0.4.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "0de51e6874e94e7bf76d726fc5d13ba782deca734ff60d5bb2fb2607c7406555"
++checksum = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099"
+ dependencies = [
+  "cfg-if",
+  "js-sys",
+  "libc",
+  "r-efi",
+- "wasip2",
+- "wasip3",
+  "wasm-bindgen",
+ ]
+ 
+@@ -1618,7 +1653,7 @@ version = "0.16.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "2409cffa4fe8b303847d5b6ba8df9da9ba65d302fc5ee474ea0cac5afde79840"
+ dependencies = [
+- "bitflags",
++ "bitflags 2.13.0",
+  "bstr",
+  "gix-path",
+  "libc",
+@@ -1757,7 +1792,7 @@ version = "0.23.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "e8546300aee4c65c5862c22a3e321124a69b654a61a8b60de546a9284812b7e2"
+ dependencies = [
+- "bitflags",
++ "bitflags 2.13.0",
+  "bstr",
+  "gix-features",
+  "gix-path",
+@@ -1805,7 +1840,7 @@ version = "0.45.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "9ea6d3e9e11647ba49f441dea0782494cc6d2875ff43fa4ad9094e6957f42051"
+ dependencies = [
+- "bitflags",
++ "bitflags 2.13.0",
+  "bstr",
+  "filetime",
+  "fnv",
+@@ -1928,7 +1963,7 @@ version = "0.14.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "ed9e0c881933c37a7ef45288d6c5779c4a7b3ad240b4c37657e1d9829eb90085"
+ dependencies = [
+- "bitflags",
++ "bitflags 2.13.0",
+  "bstr",
+  "gix-attributes",
+  "gix-config-value",
+@@ -2009,7 +2044,7 @@ version = "0.39.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "91898c83b18c635696f7355d171cfa74a52f38022ff89581f567768935ebc4c8"
+ dependencies = [
+- "bitflags",
++ "bitflags 2.13.0",
+  "bstr",
+  "gix-commitgraph",
+  "gix-date",
+@@ -2042,7 +2077,7 @@ version = "0.12.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "ea9962ed6d9114f7f100efe038752f41283c225bb507a2888903ac593dffa6be"
+ dependencies = [
+- "bitflags",
++ "bitflags 2.13.0",
+  "gix-path",
+  "libc",
+  "windows-sys 0.61.2",
+@@ -2141,7 +2176,7 @@ version = "0.51.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "d052b83d1d1744be95ac6448ac02f95f370a8f6720e466be9ce57146e39f5280"
+ dependencies = [
+- "bitflags",
++ "bitflags 2.13.0",
+  "gix-commitgraph",
+  "gix-date",
+  "gix-hash",
+@@ -2458,12 +2493,6 @@ dependencies = [
+  "zerovec",
+ ]
+ 
+-[[package]]
+-name = "id-arena"
+-version = "2.3.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
+-
+ [[package]]
+ name = "ident_case"
+ version = "1.0.1"
+@@ -2530,14 +2559,14 @@ dependencies = [
+ 
+ [[package]]
+ name = "indicatif"
+-version = "0.17.11"
++version = "0.18.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "183b3088984b400f4cfac3620d5e076c84da5364016b4f49473de574b2586235"
++checksum = "25470f23803092da7d239834776d653104d551bc4d7eacaf31e6837854b8e9eb"
+ dependencies = [
+  "console",
+- "number_prefix",
+  "portable-atomic",
+  "unicode-width",
++ "unit-prefix",
+  "web-time",
+ ]
+ 
+@@ -2594,10 +2623,11 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+ 
+ [[package]]
+ name = "jiff"
+-version = "0.2.28"
++version = "0.2.29"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "4603d3033e49e2b0e31229fcab20a5d40089c607d975cd9c80551dc69eed9102"
++checksum = "34f877a98676d2fb664698d74cc6a51ce6c484ce8c770f05d0108ec9090aeb46"
+ dependencies = [
++ "defmt",
+  "jiff-static",
+  "jiff-tzdb-platform",
+  "log",
+@@ -2609,9 +2639,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "jiff-static"
+-version = "0.2.28"
++version = "0.2.29"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "782d32378dddf207193ac91cefb848ad41abb58195c95168e1291227a0832b47"
++checksum = "0666b5ab5ecaca213fc2a85b8c0083d9004e84ee2d5f9a7e0017aaf50986f25f"
+ dependencies = [
+  "proc-macro2",
+  "quote",
+@@ -2635,13 +2665,12 @@ dependencies = [
+ 
+ [[package]]
+ name = "js-sys"
+-version = "0.3.99"
++version = "0.3.102"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "142bc4740e452c1e57ade0cbc129f139c9093e354346f0872ef985f4f5cf5f11"
++checksum = "03d04c30968dffe80775bd4d7fb676131cd04a1fb46d2686dbffbaec2d9dfd31"
+ dependencies = [
+  "cfg-if",
+  "futures-util",
+- "once_cell",
+  "wasm-bindgen",
+ ]
+ 
+@@ -2670,12 +2699,6 @@ version = "1.5.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
+ 
+-[[package]]
+-name = "leb128fmt"
+-version = "0.1.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
+-
+ [[package]]
+ name = "libc"
+ version = "0.2.186"
+@@ -2741,9 +2764,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "log"
+-version = "0.4.32"
++version = "0.4.33"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "953f07c43838f8e6f9758cab68bf5bed85465e7587ebe0b823f1bcd81978ad3a"
++checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
+ 
+ [[package]]
+ name = "lru"
+@@ -2786,9 +2809,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "memchr"
+-version = "2.8.1"
++version = "2.8.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "6b947ae49db0d222b1dbc6b113ce7248a3fc3a6ca21b696717bfc000ba4484d8"
++checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
+ 
+ [[package]]
+ name = "memmap2"
+@@ -2848,7 +2871,7 @@ version = "0.31.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
+ dependencies = [
+- "bitflags",
++ "bitflags 2.13.0",
+  "cfg-if",
+  "cfg_aliases",
+  "libc",
+@@ -2963,12 +2986,6 @@ dependencies = [
+  "libc",
+ ]
+ 
+-[[package]]
+-name = "number_prefix"
+-version = "0.4.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
+-
+ [[package]]
+ name = "objc2"
+ version = "0.6.4"
+@@ -2984,7 +3001,7 @@ version = "0.3.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
+ dependencies = [
+- "bitflags",
++ "bitflags 2.13.0",
+ ]
+ 
+ [[package]]
+@@ -3202,7 +3219,7 @@ dependencies = [
+  "flate2",
+  "fs4",
+  "futures",
+- "getrandom 0.4.2",
++ "getrandom 0.4.3",
+  "glob",
+  "hmac 0.12.1",
+  "ignore",
+@@ -3356,6 +3373,28 @@ dependencies = [
+  "toml_edit",
+ ]
+ 
++[[package]]
++name = "proc-macro-error-attr2"
++version = "2.0.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "96de42df36bb9bba5542fe9f1a054b8cc87e172759a1868aa05c1f3acc89dfc5"
++dependencies = [
++ "proc-macro2",
++ "quote",
++]
++
++[[package]]
++name = "proc-macro-error2"
++version = "2.0.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "11ec05c52be0a07b08061f7dd003e7d7092e0472bc731b4af7bb1ef876109802"
++dependencies = [
++ "proc-macro-error-attr2",
++ "proc-macro2",
++ "quote",
++ "syn",
++]
++
+ [[package]]
+ name = "proc-macro2"
+ version = "1.0.106"
+@@ -3413,7 +3452,7 @@ version = "0.13.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "e9f068eba8e7071c5f9511831b44f32c740d5adf574e990f946ddb53db2f314e"
+ dependencies = [
+- "bitflags",
++ "bitflags 2.13.0",
+  "getopts",
+  "memchr",
+  "pulldown-cmark-escape",
+@@ -3477,7 +3516,7 @@ version = "0.5.18"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
+ dependencies = [
+- "bitflags",
++ "bitflags 2.13.0",
+ ]
+ 
+ [[package]]
+@@ -3531,11 +3570,11 @@ dependencies = [
+ 
+ [[package]]
+ name = "rich_rust"
+-version = "0.2.1"
++version = "0.2.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "28b19f5711867dc33a82cdbfd437c03b4089308f63a7ec3ee6ab34a9d74ff519"
++checksum = "b739581beb432b2743e3561cec117559483d7a66fdd11acd72e98b6ffad19915"
+ dependencies = [
+- "bitflags",
++ "bitflags 2.13.0",
+  "crossterm",
+  "fancy-regex",
+  "log",
+@@ -3663,7 +3702,7 @@ version = "1.1.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
+ dependencies = [
+- "bitflags",
++ "bitflags 2.13.0",
+  "errno",
+  "libc",
+  "linux-raw-sys",
+@@ -3793,7 +3832,7 @@ version = "3.7.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "b7f4bc775c73d9a02cde8bf7b2ec4c9d12743edf609006c7facc23998404cd1d"
+ dependencies = [
+- "bitflags",
++ "bitflags 2.13.0",
+  "core-foundation",
+  "core-foundation-sys",
+  "libc",
+@@ -3853,6 +3892,7 @@ dependencies = [
+  "tempfile",
+  "thiserror",
+  "tokio",
++ "tracing",
+  "unicode-normalization",
+  "unicode-width",
+  "uuid",
+@@ -4108,9 +4148,9 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
+ 
+ [[package]]
+ name = "smallvec"
+-version = "1.15.1"
++version = "1.15.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
++checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
+ 
+ [[package]]
+ name = "smartstring"
+@@ -4313,7 +4353,7 @@ version = "20.0.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "252124d0d786aa2338860701a067c93488747dfadbfedb16ac78f386e16a0ac4"
+ dependencies = [
+- "bitflags",
++ "bitflags 2.13.0",
+  "is-macro",
+  "num-bigint",
+  "once_cell",
+@@ -4378,7 +4418,7 @@ version = "34.0.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "18271343933dfa820caba5fabb36118b1cfbf0010702a2947c8bf81b9154e36c"
+ dependencies = [
+- "bitflags",
++ "bitflags 2.13.0",
+  "either",
+  "num-bigint",
+  "phf",
+@@ -4526,9 +4566,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "syn"
+-version = "2.0.117"
++version = "2.0.118"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "e665b8803e7b1d2a727f4023456bbbbe74da67099c585258af0ad9c5013b9b99"
++checksum = "1b9ae57f904213ebb649ce6895b8a66c66f0203b9319718f69a5612a065b1422"
+ dependencies = [
+  "proc-macro2",
+  "quote",
+@@ -4567,7 +4607,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
+ dependencies = [
+  "fastrand",
+- "getrandom 0.4.2",
++ "getrandom 0.4.3",
+  "once_cell",
+  "rustix",
+  "windows-sys 0.61.2",
+@@ -4916,10 +4956,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
+ 
+ [[package]]
+-name = "unicode-xid"
+-version = "0.2.6"
++name = "unit-prefix"
++version = "0.5.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
++checksum = "81e544489bf3d8ef66c953931f56617f423cd4b5494be343d9b9d3dda037b9a3"
+ 
+ [[package]]
+ name = "unsafe-libyaml"
+@@ -4935,9 +4975,9 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
+ 
+ [[package]]
+ name = "unty-next"
+-version = "0.1.1"
++version = "0.1.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "9fa66022bbd1ab992fad72bdedcfd07a0023b6f5ecc83d50121e39e3a3caed41"
++checksum = "16062d030850f35054e37746427b9febb74a2f24c9c6dd6fa2d0c13c5f53221e"
+ 
+ [[package]]
+ name = "url"
+@@ -4969,7 +5009,7 @@ version = "1.23.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "144d6b123cef80b301b8f72a9e2ca4370ddec21950d0a103dd22c437006d2db7"
+ dependencies = [
+- "getrandom 0.4.2",
++ "getrandom 0.4.3",
+  "js-sys",
+  "wasm-bindgen",
+ ]
+@@ -5067,29 +5107,11 @@ version = "0.11.1+wasi-snapshot-preview1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
+ 
+-[[package]]
+-name = "wasip2"
+-version = "1.0.3+wasi-0.2.9"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "20064672db26d7cdc89c7798c48a0fdfac8213434a1186e5ef29fd560ae223d6"
+-dependencies = [
+- "wit-bindgen 0.57.1",
+-]
+-
+-[[package]]
+-name = "wasip3"
+-version = "0.4.0+wasi-0.3.0-rc-2026-01-06"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "5428f8bf88ea5ddc08faddef2ac4a67e390b88186c703ce6dbd955e1c145aca5"
+-dependencies = [
+- "wit-bindgen 0.51.0",
+-]
+-
+ [[package]]
+ name = "wasm-bindgen"
+-version = "0.2.122"
++version = "0.2.125"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "3ed04576f974d2b2fba0f38c51dbc5518011e38c36bf1143164be765528fd409"
++checksum = "8ddb3f79143bced6de84270411622a2699cee572fc0875aeaf1e7867cf9fca1a"
+ dependencies = [
+  "cfg-if",
+  "once_cell",
+@@ -5100,9 +5122,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "wasm-bindgen-futures"
+-version = "0.4.72"
++version = "0.4.75"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "9473dbd2991ae90b6291c3c32c30c6187ac49aa32f9905d1cce280ec1e110b0f"
++checksum = "503b14d284f2c8dac03b819967e155ea753f573586193b2b2c95990cb5d69280"
+ dependencies = [
+  "js-sys",
+  "wasm-bindgen",
+@@ -5110,9 +5132,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "wasm-bindgen-macro"
+-version = "0.2.122"
++version = "0.2.125"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "916151b09da36bd82f6615cbf3a419e2f0ba23a03c6160e8e92eb6bd4aa1dec6"
++checksum = "4e21a184b13fb19e157296e2c46056aec9092264fab83e4ba59e68c61b323c3d"
+ dependencies = [
+  "quote",
+  "wasm-bindgen-macro-support",
+@@ -5120,9 +5142,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "wasm-bindgen-macro-support"
+-version = "0.2.122"
++version = "0.2.125"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "299047362ccbfce148b67ab7e73349f77748e00c8296f9542adfad2ad82c5c5e"
++checksum = "fecefd9c35bd935a20fc3fc344b5f29138961e4f47fb03297d88f2587afb5ebd"
+ dependencies = [
+  "bumpalo",
+  "proc-macro2",
+@@ -5133,52 +5155,18 @@ dependencies = [
+ 
+ [[package]]
+ name = "wasm-bindgen-shared"
+-version = "0.2.122"
++version = "0.2.125"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "9a929b2c61f11ba3e9bc35b50c1f25cb38e0e892c0c231ae2b8cf78d5dad4437"
++checksum = "23939e44bb9a5d7576fa2b563dc2e136628f1224e88a8deed09e04858b77871f"
+ dependencies = [
+  "unicode-ident",
+ ]
+ 
+-[[package]]
+-name = "wasm-encoder"
+-version = "0.244.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "990065f2fe63003fe337b932cfb5e3b80e0b4d0f5ff650e6985b1048f62c8319"
+-dependencies = [
+- "leb128fmt",
+- "wasmparser",
+-]
+-
+-[[package]]
+-name = "wasm-metadata"
+-version = "0.244.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "bb0e353e6a2fbdc176932bbaab493762eb1255a7900fe0fea1a2f96c296cc909"
+-dependencies = [
+- "anyhow",
+- "indexmap",
+- "wasm-encoder",
+- "wasmparser",
+-]
+-
+-[[package]]
+-name = "wasmparser"
+-version = "0.244.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "47b807c72e1bac69382b3a6fb3dbe8ea4c0ed87ff5629b8685ae6b9a611028fe"
+-dependencies = [
+- "bitflags",
+- "hashbrown 0.15.5",
+- "indexmap",
+- "semver",
+-]
+-
+ [[package]]
+ name = "web-sys"
+-version = "0.3.99"
++version = "0.3.102"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "6d621441cfc37b84979402712047321980c178f299193a3589d05b99e8763436"
++checksum = "a6430a72df5eb332242960fe84b3002a241163998241eb596d4f739b9757061d"
+ dependencies = [
+  "js-sys",
+  "wasm-bindgen",
+@@ -5501,100 +5489,6 @@ dependencies = [
+  "memchr",
+ ]
+ 
+-[[package]]
+-name = "wit-bindgen"
+-version = "0.51.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "d7249219f66ced02969388cf2bb044a09756a083d0fab1e566056b04d9fbcaa5"
+-dependencies = [
+- "wit-bindgen-rust-macro",
+-]
+-
+-[[package]]
+-name = "wit-bindgen"
+-version = "0.57.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+-
+-[[package]]
+-name = "wit-bindgen-core"
+-version = "0.51.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "ea61de684c3ea68cb082b7a88508a8b27fcc8b797d738bfc99a82facf1d752dc"
+-dependencies = [
+- "anyhow",
+- "heck",
+- "wit-parser",
+-]
+-
+-[[package]]
+-name = "wit-bindgen-rust"
+-version = "0.51.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "b7c566e0f4b284dd6561c786d9cb0142da491f46a9fbed79ea69cdad5db17f21"
+-dependencies = [
+- "anyhow",
+- "heck",
+- "indexmap",
+- "prettyplease",
+- "syn",
+- "wasm-metadata",
+- "wit-bindgen-core",
+- "wit-component",
+-]
+-
+-[[package]]
+-name = "wit-bindgen-rust-macro"
+-version = "0.51.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "0c0f9bfd77e6a48eccf51359e3ae77140a7f50b1e2ebfe62422d8afdaffab17a"
+-dependencies = [
+- "anyhow",
+- "prettyplease",
+- "proc-macro2",
+- "quote",
+- "syn",
+- "wit-bindgen-core",
+- "wit-bindgen-rust",
+-]
+-
+-[[package]]
+-name = "wit-component"
+-version = "0.244.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "9d66ea20e9553b30172b5e831994e35fbde2d165325bec84fc43dbf6f4eb9cb2"
+-dependencies = [
+- "anyhow",
+- "bitflags",
+- "indexmap",
+- "log",
+- "serde",
+- "serde_derive",
+- "serde_json",
+- "wasm-encoder",
+- "wasm-metadata",
+- "wasmparser",
+- "wit-parser",
+-]
+-
+-[[package]]
+-name = "wit-parser"
+-version = "0.244.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "ecc8ac4bc1dc3381b7f59c34f00b67e18f910c2c0f50015669dde7def656a736"
+-dependencies = [
+- "anyhow",
+- "id-arena",
+- "indexmap",
+- "log",
+- "semver",
+- "serde",
+- "serde_derive",
+- "serde_json",
+- "unicode-xid",
+- "wasmparser",
+-]
+-
+ [[package]]
+ name = "writeable"
+ version = "0.6.3"
+@@ -5649,18 +5543,18 @@ dependencies = [
+ 
+ [[package]]
+ name = "zerocopy"
+-version = "0.8.50"
++version = "0.8.52"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "3b065d4f0e55f82fae73202e189638116a87c55ab6b8e6c2721e13dd9d854ad1"
++checksum = "ce1022995ff5ff5d841ad7d994facc23098cd40152f2c1d11cd607c6f530653f"
+ dependencies = [
+  "zerocopy-derive",
+ ]
+ 
+ [[package]]
+ name = "zerocopy-derive"
+-version = "0.8.50"
++version = "0.8.52"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "0b631b19d36a892ab55420c92dbc83ccd79274f25be714855d3074aa71cab639"
++checksum = "1ae7f38b72ec2a254e2b87ef277cf2cd4fb97cbebf944faa6f33354da0867930"
+ dependencies = [
+  "proc-macro2",
+  "quote",
+@@ -5690,9 +5584,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "zeroize"
+-version = "1.8.2"
++version = "1.9.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "b97154e67e32c85465826e8bcc1c59429aaaf107c1e4a9e53c8d8ccd5eff88d0"
++checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
+ 
+ [[package]]
+ name = "zerotrie"
+@@ -5741,9 +5635,9 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
+ 
+ [[package]]
+ name = "zzsleep"
+-version = "0.0.7"
++version = "0.0.9"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "59f17cec0916f06b7a28fecbcc87bfe0979b56135e42f4855d0cf5fb57ef7dac"
++checksum = "546792f62b279ab065c013abb3b5ebb9dddb7bb65726c94e607c368107dc3c6b"
+ dependencies = [
+  "chrono",
+  "indicatif",
+diff --git a/Cargo.toml b/Cargo.toml
+index 85b2541..379e84a 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -41,7 +41,8 @@ tokio = { version = "1.49.0", features = [
+   "sync",
+   "signal",
+ ] }
+-zzsleep = "0.0.7"
++tracing = "0.1"
++zzsleep = "0.0.9"
+ 
+ [workspace.lints.clippy]
+ allow_attributes = "deny"
+@@ -50,19 +51,31 @@ expect_used = "deny"
+ pedantic = { level = "warn", priority = -1 }
+ unwrap_used = "deny"
+ 
++# Config for 'dist'
+ [workspace.metadata.dist]
++# Skip checking whether the specified configuration files are up to date
+ allow-dirty = ["ci"]
+-cargo-dist-version = "0.31.0"
+-ci = ["github"]
++# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
++cargo-dist-version = "0.32.0"
++# CI backends to support
++ci = "github"
++# The installers to generate for each app
+ installers = ["shell", "homebrew"]
++# Publish jobs to run in CI
+ publish-jobs = ["homebrew"]
++# A GitHub repo to push Homebrew formulas to
+ tap = "smartcrabai/homebrew-tap"
++# Target platforms to build apps for (Rust target-triple syntax)
+ targets = [
+-  "x86_64-unknown-linux-gnu",
+-  "aarch64-unknown-linux-gnu",
+   "aarch64-apple-darwin",
++  "aarch64-unknown-linux-gnu",
+   "x86_64-apple-darwin",
++  "x86_64-unknown-linux-gnu",
+ ]
++# Path that installers should place binaries in
++install-path = "CARGO_HOME"
++# Whether to install an updater program
++install-updater = false
+ 
+ [profile.release]
+ codegen-units = 1
+diff --git a/README.md b/README.md
+index 2a927d7..aac3ea1 100644
+--- a/README.md
++++ b/README.md
+@@ -394,6 +394,15 @@ If none of these exist, an empty config is used (and no providers are available)
+ skills:
+   includeClaude: true
+ 
++# Top-level retry policy defaults (optional). Provider-level `retry` blocks
++# replace these settings entirely rather than merging individual fields.
++retry:
++  enabled: true
++  maxAttempts: 5
++  initialDelaySecs: 2
++  maxDelaySecs: 60
++  multiplier: 2.0
++
+ providers:
+   # Map key doubles as the provider label and the default provider name.
+   claude:
+@@ -432,6 +441,15 @@ providers:
+       includeClaude: false   # per-provider override of the top-level default
+     models:
+       build: zai/glm-4.6
++
++  kimi:
++    # Some providers occasionally return HTTP 401/404 during transient outages.
++    # Set retryClientErrors to true to opt in to retrying those status codes.
++    retry:
++      enabled: true
++      retryClientErrors: true
++    models:
++      build: kimi/k1
+ ```
+ 
+ ### Provider fields
+@@ -445,6 +463,12 @@ providers:
+ | `api.key` | string | API key (for API-key-based limit checks and pi execution) |
+ | `api.endpoint` | string | API endpoint override |
+ | `skills.includeClaude` | boolean | Whether to auto-discover Claude skills for this provider |
++| `retry.enabled` | boolean | Whether to retry transient provider API errors in both the SDK and CLI paths. Default: `true`. Also accepted at the top level |
++| `retry.maxAttempts` | integer | Maximum retry attempts. Default: `5`. Also accepted at the top level |
++| `retry.initialDelaySecs` | integer | Delay before the first retry, in seconds. Default: `2`. Also accepted at the top level |
++| `retry.maxDelaySecs` | integer | Maximum delay between retries, in seconds. Default: `60`. Also accepted at the top level |
++| `retry.multiplier` | number | Backoff multiplier applied after each retry. Default: `2.0`. Also accepted at the top level |
++| `retry.retryClientErrors` | boolean | Opt-in flag to also retry HTTP 401/404 errors that some providers return during transient outages. Default: `false`. Also accepted at the top level |
+ | `models` | map | **Required.** Maps a mode key (`plan`, `build`, or any custom key passed via `-m`) to a model |
+ 
+ ### Model entries
+diff --git a/crates/claude-agent-sdk/Cargo.toml b/crates/claude-agent-sdk/Cargo.toml
+index 223e64b..7f06afa 100644
+--- a/crates/claude-agent-sdk/Cargo.toml
++++ b/crates/claude-agent-sdk/Cargo.toml
+@@ -1,9 +1,9 @@
+ [package]
+-name = "seher-claude-agent-sdk"
+-description = "Rust port of anthropics/claude-agent-sdk-python: drive the Claude Code CLI as an agent runtime"
+ authors.workspace = true
++description = "Rust port of anthropics/claude-agent-sdk-python: drive the Claude Code CLI as an agent runtime"
+ edition.workspace = true
+ license.workspace = true
++name = "seher-claude-agent-sdk"
+ repository.workspace = true
+ version.workspace = true
+ 
+@@ -13,11 +13,19 @@ path = "src/lib.rs"
+ 
+ [dependencies]
+ async-trait.workspace = true
++futures = "0.3"
+ serde.workspace = true
+ serde_json.workspace = true
+ thiserror.workspace = true
+-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "io-util", "process", "sync"] }
+-futures = "0.3"
++tokio = { workspace = true, features = [
++  "rt",
++  "rt-multi-thread",
++  "macros",
++  "time",
++  "io-util",
++  "process",
++  "sync",
++] }
+ 
+ [dev-dependencies]
+ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+diff --git a/crates/seher-cli/Cargo.toml b/crates/seher-cli/Cargo.toml
+index bd9a49f..0500484 100644
+--- a/crates/seher-cli/Cargo.toml
++++ b/crates/seher-cli/Cargo.toml
+@@ -1,9 +1,9 @@
+ [package]
+-name = "seher-cli"
+-description = "Seher CLI: pick the highest-priority coding agent and run a plan/build prompt"
+ authors.workspace = true
++description = "Seher CLI: pick the highest-priority coding agent and run a plan/build prompt"
+ edition.workspace = true
+ license.workspace = true
++name = "seher-cli"
+ repository.workspace = true
+ version.workspace = true
+ 
+@@ -15,9 +15,9 @@ name = "seher"
+ path = "src/main.rs"
+ 
+ [dependencies]
+-seher-sdk = { path = "../seher-sdk", version = "0.0.45" }
+ chrono.workspace = true
+ clap.workspace = true
++seher-sdk = { path = "../seher-sdk", version = "0.0.45" }
+ serde_json.workspace = true
+ tempfile.workspace = true
+ tokio.workspace = true
+diff --git a/crates/seher-cli/src/run_mode.rs b/crates/seher-cli/src/run_mode.rs
+index d59868b..7d52db1 100644
+--- a/crates/seher-cli/src/run_mode.rs
++++ b/crates/seher-cli/src/run_mode.rs
+@@ -4,6 +4,7 @@
+ //! provider name is added to `exclude_providers` and resolution is retried.
+ 
+ use std::path::PathBuf;
++use std::time::{Duration, Instant};
+ 
+ use seher::claude_terminal::{default_transcript_root, encode_transcript_path};
+ use seher::sdk::{
+@@ -84,8 +85,7 @@ pub fn resolve_and_stream(
+         resolve_once(rt, args, mode_key, excluded, &config)
+     };
+     let stream_runner = |resolved: &ResolvedAgent| -> Outcome {
+-        let rx = dispatch_stream(resolved, prompt, system_prompt, args, None, &cancel);
+-        drain_to_stdout(rx, args.timeout, &cancel)
++        stream_with_http_retry(resolved, prompt, system_prompt, args, None, &cancel, logger)
+     };
+     stream_with_retry(args.timeout, logger, resolver, stream_runner)
+ }
+@@ -169,15 +169,15 @@ fn resume_and_stream(
+         resolved.provider, resolved.sdk, resolved.model_id
+     ));
+ 
+-    let rx = dispatch_stream(
++    match stream_with_http_retry(
+         &resolved,
+         prompt,
+         system_prompt,
+         args,
+         Some(resume_id),
+         cancel,
+-    );
+-    match drain_to_stdout(rx, args.timeout, cancel) {
++        logger,
++    ) {
+         Outcome::Done(t) => Ok(t),
+         Outcome::Limit => Err(format!(
+             "provider '{}' is rate-limited; cannot switch providers while resuming session {resume_id}",
+@@ -249,6 +249,66 @@ where
+     }
+ }
+ 
++/// Short polling interval used when sleeping so that cancellation is observed
++/// promptly instead of waiting for the full backoff delay.
++const RETRY_SLEEP_POLL: Duration = Duration::from_millis(50);
++
++/// Sleep for `duration`, returning early if `cancel` is signalled.
++fn sleep_with_cancel(duration: Duration, cancel: &CancelToken) {
++    let start = Instant::now();
++    while let Some(remaining) = duration.checked_sub(start.elapsed()) {
++        if cancel.is_cancelled() {
++            return;
++        }
++        std::thread::sleep(RETRY_SLEEP_POLL.min(remaining));
++    }
++}
++
++/// Run the streaming path for a resolved provider, retrying transient HTTP
++/// errors against the *same* provider before giving up.
++///
++/// This gives the CLI the same exponential-backoff retry behaviour that the
++/// blocking [`seher::sdk::run_for_resolved`] path already has. Rate/usage
++/// limits still surface as [`Outcome::Limit`] so the caller can switch
++/// providers; timeouts and cancellations are not retried.
++fn stream_with_http_retry(
++    resolved: &ResolvedAgent,
++    prompt: &str,
++    system_prompt: Option<&str>,
++    args: &Args,
++    resume: Option<&str>,
++    cancel: &CancelToken,
++    logger: &Logger,
++) -> Outcome {
++    let mut attempt: u32 = 1;
++    loop {
++        let rx = dispatch_stream(resolved, prompt, system_prompt, args, resume, cancel);
++        match drain_to_stdout(rx, args.timeout, cancel) {
++            Outcome::Error(ref message)
++                if resolved.retry.enabled
++                    && attempt < resolved.retry.effective_max_attempts()
++                    && resolved.retry.is_retryable_message(message) =>
++            {
++                let delay = resolved.retry.delay_for_attempt(attempt);
++                logger.warn(&format!(
++                    "Provider '{}' returned a transient API error (attempt {}/{}): {}; retrying in {}s...",
++                    resolved.provider,
++                    attempt,
++                    resolved.retry.effective_max_attempts(),
++                    message,
++                    delay.as_secs()
++                ));
++                sleep_with_cancel(delay, cancel);
++                if cancel.is_cancelled() {
++                    return Outcome::Cancelled;
++                }
++                attempt += 1;
++            }
++            other => return other,
++        }
++    }
++}
++
+ fn resolve_once(
+     rt: &tokio::runtime::Runtime,
+     args: &Args,
+@@ -299,6 +359,7 @@ fn dispatch_stream(
+             system_prompt: system_prompt.map(str::to_string),
+             timeout_ms: args.timeout,
+             cancel: cancel.clone(),
++            on_retry: None,
+         },
+     )
+ }
+@@ -327,6 +388,7 @@ mod tests {
+             sdk: "pi".to_string(),
+             api: None,
+             skills: ResolvedSkillsConfig::default(),
++            retry: seher::sdk::RetryConfig::default(),
+         }
+     }
+ 
+diff --git a/crates/seher-sdk/Cargo.toml b/crates/seher-sdk/Cargo.toml
+index f2567a0..e5640b8 100644
+--- a/crates/seher-sdk/Cargo.toml
++++ b/crates/seher-sdk/Cargo.toml
+@@ -1,9 +1,9 @@
+ [package]
+-name = "seher-sdk"
+-description = "Seher SDK: agent resolution and codexbar-backed rate-limit checks"
+ authors.workspace = true
++description = "Seher SDK: agent resolution and codexbar-backed rate-limit checks"
+ edition.workspace = true
+ license.workspace = true
++name = "seher-sdk"
+ repository.workspace = true
+ version.workspace = true
+ 
+@@ -16,7 +16,11 @@ async-trait.workspace = true
+ chrono.workspace = true
+ claude-agent-sdk.workspace = true
+ dirs.workspace = true
++futures = "0.3"
+ indexmap.workspace = true
++pi_agent_rust = { version = "0.1.18", default-features = false, features = [
++  "sqlite-sessions",
++] }
+ regex.workspace = true
+ serde.workspace = true
+ serde_json.workspace = true
+@@ -24,12 +28,11 @@ serde_yaml.workspace = true
+ tempfile.workspace = true
+ thiserror.workspace = true
+ tokio.workspace = true
+-zzsleep.workspace = true
+-futures = "0.3"
+-pi_agent_rust = { version = "0.1.18", default-features = false, features = ["sqlite-sessions"] }
+-uuid = { version = "1", features = ["v4"] }
++tracing.workspace = true
+ unicode-normalization = "0.1"
+ unicode-width = "0.2"
++uuid = { version = "1", features = ["v4"] }
++zzsleep.workspace = true
+ 
+ [[example]]
+ name = "pi_mvp"
+diff --git a/crates/seher-sdk/src/claude_headless/runner.rs b/crates/seher-sdk/src/claude_headless/runner.rs
+index de9f4b7..db97875 100644
+--- a/crates/seher-sdk/src/claude_headless/runner.rs
++++ b/crates/seher-sdk/src/claude_headless/runner.rs
+@@ -308,7 +308,11 @@ mod tests {
+             use std::io::Write as _;
+             let mut f = std::fs::File::create(&wrapper_path).expect("create wrapper");
+             writeln!(f, "#!/bin/sh").expect("write shebang");
+-            writeln!(f, "sleep 60").expect("write sleep");
++            // Use `exec` so the shell process is replaced by `sleep`. Otherwise
++            // `child.kill()` terminates the shell but leaves the `sleep`
++            // grandchild orphaned, which keeps the reader threads (and the test
++            // process) alive until the full 60 seconds elapse.
++            writeln!(f, "exec sleep 60").expect("write sleep");
+             // f drops here, closing the FD before exec
+         }
+         let mut perms = std::fs::metadata(&wrapper_path)
+diff --git a/crates/seher-sdk/src/claude_terminal/sdk.rs b/crates/seher-sdk/src/claude_terminal/sdk.rs
+index 8c828fc..4483238 100644
+--- a/crates/seher-sdk/src/claude_terminal/sdk.rs
++++ b/crates/seher-sdk/src/claude_terminal/sdk.rs
+@@ -9,6 +9,7 @@ use super::types::{
+     ClaudeTranscriptReader, FindClaudeSessionOptions, TerminalBackend, TerminalSession,
+     TerminalStartOptions, WaitForAssistantResponseOptions,
+ };
++use crate::sdk::util::encode_session_id;
+ 
+ const DEFAULT_TIMEOUT_MS: u64 = 15 * 60 * 1000;
+ const DEFAULT_POLL_INTERVAL_MS: u64 = 500;
+@@ -343,7 +344,7 @@ impl ClaudeTerminalSdk {
+ pub fn encode_transcript_path(root: &str, cwd: &str, session_id: &str) -> String {
+     std::path::Path::new(root)
+         .join(encode_project_dir(cwd))
+-        .join(format!("{session_id}.jsonl"))
++        .join(format!("{}.jsonl", encode_session_id(session_id)))
+         .to_string_lossy()
+         .into_owned()
+ }
+diff --git a/crates/seher-sdk/src/codexbar/client.rs b/crates/seher-sdk/src/codexbar/client.rs
+index 17bba68..136e519 100644
+--- a/crates/seher-sdk/src/codexbar/client.rs
++++ b/crates/seher-sdk/src/codexbar/client.rs
+@@ -6,11 +6,13 @@
+ //! `process` feature. A hard timeout is enforced by polling `try_wait` and
+ //! killing the child once the deadline passes.
+ 
+-use std::os::unix::process::CommandExt;
+ use std::path::{Path, PathBuf};
+ use std::process::{Command, Stdio};
+ use std::time::{Duration, Instant};
+ 
++#[cfg(unix)]
++use std::os::unix::process::CommandExt;
++
+ use super::errors::CodexBarError;
+ use super::types::CodexBarUsageResponse;
+ 
+@@ -129,16 +131,20 @@ fn run_blocking(
+     timeout: Duration,
+     provider: &str,
+ ) -> Result<RawOutput, CodexBarError> {
+-    let mut child = match Command::new(bin)
+-        .args(args)
++    let mut cmd = Command::new(bin);
++    cmd.args(args)
+         .stdin(Stdio::null())
+         .stdout(Stdio::piped())
+-        .stderr(Stdio::piped())
+-        // New process group so terminal-generated signals (e.g. Ctrl-C SIGINT)
+-        // don't reach codexbar; our timeout kill targets the child directly.
+-        .process_group(0)
+-        .spawn()
++        .stderr(Stdio::piped());
++    // New process group so terminal-generated signals (e.g. Ctrl-C SIGINT)
++    // don't reach codexbar; our timeout kill targets the child directly.
++    // This is only available on Unix; on other platforms we spawn without it.
++    #[cfg(unix)]
+     {
++        cmd.process_group(0);
++    }
++
++    let mut child = match cmd.spawn() {
+         Ok(c) => c,
+         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+             return Err(CodexBarError::NotFound {
+diff --git a/crates/seher-sdk/src/sdk/config.rs b/crates/seher-sdk/src/sdk/config.rs
+index ebadbcb..c8dd7f4 100644
+--- a/crates/seher-sdk/src/sdk/config.rs
++++ b/crates/seher-sdk/src/sdk/config.rs
+@@ -2,9 +2,13 @@
+ //!
+ //! Mirrors `seher-ts/packages/sdk/src/types.ts` and the validator in `validate.ts`.
+ 
++use std::time::Duration;
++
+ use indexmap::IndexMap;
+ use serde::{Deserialize, Serialize};
+ 
++use crate::sdk::{is_client_error_retryable, is_transient_http_error};
++
+ /// Per-provider API config forwarded to the underlying SDK constructor.
+ #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+ pub struct ProviderApi {
+@@ -39,6 +43,113 @@ impl Default for ResolvedSkillsConfig {
+     }
+ }
+ 
++/// Retry policy configuration.
++///
++/// Provider-level settings override root-level settings; missing values fall
++/// back to the defaults below.
++#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
++pub struct RetryConfig {
++    #[serde(default = "RetryConfig::default_enabled", rename = "enabled")]
++    pub enabled: bool,
++    #[serde(default = "RetryConfig::default_max_attempts", rename = "maxAttempts")]
++    pub max_attempts: u32,
++    #[serde(
++        default = "RetryConfig::default_initial_delay_secs",
++        rename = "initialDelaySecs"
++    )]
++    pub initial_delay_secs: u64,
++    #[serde(
++        default = "RetryConfig::default_max_delay_secs",
++        rename = "maxDelaySecs"
++    )]
++    pub max_delay_secs: u64,
++    #[serde(default = "RetryConfig::default_multiplier", rename = "multiplier")]
++    pub multiplier: f64,
++    #[serde(
++        default = "RetryConfig::default_retry_client_errors",
++        rename = "retryClientErrors"
++    )]
++    pub retry_client_errors: bool,
++}
++
++impl RetryConfig {
++    fn default_enabled() -> bool {
++        true
++    }
++
++    fn default_max_attempts() -> u32 {
++        5
++    }
++
++    fn default_initial_delay_secs() -> u64 {
++        2
++    }
++
++    fn default_max_delay_secs() -> u64 {
++        60
++    }
++
++    fn default_multiplier() -> f64 {
++        2.0
++    }
++
++    fn default_retry_client_errors() -> bool {
++        false
++    }
++
++    /// Return a sane `max_attempts` value even when a user bypasses schema
++    /// validation and supplies `0`.
++    #[must_use]
++    pub fn effective_max_attempts(&self) -> u32 {
++        self.max_attempts.max(1)
++    }
++
++    /// Whether a free-form error message describes a failure that should be
++    /// retried under this policy.
++    #[must_use]
++    pub fn is_retryable_message(&self, message: &str) -> bool {
++        is_transient_http_error(message)
++            || (self.retry_client_errors && is_client_error_retryable(message))
++    }
++
++    /// Return a sane multiplier value even when a user bypasses schema
++    /// validation and supplies a value below `1.0`. Values below `1.0` would
++    /// decay the delay instead of backing off, so we clamp to `1.0`.
++    #[must_use]
++    pub fn effective_multiplier(&self) -> f64 {
++        self.multiplier.max(1.0)
++    }
++
++    /// Compute the backoff delay for a given 1-based attempt number.
++    #[must_use]
++    #[expect(
++        clippy::cast_precision_loss,
++        clippy::cast_possible_truncation,
++        clippy::cast_sign_loss,
++        reason = "delay values are small configuration integers; loss/truncation is acceptable"
++    )]
++    pub fn delay_for_attempt(&self, attempt: u32) -> Duration {
++        let exponent = i32::try_from(attempt.saturating_sub(1)).unwrap_or(i32::MAX);
++        let delay_secs =
++            self.initial_delay_secs as f64 * self.effective_multiplier().powi(exponent);
++        let clamped = delay_secs.min(self.max_delay_secs as f64) as u64;
++        Duration::from_secs(clamped)
++    }
++}
++
++impl Default for RetryConfig {
++    fn default() -> Self {
++        Self {
++            enabled: Self::default_enabled(),
++            max_attempts: Self::default_max_attempts(),
++            initial_delay_secs: Self::default_initial_delay_secs(),
++            max_delay_secs: Self::default_max_delay_secs(),
++            multiplier: Self::default_multiplier(),
++            retry_client_errors: Self::default_retry_client_errors(),
++        }
++    }
++}
++
+ /// Per-mode model entry inside a [`ProviderEntry`].
+ #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+ pub struct ModelEntry {
+@@ -80,11 +191,13 @@ pub(crate) struct ProviderEntryRaw {
+     pub api: Option<ProviderApi>,
+     #[serde(default)]
+     pub skills: Option<SkillsConfig>,
++    #[serde(default)]
++    pub retry: Option<RetryConfig>,
+     pub models: IndexMap<String, ModelEntryRaw>,
+ }
+ 
+ /// A single provider in the YAML `providers` map (after normalization).
+-#[derive(Debug, Clone, PartialEq, Eq)]
++#[derive(Debug, Clone, PartialEq)]
+ pub struct ProviderEntry {
+     /// YAML map key as written in the config (stable label).
+     pub key: String,
+@@ -93,13 +206,16 @@ pub struct ProviderEntry {
+     /// Resolved provider name. Equals the explicit `provider` field when specified
+     /// in YAML, otherwise falls back to `key`.
+     pub provider: String,
+-    /// Underlying SDK kind. Always `"pi"` in this implementation (pi is the only
+-    /// execution engine); kept as a string for forward compatibility.
++    /// Underlying SDK kind (e.g. `"pi"`, `"claude"`, `"claude-terminal"`,
++    /// `"claude-headless"`). Defaults to `"pi"` when omitted in YAML; kept as a
++    /// string for forward compatibility.
+     pub sdk: String,
+     /// Provider-level priority shorthand.
+     pub priority: Option<i32>,
+     pub api: Option<ProviderApi>,
+     pub skills: Option<SkillsConfig>,
++    /// Provider-level retry policy override.
++    pub retry: Option<RetryConfig>,
+     /// Mode -> model entry. Keys include `plan`, `build`, plus user-defined keys.
+     pub models: IndexMap<String, ModelEntry>,
+ }
+@@ -111,13 +227,16 @@ pub(crate) struct ConfigRaw {
+     pub providers: IndexMap<String, ProviderEntryRaw>,
+     #[serde(default)]
+     pub skills: Option<SkillsConfig>,
++    #[serde(default)]
++    pub retry: Option<RetryConfig>,
+ }
+ 
+ /// Normalized config root.
+-#[derive(Debug, Clone, Default, PartialEq, Eq)]
++#[derive(Debug, Clone, Default, PartialEq)]
+ pub struct Config {
+     pub providers: Vec<ProviderEntry>,
+     pub skills: Option<SkillsConfig>,
++    pub retry: Option<RetryConfig>,
+ }
+ 
+ impl Config {
+@@ -134,6 +253,17 @@ impl Config {
+                 .unwrap_or(true),
+         }
+     }
++
++    /// Resolve effective retry config for a provider entry, falling back to root,
++    /// then to hard-coded defaults.
++    #[must_use]
++    pub fn resolve_retry(&self, entry: &ProviderEntry) -> RetryConfig {
++        match (&entry.retry, &self.retry) {
++            (Some(provider_retry), _) => provider_retry.clone(),
++            (None, Some(root_retry)) => root_retry.clone(),
++            (None, None) => RetryConfig::default(),
++        }
++    }
+ }
+ 
+ impl From<ConfigRaw> for Config {
+@@ -155,6 +285,7 @@ impl From<ConfigRaw> for Config {
+                     priority: p.priority,
+                     api: p.api,
+                     skills: p.skills,
++                    retry: p.retry,
+                     models,
+                 }
+             })
+@@ -162,12 +293,13 @@ impl From<ConfigRaw> for Config {
+         Self {
+             providers,
+             skills: raw.skills,
++            retry: raw.retry,
+         }
+     }
+ }
+ 
+ /// Output of [`resolve_agent`](crate::sdk::resolve::resolve_agent): which provider/model to use.
+-#[derive(Debug, Clone, PartialEq, Eq)]
++#[derive(Debug, Clone, PartialEq)]
+ pub struct ResolvedAgent {
+     /// Resolved provider name (e.g., "claude", "zai").
+     pub provider: String,
+@@ -181,6 +313,8 @@ pub struct ResolvedAgent {
+     pub api: Option<ProviderApi>,
+     /// Skill discovery flags resolved from per-provider > root > defaults.
+     pub skills: ResolvedSkillsConfig,
++    /// Retry policy resolved from per-provider > root > defaults.
++    pub retry: RetryConfig,
+ }
+ 
+ #[cfg(test)]
+@@ -280,6 +414,7 @@ providers:
+             priority: None,
+             api: None,
+             skills: None,
++            retry: None,
+             models: IndexMap::new(),
+         };
+         assert!(cfg.resolve_skills(&entry).include_claude);
+@@ -292,6 +427,7 @@ providers:
+             skills: Some(SkillsConfig {
+                 include_claude: Some(false),
+             }),
++            retry: None,
+         };
+         let entry = ProviderEntry {
+             key: "x".into(),
+@@ -303,8 +439,197 @@ providers:
+             skills: Some(SkillsConfig {
+                 include_claude: Some(true),
+             }),
++            retry: None,
+             models: IndexMap::new(),
+         };
+         assert!(cfg.resolve_skills(&entry).include_claude);
+     }
++
++    // -----------------------------------------------------------------------
++    // RetryConfig parsing and resolution
++    // -----------------------------------------------------------------------
++
++    #[test]
++    fn retry_config_defaults() {
++        let cfg = RetryConfig::default();
++        assert!(cfg.enabled);
++        assert_eq!(cfg.max_attempts, 5);
++        assert_eq!(cfg.initial_delay_secs, 2);
++        assert_eq!(cfg.max_delay_secs, 60);
++        assert!((cfg.multiplier - 2.0).abs() < f64::EPSILON);
++        assert!(!cfg.retry_client_errors);
++    }
++
++    #[test]
++    fn retry_config_parses_camel_case_yaml() {
++        let yaml = "
++enabled: false
++maxAttempts: 3
++initialDelaySecs: 1
++maxDelaySecs: 10
++multiplier: 1.5
++retryClientErrors: true
++";
++        let parsed: RetryConfig = serde_yaml::from_str(yaml).expect("parse");
++        assert!(!parsed.enabled);
++        assert_eq!(parsed.max_attempts, 3);
++        assert_eq!(parsed.initial_delay_secs, 1);
++        assert_eq!(parsed.max_delay_secs, 10);
++        assert!((parsed.multiplier - 1.5).abs() < f64::EPSILON);
++        assert!(parsed.retry_client_errors);
++    }
++
++    #[test]
++    fn retry_config_partial_yaml_uses_defaults_for_missing_fields() {
++        let yaml = "maxAttempts: 2";
++        let parsed: RetryConfig = serde_yaml::from_str(yaml).expect("parse");
++        assert!(parsed.enabled);
++        assert_eq!(parsed.max_attempts, 2);
++        assert!(!parsed.retry_client_errors);
++    }
++
++    #[test]
++    fn retry_resolution_uses_defaults_when_no_config() {
++        let cfg = Config::default();
++        let entry = ProviderEntry {
++            key: "x".into(),
++            order: 0,
++            provider: "x".into(),
++            sdk: "pi".into(),
++            priority: None,
++            api: None,
++            skills: None,
++            retry: None,
++            models: IndexMap::new(),
++        };
++        let resolved = cfg.resolve_retry(&entry);
++        assert!(resolved.enabled);
++        assert_eq!(resolved.max_attempts, 5);
++        assert!(!resolved.retry_client_errors);
++    }
++
++    #[test]
++    fn retry_resolution_root_overrides_defaults() {
++        let cfg = Config {
++            providers: vec![],
++            skills: None,
++            retry: Some(RetryConfig {
++                enabled: false,
++                ..RetryConfig::default()
++            }),
++        };
++        let entry = ProviderEntry {
++            key: "x".into(),
++            order: 0,
++            provider: "x".into(),
++            sdk: "pi".into(),
++            priority: None,
++            api: None,
++            skills: None,
++            retry: None,
++            models: IndexMap::new(),
++        };
++        assert!(!cfg.resolve_retry(&entry).enabled);
++    }
++
++    #[test]
++    fn retry_resolution_provider_overrides_root() {
++        let cfg = Config {
++            providers: vec![],
++            skills: None,
++            retry: Some(RetryConfig {
++                enabled: false,
++                ..RetryConfig::default()
++            }),
++        };
++        let entry = ProviderEntry {
++            key: "x".into(),
++            order: 0,
++            provider: "x".into(),
++            sdk: "pi".into(),
++            priority: None,
++            api: None,
++            skills: None,
++            retry: Some(RetryConfig {
++                enabled: true,
++                retry_client_errors: true,
++                ..RetryConfig::default()
++            }),
++            models: IndexMap::new(),
++        };
++        let resolved = cfg.resolve_retry(&entry);
++        assert!(resolved.enabled);
++        assert!(resolved.retry_client_errors);
++    }
++
++    #[test]
++    fn retry_resolution_provider_replaces_root_entirely() {
++        // Per the design, RetryConfig is treated as a whole Option<RetryConfig>;
++        // a provider-level override does NOT merge individual fields with root.
++        let cfg = Config {
++            providers: vec![],
++            skills: None,
++            retry: Some(RetryConfig {
++                max_attempts: 3,
++                ..RetryConfig::default()
++            }),
++        };
++        let entry = ProviderEntry {
++            key: "x".into(),
++            order: 0,
++            provider: "x".into(),
++            sdk: "pi".into(),
++            priority: None,
++            api: None,
++            skills: None,
++            retry: Some(RetryConfig {
++                enabled: false,
++                ..RetryConfig::default()
++            }),
++            models: IndexMap::new(),
++        };
++        let resolved = cfg.resolve_retry(&entry);
++        assert!(!resolved.enabled);
++        // max_attempts comes from provider defaults, NOT from root's 3.
++        assert_eq!(resolved.max_attempts, 5);
++    }
++
++    #[test]
++    fn retry_config_roundtrips_through_yaml() {
++        let original = RetryConfig {
++            enabled: true,
++            max_attempts: 7,
++            initial_delay_secs: 3,
++            max_delay_secs: 120,
++            multiplier: 3.0,
++            retry_client_errors: true,
++        };
++        let yaml = serde_yaml::to_string(&original).expect("serialize");
++        let parsed: RetryConfig = serde_yaml::from_str(&yaml).expect("deserialize");
++        assert_eq!(parsed.enabled, original.enabled);
++        assert_eq!(parsed.max_attempts, original.max_attempts);
++        assert_eq!(parsed.initial_delay_secs, original.initial_delay_secs);
++        assert_eq!(parsed.max_delay_secs, original.max_delay_secs);
++        assert!(
++            (parsed.multiplier - original.multiplier).abs() < f64::EPSILON,
++            "multiplier should round-trip exactly: got {}, expected {}",
++            parsed.multiplier,
++            original.multiplier
++        );
++        assert_eq!(parsed.retry_client_errors, original.retry_client_errors);
++    }
++
++    #[test]
++    fn retry_config_multiplier_below_one_is_clamped() {
++        let cfg = RetryConfig {
++            multiplier: 0.5,
++            ..RetryConfig::default()
++        };
++        assert!((cfg.effective_multiplier() - 1.0).abs() < f64::EPSILON);
++        // With an initial delay of 2s, attempts 1..=3 should all be 2s instead
++        // of decaying to 1s / 0.5s.
++        assert_eq!(cfg.delay_for_attempt(1).as_secs(), 2);
++        assert_eq!(cfg.delay_for_attempt(2).as_secs(), 2);
++        assert_eq!(cfg.delay_for_attempt(3).as_secs(), 2);
++    }
+ }
+diff --git a/crates/seher-sdk/src/sdk/dispatch.rs b/crates/seher-sdk/src/sdk/dispatch.rs
+index 74a883e..2230045 100644
+--- a/crates/seher-sdk/src/sdk/dispatch.rs
++++ b/crates/seher-sdk/src/sdk/dispatch.rs
+@@ -8,18 +8,24 @@
+ //! This module centralises the dispatch logic that previously lived in
+ //! `seher_cli::run_mode::dispatch_stream`.
+ 
++use std::sync::Arc;
+ use std::sync::mpsc::Receiver;
++use std::time::Duration;
+ 
+ use crate::claude_agent::{ClaudeAgentRunnerConfig, stream_agent};
+ use crate::claude_headless::{ClaudeHeadlessRunner, ClaudeHeadlessRunnerConfig, stream_headless};
+ use crate::claude_terminal::{new_sdk_with_defaults, stream_via_thread};
+ use crate::sdk::{
+-    CancelToken, PiRunner, PiRunnerOptions, ResolvedAgent, RunError, SeherTool, StreamChunk,
+-    sdk_supports_tools, split_model_ref, split_thinking_suffix,
++    CancelToken, PiRunner, PiRunnerOptions, ResolvedAgent, RetryConfig, RunError, SeherTool,
++    StreamChunk, sdk_supports_tools, split_model_ref, split_thinking_suffix,
+ };
+ 
+ /// Options forwarded to the chosen runner backend.
+-#[derive(Default)]
++#[derive(Default, Clone)]
++#[expect(
++    clippy::type_complexity,
++    reason = "callback type is intentionally simple"
++)]
+ pub struct RunAgentOptions {
+     /// Working directory the agent operates in.
+     pub working_dir: Option<std::path::PathBuf>,
+@@ -43,6 +49,10 @@ pub struct RunAgentOptions {
+     /// runner should abort as soon as possible. Currently forwarded to the
+     /// `claude-headless` backend; other backends ignore it.
+     pub cancel: CancelToken,
++    /// Optional callback invoked on each retry. Receives the 1-based attempt
++    /// number and a short human-readable summary of the error that triggered
++    /// the retry (without the partial-output length suffix).
++    pub on_retry: Option<Arc<dyn Fn(u32, &str) + Send + Sync>>,
+ }
+ 
+ /// Output of a completed [`run_for_resolved`] call.
+@@ -279,33 +289,120 @@ pub fn stream_for_resolved(
+     }
+ }
+ 
++/// Internal retry loop used by [`run_for_resolved`].
++///
++/// Retries [`RunError::Limit`] (rate/usage limits are always transient) and
++/// [`RunError::Other`] messages classified as transient HTTP errors. Note that
++/// [`RunError::Limit`] is retried against the *same* provider; callers that want
++/// provider fallback should handle the limit error themselves or use the async
++/// resolution path.
++/// [`RunError::Timeout`] is surfaced immediately so callers can handle timeout
++/// configuration themselves.
++///
++/// The `sleep_fn` parameter lets tests swap real sleeping for a no-op. The real
++/// implementation uses [`std::thread::sleep`], which blocks the calling thread.
++#[expect(
++    clippy::needless_pass_by_value,
++    clippy::type_complexity,
++    reason = "mirrors the public run_for_resolved signature; callback type is intentionally simple"
++)]
++pub(crate) fn run_with_retry_inner<F, S>(
++    mut run: F,
++    prompt: String,
++    opts: RunAgentOptions,
++    retry: &RetryConfig,
++    on_retry: Option<&dyn Fn(u32, &str)>,
++    mut sleep_fn: S,
++) -> Result<RunOutput, RunError>
++where
++    F: FnMut(String, RunAgentOptions) -> Result<RunOutput, RunError>,
++    S: FnMut(Duration),
++{
++    let mut attempt = 1;
++    loop {
++        let result = run(prompt.clone(), opts.clone());
++        match result {
++            Ok(output) => return Ok(output),
++            Err(err) => {
++                if attempt >= retry.effective_max_attempts() || !retry.enabled {
++                    return Err(err);
++                }
++                match &err {
++                    RunError::Timeout { .. } => return Err(err),
++                    RunError::Limit { .. } => {}
++                    RunError::Other { message, .. } => {
++                        if !retry.is_retryable_message(message) {
++                            return Err(err);
++                        }
++                    }
++                }
++                let retry_message = match &err {
++                    RunError::Other { message, .. } => message.clone(),
++                    RunError::Limit { error, .. } => error.to_string(),
++                    RunError::Timeout { error, .. } => error.to_string(),
++                };
++                if let Some(cb) = on_retry {
++                    cb(attempt, &retry_message);
++                }
++                let delay = retry.delay_for_attempt(attempt);
++                sleep_fn(delay);
++                attempt += 1;
++            }
++        }
++    }
++}
++
+ /// Run a prompt through the resolved SDK and return the full output.
+ ///
+ /// Internally calls [`stream_for_resolved`] and folds the chunks via
+-/// [`fold_stream`].
++/// [`fold_stream`], retrying transient failures according to `resolved.retry`.
++/// This function is synchronous and blocks the calling thread while waiting
++/// between retry attempts. Rate-limit errors are retried against the *same*
++/// provider; use the async resolution APIs if you need provider fallback.
+ ///
+ /// # Errors
+ ///
+-/// Returns [`RunError::Limit`] on rate/usage limits, [`RunError::Other`] for
+-/// all other failures.
++/// Returns [`RunError::Limit`] after retrying with exponential backoff,
++/// [`RunError::Other`] for non-retryable failures, and [`RunError::Timeout`]
++/// without retry.
+ pub fn run_for_resolved(
+     resolved: &ResolvedAgent,
+     prompt: String,
+     opts: RunAgentOptions,
+ ) -> Result<RunOutput, RunError> {
+-    let rx = stream_for_resolved(resolved, prompt, opts);
+-    fold_stream(&rx)
++    let on_retry_holder = opts.on_retry.clone();
++    #[expect(
++        clippy::type_complexity,
++        reason = "callback type is intentionally simple"
++    )]
++    let on_retry: Option<&dyn Fn(u32, &str)> =
++        on_retry_holder.as_deref().map(|f| f as &dyn Fn(u32, &str));
++    run_with_retry_inner(
++        |p, o| {
++            let rx = stream_for_resolved(resolved, p, o);
++            fold_stream(&rx)
++        },
++        prompt,
++        opts,
++        &resolved.retry,
++        on_retry,
++        std::thread::sleep,
++    )
+ }
+ 
+ #[cfg(test)]
+-#[expect(clippy::expect_used, reason = "tests may panic on unexpected fixtures")]
++#[expect(
++    clippy::expect_used,
++    clippy::unwrap_used,
++    reason = "tests may panic on unexpected fixtures"
++)]
+ mod tests {
+     use std::sync::Arc;
+     use std::sync::mpsc::channel;
+ 
+     use super::*;
+-    use crate::sdk::config::ResolvedSkillsConfig;
+-    use crate::sdk::errors::LimitError;
++    use crate::sdk::config::{ResolvedSkillsConfig, RetryConfig};
++    use crate::sdk::errors::{LimitError, TimeoutError};
+ 
+     fn make_resolved(sdk: &str, provider: &str, model_id: &str) -> ResolvedAgent {
+         ResolvedAgent {
+@@ -315,6 +412,7 @@ mod tests {
+             sdk: sdk.to_string(),
+             api: None,
+             skills: ResolvedSkillsConfig::default(),
++            retry: RetryConfig::default(),
+         }
+     }
+ 
+@@ -590,4 +688,406 @@ mod tests {
+             other => panic!("expected RunError::Other, got {other:?}"),
+         }
+     }
++
++    // -----------------------------------------------------------------------
++    // run_with_retry_inner
++    // -----------------------------------------------------------------------
++
++    fn retry_config_with_client_errors() -> RetryConfig {
++        RetryConfig {
++            retry_client_errors: true,
++            ..RetryConfig::default()
++        }
++    }
++
++    fn other_error(message: &str) -> RunError {
++        RunError::Other {
++            message: message.to_string(),
++            partial: String::new(),
++        }
++    }
++
++    fn limit_error() -> RunError {
++        RunError::Limit {
++            error: LimitError {
++                provider: "claude".to_string(),
++                reset_at: None,
++            },
++            partial: String::new(),
++        }
++    }
++
++    fn timeout_error() -> RunError {
++        RunError::Timeout {
++            error: TimeoutError {
++                ms: 1000,
++                label: "test",
++            },
++            partial: String::new(),
++        }
++    }
++
++    #[test]
++    fn retry_succeeds_on_first_attempt() {
++        // Given: a run that always succeeds
++        // When: run_with_retry_inner is called
++        // Then: it returns Ok immediately with no retries
++        let run = |_prompt: String, _opts: RunAgentOptions| {
++            Ok(RunOutput {
++                text: "hello".to_string(),
++                session_id: None,
++            })
++        };
++        let result = run_with_retry_inner(
++            run,
++            "prompt".to_string(),
++            RunAgentOptions::default(),
++            &RetryConfig::default(),
++            None,
++            |_| {},
++        );
++        assert_eq!(result.unwrap().text, "hello");
++    }
++
++    #[test]
++    fn retry_limit_error_then_success() {
++        // Given: a run that fails with Limit once then succeeds
++        // When: run_with_retry_inner is called
++        // Then: it retries once and returns Ok
++        let mut calls = 0;
++        let run = |_prompt: String, _opts: RunAgentOptions| {
++            calls += 1;
++            if calls == 1 {
++                Err(limit_error())
++            } else {
++                Ok(RunOutput {
++                    text: "ok".to_string(),
++                    session_id: None,
++                })
++            }
++        };
++        let result = run_with_retry_inner(
++            run,
++            "prompt".to_string(),
++            RunAgentOptions::default(),
++            &RetryConfig::default(),
++            None,
++            |_| {},
++        );
++        assert_eq!(result.unwrap().text, "ok");
++        assert_eq!(calls, 2);
++    }
++
++    #[test]
++    fn retry_401_with_client_errors_enabled_then_success() {
++        // Given: retry_client_errors is true and a 401 occurs once
++        // When: run_with_retry_inner is called
++        // Then: it retries and succeeds
++        let mut calls = 0;
++        let run = |_prompt: String, _opts: RunAgentOptions| {
++            calls += 1;
++            if calls == 1 {
++                Err(other_error("Anthropic API error (HTTP 401): auth_error"))
++            } else {
++                Ok(RunOutput {
++                    text: "ok".to_string(),
++                    session_id: None,
++                })
++            }
++        };
++        let result = run_with_retry_inner(
++            run,
++            "prompt".to_string(),
++            RunAgentOptions::default(),
++            &retry_config_with_client_errors(),
++            None,
++            |_| {},
++        );
++        assert_eq!(result.unwrap().text, "ok");
++        assert_eq!(calls, 2);
++    }
++
++    #[test]
++    fn retry_401_without_client_errors_fails_immediately() {
++        // Given: retry_client_errors is false (default) and a 401 occurs
++        // When: run_with_retry_inner is called
++        // Then: it returns the error without retrying
++        let mut calls = 0;
++        let run = |_prompt: String, _opts: RunAgentOptions| {
++            calls += 1;
++            Err(other_error("Anthropic API error (HTTP 401): auth_error"))
++        };
++        let result = run_with_retry_inner(
++            run,
++            "prompt".to_string(),
++            RunAgentOptions::default(),
++            &RetryConfig::default(),
++            None,
++            |_| {},
++        );
++        assert!(result.is_err());
++        assert_eq!(calls, 1);
++    }
++
++    #[test]
++    fn retry_404_with_client_errors_enabled_then_success() {
++        // Given: retry_client_errors is true and a 404 occurs once
++        // When: run_with_retry_inner is called
++        // Then: it retries and succeeds
++        let mut calls = 0;
++        let run = |_prompt: String, _opts: RunAgentOptions| {
++            calls += 1;
++            if calls == 1 {
++                Err(other_error("Anthropic API error (HTTP 404): not found"))
++            } else {
++                Ok(RunOutput {
++                    text: "ok".to_string(),
++                    session_id: None,
++                })
++            }
++        };
++        let result = run_with_retry_inner(
++            run,
++            "prompt".to_string(),
++            RunAgentOptions::default(),
++            &retry_config_with_client_errors(),
++            None,
++            |_| {},
++        );
++        assert_eq!(result.unwrap().text, "ok");
++        assert_eq!(calls, 2);
++    }
++
++    #[test]
++    fn retry_404_without_client_errors_fails_immediately() {
++        // Given: retry_client_errors is false (default) and a 404 occurs
++        // When: run_with_retry_inner is called
++        // Then: it returns the error without retrying
++        let mut calls = 0;
++        let run = |_prompt: String, _opts: RunAgentOptions| {
++            calls += 1;
++            Err(other_error("Anthropic API error (HTTP 404): not found"))
++        };
++        let result = run_with_retry_inner(
++            run,
++            "prompt".to_string(),
++            RunAgentOptions::default(),
++            &RetryConfig::default(),
++            None,
++            |_| {},
++        );
++        assert!(result.is_err());
++        assert_eq!(calls, 1);
++    }
++
++    #[test]
++    fn retry_500_always_retries_regardless_of_client_error_flag() {
++        // Given: a 500 occurs once and retry_client_errors is false
++        // When: run_with_retry_inner is called
++        // Then: it retries anyway because 5xx are always transient
++        let mut calls = 0;
++        let run = |_prompt: String, _opts: RunAgentOptions| {
++            calls += 1;
++            if calls == 1 {
++                Err(other_error("Anthropic API error (HTTP 500): internal"))
++            } else {
++                Ok(RunOutput {
++                    text: "ok".to_string(),
++                    session_id: None,
++                })
++            }
++        };
++        let result = run_with_retry_inner(
++            run,
++            "prompt".to_string(),
++            RunAgentOptions::default(),
++            &RetryConfig::default(),
++            None,
++            |_| {},
++        );
++        assert_eq!(result.unwrap().text, "ok");
++        assert_eq!(calls, 2);
++    }
++
++    #[test]
++    fn retry_403_fails_immediately() {
++        // Given: a 403 occurs
++        // When: run_with_retry_inner is called
++        // Then: it returns the error without retrying
++        let mut calls = 0;
++        let run = |_prompt: String, _opts: RunAgentOptions| {
++            calls += 1;
++            Err(other_error("Anthropic API error (HTTP 403): forbidden"))
++        };
++        let result = run_with_retry_inner(
++            run,
++            "prompt".to_string(),
++            RunAgentOptions::default(),
++            &retry_config_with_client_errors(),
++            None,
++            |_| {},
++        );
++        assert!(result.is_err());
++        assert_eq!(calls, 1);
++    }
++
++    #[test]
++    fn retry_disabled_fails_immediately_on_transient_error() {
++        // Given: retries are disabled and a transient 429 occurs
++        // When: run_with_retry_inner is called
++        // Then: it returns the error without retrying
++        let mut calls = 0;
++        let run = |_prompt: String, _opts: RunAgentOptions| {
++            calls += 1;
++            Err(other_error("Anthropic API error (HTTP 429): rate limited"))
++        };
++        let cfg = RetryConfig {
++            enabled: false,
++            ..RetryConfig::default()
++        };
++        let result = run_with_retry_inner(
++            run,
++            "prompt".to_string(),
++            RunAgentOptions::default(),
++            &cfg,
++            None,
++            |_| {},
++        );
++        assert!(result.is_err());
++        assert_eq!(calls, 1);
++    }
++
++    #[test]
++    fn retry_exhausted_returns_last_error() {
++        // Given: every attempt fails with a transient error and max_attempts is 3
++        // When: run_with_retry_inner is called
++        // Then: it returns the last error after 3 attempts
++        let mut calls = 0;
++        let run = |_prompt: String, _opts: RunAgentOptions| {
++            calls += 1;
++            Err(other_error(&format!("HTTP 500 attempt {calls}")))
++        };
++        let cfg = RetryConfig {
++            max_attempts: 3,
++            ..RetryConfig::default()
++        };
++        let result = run_with_retry_inner(
++            run,
++            "prompt".to_string(),
++            RunAgentOptions::default(),
++            &cfg,
++            None,
++            |_| {},
++        );
++        match result {
++            Err(RunError::Other { message, .. }) => {
++                assert!(message.contains("attempt 3"), "got: {message}");
++            }
++            other => panic!("expected attempt 3 error, got {other:?}"),
++        }
++        assert_eq!(calls, 3);
++    }
++
++    #[test]
++    fn retry_timeout_fails_immediately() {
++        // Given: a timeout occurs
++        // When: run_with_retry_inner is called
++        // Then: it returns the error without retrying
++        let mut calls = 0;
++        let run = |_prompt: String, _opts: RunAgentOptions| {
++            calls += 1;
++            Err(timeout_error())
++        };
++        let result = run_with_retry_inner(
++            run,
++            "prompt".to_string(),
++            RunAgentOptions::default(),
++            &RetryConfig::default(),
++            None,
++            |_| {},
++        );
++        assert!(result.is_err());
++        assert_eq!(calls, 1);
++    }
++
++    #[test]
++    fn retry_delay_doubles_each_attempt_until_max() {
++        // Given: a run that always fails transiently and a retry config with
++        // initialDelaySecs=2, multiplier=2, maxDelaySecs=60
++        // When: run_with_retry_inner is called
++        // Then: sleep durations are 2s, 4s, 8s, 16s, ... clamped at 60s
++        let run = |_prompt: String, _opts: RunAgentOptions| Err(other_error("HTTP 500"));
++        let mut sleeps: Vec<u64> = Vec::new();
++        let cfg = RetryConfig {
++            max_attempts: 6,
++            ..RetryConfig::default()
++        };
++        let _ = run_with_retry_inner(
++            run,
++            "prompt".to_string(),
++            RunAgentOptions::default(),
++            &cfg,
++            None,
++            |d| sleeps.push(d.as_secs()),
++        );
++        assert_eq!(sleeps, vec![2, 4, 8, 16, 32]);
++    }
++
++    #[test]
++    fn retry_delay_clamps_at_max_delay_secs() {
++        // Given: a retry config with a low maxDelaySecs
++        // When: run_with_retry_inner is called repeatedly
++        // Then: sleep durations never exceed maxDelaySecs
++        let run = |_prompt: String, _opts: RunAgentOptions| Err(other_error("HTTP 500"));
++        let mut sleeps: Vec<u64> = Vec::new();
++        let cfg = RetryConfig {
++            max_attempts: 5,
++            initial_delay_secs: 10,
++            max_delay_secs: 15,
++            multiplier: 2.0,
++            ..RetryConfig::default()
++        };
++        let _ = run_with_retry_inner(
++            run,
++            "prompt".to_string(),
++            RunAgentOptions::default(),
++            &cfg,
++            None,
++            |d| sleeps.push(d.as_secs()),
++        );
++        assert_eq!(sleeps, vec![10, 15, 15, 15]);
++    }
++
++    #[test]
++    fn retry_invokes_on_callback_once_per_retry() {
++        // Given: a run that fails once then succeeds and an on_retry callback
++        // When: run_with_retry_inner is called
++        // Then: the callback is invoked exactly once with attempt=1
++        let mut calls = 0;
++        let run = |_prompt: String, _opts: RunAgentOptions| {
++            calls += 1;
++            if calls == 1 {
++                Err(other_error("HTTP 500"))
++            } else {
++                Ok(RunOutput {
++                    text: "ok".to_string(),
++                    session_id: None,
++                })
++            }
++        };
++        let callback_attempts = std::cell::RefCell::new(Vec::new());
++        let cb = |attempt: u32, _msg: &str| {
++            callback_attempts.borrow_mut().push(attempt);
++        };
++        let result = run_with_retry_inner(
++            run,
++            "prompt".to_string(),
++            RunAgentOptions::default(),
++            &RetryConfig::default(),
++            Some(&cb),
++            |_| {},
++        );
++        assert_eq!(result.unwrap().text, "ok");
++        assert_eq!(*callback_attempts.borrow(), vec![1]);
++    }
+ }
+diff --git a/crates/seher-sdk/src/sdk/errors.rs b/crates/seher-sdk/src/sdk/errors.rs
+index 3cf2f04..678cfc0 100644
+--- a/crates/seher-sdk/src/sdk/errors.rs
++++ b/crates/seher-sdk/src/sdk/errors.rs
+@@ -60,6 +60,42 @@ pub fn is_claude_rate_limit_message(msg: &str) -> bool {
+         || lower.contains("session limit")
+ }
+ 
++/// Returns true when `msg` contains `HTTP {status}` followed by a non-digit
++/// (or end of string), avoiding false positives like `HTTP 5002`.
++fn contains_http_status(msg: &str, status: u16) -> bool {
++    let needle = format!("HTTP {status}");
++    msg.match_indices(&needle).any(|(idx, _)| {
++        msg[idx + needle.len()..]
++            .chars()
++            .next()
++            .is_none_or(|c| !c.is_ascii_digit())
++    })
++}
++
++/// Detect transient HTTP errors that are always worth retrying.
++///
++/// Matches full status-code substrings (`HTTP 429`, `HTTP 500`, `HTTP 502`,
++/// `HTTP 503`, `HTTP 504`) to avoid false positives such as byte counts
++/// containing `50` or `5029`.
++#[must_use]
++pub fn is_transient_http_error(msg: &str) -> bool {
++    contains_http_status(msg, 429)
++        || contains_http_status(msg, 500)
++        || contains_http_status(msg, 502)
++        || contains_http_status(msg, 503)
++        || contains_http_status(msg, 504)
++}
++
++/// Detect client HTTP errors that should only be retried when explicitly opted in.
++///
++/// Some providers (e.g. Kimi) return 401/404 during transient outages, but
++/// normally these indicate authentication or routing failures. Only retry them
++/// when `retry_client_errors` is enabled.
++#[must_use]
++pub fn is_client_error_retryable(msg: &str) -> bool {
++    contains_http_status(msg, 401) || contains_http_status(msg, 404)
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -73,4 +109,82 @@ mod tests {
+         assert!(!is_claude_rate_limit_message("regular text"));
+         assert!(!is_claude_rate_limit_message(""));
+     }
++
++    // -- is_transient_http_error ------------------------------------------------
++
++    #[test]
++    fn transient_detects_429_and_5xx() {
++        assert!(is_transient_http_error(
++            "Anthropic API error (HTTP 429): rate limited"
++        ));
++        assert!(is_transient_http_error(
++            "Anthropic API error (HTTP 500): internal"
++        ));
++        assert!(is_transient_http_error(
++            "Anthropic API error (HTTP 502): bad gateway"
++        ));
++        assert!(is_transient_http_error(
++            "Anthropic API error (HTTP 503): unavailable"
++        ));
++        assert!(is_transient_http_error(
++            "Anthropic API error (HTTP 504): timeout"
++        ));
++    }
++
++    #[test]
++    fn transient_rejects_4xx_and_misleading_substrings() {
++        assert!(!is_transient_http_error(
++            "Anthropic API error (HTTP 401): auth_error"
++        ));
++        assert!(!is_transient_http_error(
++            "Anthropic API error (HTTP 403): forbidden"
++        ));
++        assert!(!is_transient_http_error(
++            "Anthropic API error (HTTP 404): not found"
++        ));
++        assert!(!is_transient_http_error(
++            "Anthropic API error (HTTP 400): bad request"
++        ));
++        assert!(!is_transient_http_error("connection refused"));
++        assert!(!is_transient_http_error("Read 50029 bytes"));
++        assert!(!is_transient_http_error("Read 5029 bytes"));
++        assert!(!is_transient_http_error(
++            "Anthropic API error (HTTP 5002): unknown"
++        ));
++        assert!(!is_transient_http_error(
++            "Anthropic API error (HTTP 5029): unknown"
++        ));
++        assert!(!is_transient_http_error(
++            "Anthropic API error (HTTP 4290): unknown"
++        ));
++    }
++
++    // -- is_client_error_retryable ----------------------------------------------
++
++    #[test]
++    fn client_retryable_detects_401_and_404() {
++        assert!(is_client_error_retryable(
++            "Anthropic API error (HTTP 401): auth_error"
++        ));
++        assert!(is_client_error_retryable(
++            "Anthropic API error (HTTP 404): not found"
++        ));
++    }
++
++    #[test]
++    fn client_retryable_rejects_other_statuses() {
++        assert!(!is_client_error_retryable(
++            "Anthropic API error (HTTP 403): forbidden"
++        ));
++        assert!(!is_client_error_retryable(
++            "Anthropic API error (HTTP 500): internal"
++        ));
++        assert!(!is_client_error_retryable("connection refused"));
++        assert!(!is_client_error_retryable(
++            "Anthropic API error (HTTP 4012): auth_error"
++        ));
++        assert!(!is_client_error_retryable(
++            "Anthropic API error (HTTP 4040): not found"
++        ));
++    }
+ }
+diff --git a/crates/seher-sdk/src/sdk/mod.rs b/crates/seher-sdk/src/sdk/mod.rs
+index 7864313..aac0c0d 100644
+--- a/crates/seher-sdk/src/sdk/mod.rs
++++ b/crates/seher-sdk/src/sdk/mod.rs
+@@ -7,15 +7,19 @@ pub mod pi_runner;
+ pub mod resolve;
+ pub mod sleep;
+ pub mod tool;
++pub mod util;
+ 
+ pub use cancel::CancelToken;
+ pub use config::{
+     Config, ModelEntry, ProviderApi, ProviderEntry, ResolvedAgent, ResolvedSkillsConfig,
+-    SkillsConfig,
++    RetryConfig, SkillsConfig,
+ };
+ pub use config_loader::{ConfigError, load_config, resolve_config_path};
+ pub use dispatch::{RunAgentOptions, RunOutput, run_for_resolved, stream_for_resolved};
+-pub use errors::{LimitError, RunError, TimeoutError, is_claude_rate_limit_message};
++pub use errors::{
++    LimitError, RunError, TimeoutError, is_claude_rate_limit_message, is_client_error_retryable,
++    is_transient_http_error,
++};
+ pub use pi_runner::{
+     PiRunOutput, PiRunner, PiRunnerOptions, StreamChunk, pi_session_path, split_model_ref,
+     split_thinking_suffix,
+diff --git a/crates/seher-sdk/src/sdk/pi_runner.rs b/crates/seher-sdk/src/sdk/pi_runner.rs
+index 9b0bb25..a200f37 100644
+--- a/crates/seher-sdk/src/sdk/pi_runner.rs
++++ b/crates/seher-sdk/src/sdk/pi_runner.rs
+@@ -10,6 +10,7 @@ use std::thread;
+ 
+ use crate::sdk::errors::{LimitError, RunError};
+ use crate::sdk::tool::{PiToolAdapter, SeherTool};
++use crate::sdk::util::encode_session_id;
+ 
+ /// Phrases that indicate the pi error was caused by a rate / usage limit. Matched
+ /// against tokenized words (alphanumeric + `-`) so substrings like `"5429 bytes"`
+@@ -165,7 +166,8 @@ pub fn pi_session_path(working_directory: Option<&Path>, id: &str) -> PathBuf {
+         })
+         .join("seher")
+         .join("pi-sessions");
+-    base.join(encode_cwd_dir(&cwd)).join(format!("{id}.jsonl"))
++    base.join(encode_cwd_dir(&cwd))
++        .join(format!("{}.jsonl", encode_session_id(id)))
+ }
+ 
+ /// Seed a fresh, header-only session file that pi's `Session::open` accepts. pi errors
+@@ -716,4 +718,18 @@ mod tests {
+             pi_session_path(Some(&canonical), "abc"),
+         );
+     }
++
++    #[test]
++    fn pi_session_path_sanitizes_session_id() {
++        // Path separators and other special characters in a session id must not escape
++        // the session directory.
++        let dir = std::env::temp_dir();
++        let path = pi_session_path(Some(&dir), "../etc/passwd");
++        let file_name = path.file_name().expect("file name").to_string_lossy();
++        assert!(
++            !path.to_string_lossy().contains("../"),
++            "path must not contain traversal: {path:?}"
++        );
++        assert_eq!(file_name, "---etc-passwd.jsonl");
++    }
+ }
+diff --git a/crates/seher-sdk/src/sdk/resolve.rs b/crates/seher-sdk/src/sdk/resolve.rs
+index be9336a..2772e8a 100644
+--- a/crates/seher-sdk/src/sdk/resolve.rs
++++ b/crates/seher-sdk/src/sdk/resolve.rs
+@@ -236,6 +236,7 @@ pub fn build_candidates(
+             let model = entry.models.get(mode_key)?;
+             let priority = model.priority.or(entry.priority).unwrap_or(0);
+             let skills = cfg.resolve_skills(entry);
++            let retry = cfg.resolve_retry(entry);
+             let resolved = ResolvedAgent {
+                 provider: entry.provider.clone(),
+                 model_id: model.model.clone(),
+@@ -243,6 +244,7 @@ pub fn build_candidates(
+                 sdk: entry.sdk.clone(),
+                 api: entry.api.clone(),
+                 skills,
++                retry,
+             };
+             Some(Candidate {
+                 priority,
+@@ -364,8 +366,9 @@ pub async fn resolve_agent(
+     }
+ }
+ 
+-/// Like [`resolve_agent`] but loops forever (until cancelled), sleeping
+-/// `interval_ms` between scans when every candidate is at-limit.
++/// Like [`resolve_agent`] but loops forever (until cancelled), sleeping until the
++/// earliest rate-limit reset time between scans when every candidate is at-limit.
++/// Falls back to `interval_ms` when no reset time is known.
+ ///
+ /// # Errors
+ ///
+@@ -401,11 +404,15 @@ pub async fn poll_for_agent(
+             ScanOutcome::NoAgents { probe_errors } => {
+                 return Err(NoMatchingAgentError(format_probe_errors(&probe_errors)).into());
+             }
+-            ScanOutcome::AllLimited { .. } => {
+-                let interval = opts.interval_ms.max(1);
+-                let until_ms = i64::try_from(interval).unwrap_or(i64::MAX);
+-                let until = Utc::now() + chrono::Duration::milliseconds(until_ms);
+-                sleep_until(until, true).await;
++            ScanOutcome::AllLimited { reset_time } => {
++                if let Some(when) = reset_time {
++                    sleep_until(when, true).await;
++                } else {
++                    let interval = opts.interval_ms.max(1);
++                    let until_ms = i64::try_from(interval).unwrap_or(i64::MAX);
++                    let until = Utc::now() + chrono::Duration::milliseconds(until_ms);
++                    sleep_until(until, true).await;
++                }
+             }
+         }
+     }
+@@ -434,6 +441,11 @@ pub fn codexbar_provider_name(sdk: &str, provider: &str) -> String {
+ pub struct CodexBarProbe;
+ 
+ impl LimitProbe for CodexBarProbe {
++    /// # Errors
++    ///
++    /// This implementation never returns an error to the caller: probe failures are
++    /// treated as "not limited" so resolution can fall back to the candidate. A
++    /// warning is emitted via `tracing` so the failure is still observable.
+     fn probe<'a>(
+         &'a mut self,
+         entry: &'a ProviderEntry,
+@@ -447,7 +459,14 @@ impl LimitProbe for CodexBarProbe {
+                 // binary, or a transient spawn/timeout failure all mean "we
+                 // can't prove this provider is limited" — treat it as available
+                 // so resolution proceeds rather than dropping the provider.
+-                Err(_) => Ok(AgentLimit::NotLimited),
++                Err(e) => {
++                    tracing::warn!(
++                        provider = provider,
++                        error = %e,
++                        "codexbar limit check failed; treating provider as not limited"
++                    );
++                    Ok(AgentLimit::NotLimited)
++                }
+             }
+         })
+     }
+@@ -471,7 +490,7 @@ mod tests {
+     use std::collections::HashMap;
+ 
+     use super::*;
+-    use crate::sdk::config::{ModelEntry, ProviderApi, ProviderEntry, SkillsConfig};
++    use crate::sdk::config::{ModelEntry, ProviderApi, ProviderEntry, RetryConfig, SkillsConfig};
+     use indexmap::IndexMap;
+ 
+     fn entry(
+@@ -498,6 +517,7 @@ mod tests {
+             priority,
+             api: None,
+             skills: None,
++            retry: None,
+             models: m,
+         }
+     }
+@@ -514,6 +534,7 @@ mod tests {
+         Config {
+             providers,
+             skills: None,
++            retry: None,
+         }
+     }
+ 
+@@ -607,6 +628,41 @@ mod tests {
+         assert!(!r.skills.include_claude);
+     }
+ 
++    #[test]
++    fn resolved_agent_carries_root_retry_config() {
++        let mut e = entry("kimi", "kimi", None, &[("build", "kimi/k1", None)]);
++        e.retry = None;
++        let c = Config {
++            providers: vec![e],
++            skills: None,
++            retry: Some(RetryConfig {
++                retry_client_errors: true,
++                ..RetryConfig::default()
++            }),
++        };
++        let candidates = build_candidates(&c, "build", None, &[]);
++        assert!(candidates[0].resolved.retry.retry_client_errors);
++    }
++
++    #[test]
++    fn resolved_agent_carries_provider_retry_config_over_root() {
++        let mut e = entry("kimi", "kimi", None, &[("build", "kimi/k1", None)]);
++        e.retry = Some(RetryConfig {
++            enabled: false,
++            ..RetryConfig::default()
++        });
++        let c = Config {
++            providers: vec![e],
++            skills: None,
++            retry: Some(RetryConfig {
++                enabled: true,
++                ..RetryConfig::default()
++            }),
++        };
++        let candidates = build_candidates(&c, "build", None, &[]);
++        assert!(!candidates[0].resolved.retry.enabled);
++    }
++
+     #[tokio::test(flavor = "current_thread")]
+     async fn resolve_returns_highest_priority_not_limited() {
+         let c = cfg(vec![
+diff --git a/crates/seher-sdk/src/sdk/util.rs b/crates/seher-sdk/src/sdk/util.rs
+new file mode 100644
+index 0000000..448893e
+--- /dev/null
++++ b/crates/seher-sdk/src/sdk/util.rs
+@@ -0,0 +1,36 @@
++//! Small, dependency-free helpers shared across SDK backends.
++
++/// Encode a session id into a filesystem-safe file name.
++///
++/// Session ids are usually UUIDs, but this prevents path-separator injection
++/// when the id comes from an untrusted source (e.g. a library caller passing an
++/// arbitrary resume id). Every character that is not an ASCII letter, digit,
++/// hyphen, or underscore is replaced with `-`.
++#[must_use]
++pub fn encode_session_id(id: &str) -> String {
++    id.chars()
++        .map(|c| {
++            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
++                c
++            } else {
++                '-'
++            }
++        })
++        .collect()
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn encode_session_id_allows_alnum_dash_underscore() {
++        assert_eq!(encode_session_id("abc-123_xyz"), "abc-123_xyz");
++    }
++
++    #[test]
++    fn encode_session_id_replaces_special_chars() {
++        assert_eq!(encode_session_id("../etc/passwd"), "---etc-passwd");
++        assert_eq!(encode_session_id("a/b\\c.d"), "a-b-c-d");
++    }
++}
+diff --git a/schemas/settings.schema.json b/schemas/settings.schema.json
+index aa9eef6..b2290ac 100644
+--- a/schemas/settings.schema.json
++++ b/schemas/settings.schema.json
+@@ -13,6 +13,10 @@
+       "$ref": "#/$defs/skillsConfig",
+       "description": "Top-level skill-discovery defaults. Each provider may override this via its own `skills` block."
+     },
++    "retry": {
++      "$ref": "#/$defs/retryConfig",
++      "description": "Top-level retry policy defaults. Each provider may override this via its own `retry` block."
++    },
+     "providers": {
+       "type": "object",
+       "description": "Map of provider entries. The map key doubles as the provider label and the default provider name.",
+@@ -33,6 +37,47 @@
+       },
+       "additionalProperties": false
+     },
++    "retryConfig": {
++      "type": "object",
++      "description": "Exponential-backoff retry policy for transient provider API errors. Provider-level settings override root-level settings as a whole; missing values fall back to the defaults shown below.",
++      "properties": {
++        "enabled": {
++          "type": "boolean",
++          "description": "Whether retries are enabled. Default: true.",
++          "default": true
++        },
++        "maxAttempts": {
++          "type": "integer",
++          "description": "Maximum number of attempts before giving up. Default: 5.",
++          "default": 5,
++          "minimum": 1
++        },
++        "initialDelaySecs": {
++          "type": "integer",
++          "description": "Delay before the first retry, in seconds. Default: 2.",
++          "default": 2,
++          "minimum": 0
++        },
++        "maxDelaySecs": {
++          "type": "integer",
++          "description": "Maximum delay between retries, in seconds. Default: 60.",
++          "default": 60,
++          "minimum": 0
++        },
++        "multiplier": {
++          "type": "number",
++          "description": "Multiplier applied to the delay after each retry. Default: 2.0.",
++          "default": 2.0,
++          "minimum": 1.0
++        },
++        "retryClientErrors": {
++          "type": "boolean",
++          "description": "Opt-in flag to also retry HTTP 401/404 errors. Some providers return these during transient outages, but normally they indicate authentication or routing failures. Default: false.",
++          "default": false
++        }
++      },
++      "additionalProperties": false
++    },
+     "providerEntry": {
+       "type": "object",
+       "required": ["models"],
+@@ -44,7 +89,7 @@
+         },
+         "sdk": {
+           "type": "string",
+-          "description": "Execution engine. Defaults to \"pi\". Executable in this build: `pi` (in-process pi_agent_rust), `claude-terminal` (drives the local `claude` CLI via tmux), `claude-headless` (runs `claude -p` as a subprocess). The seher-ts-only kinds (`claude`, `codex`, `copilot`, `cursor`, `kimi`, `opencode`) are accepted for cross-implementation portability but silently filtered out of the candidate list at startup.",
++          "description": "Execution engine. Defaults to \"pi\". Executable in this build: `pi` (in-process pi_agent_rust), `claude` (drives the local `claude` CLI through `claude-agent-sdk` — stream-json + in-process MCP tools), `claude-terminal` (drives the local `claude` CLI via tmux), and `claude-headless` (runs `claude -p` as a subprocess). The seher-ts-only kinds (`codex`, `copilot`, `cursor`, `kimi`, `opencode`) are accepted for cross-implementation portability but silently filtered out of the candidate list at startup. `pi` and `claude` support custom tools; the two CLI-only backends do not",
+           "default": "pi",
+           "examples": [
+             "pi",
+@@ -72,6 +117,10 @@
+           "$ref": "#/$defs/skillsConfig",
+           "description": "Per-provider override of the top-level skills config."
+         },
++        "retry": {
++          "$ref": "#/$defs/retryConfig",
++          "description": "Per-provider override of the top-level retry policy. This replaces the root retry block entirely rather than merging individual fields."
++        },
+         "models": {
+           "type": "object",
+           "description": "Map from a mode key (`plan`, `build`, or any custom key passed via `-m`) to a model entry. A provider with no models is rejected at load time.",

@@ -10,6 +10,7 @@ use std::thread;
 
 use crate::sdk::errors::{LimitError, RunError};
 use crate::sdk::tool::{PiToolAdapter, SeherTool};
+use crate::sdk::util::encode_session_id;
 
 /// Phrases that indicate the pi error was caused by a rate / usage limit. Matched
 /// against tokenized words (alphanumeric + `-`) so substrings like `"5429 bytes"`
@@ -165,7 +166,8 @@ pub fn pi_session_path(working_directory: Option<&Path>, id: &str) -> PathBuf {
         })
         .join("seher")
         .join("pi-sessions");
-    base.join(encode_cwd_dir(&cwd)).join(format!("{id}.jsonl"))
+    base.join(encode_cwd_dir(&cwd))
+        .join(format!("{}.jsonl", encode_session_id(id)))
 }
 
 /// Seed a fresh, header-only session file that pi's `Session::open` accepts. pi errors
@@ -715,5 +717,19 @@ mod tests {
             pi_session_path(Some(&dir), "abc"),
             pi_session_path(Some(&canonical), "abc"),
         );
+    }
+
+    #[test]
+    fn pi_session_path_sanitizes_session_id() {
+        // Path separators and other special characters in a session id must not escape
+        // the session directory.
+        let dir = std::env::temp_dir();
+        let path = pi_session_path(Some(&dir), "../etc/passwd");
+        let file_name = path.file_name().expect("file name").to_string_lossy();
+        assert!(
+            !path.to_string_lossy().contains("../"),
+            "path must not contain traversal: {path:?}"
+        );
+        assert_eq!(file_name, "---etc-passwd.jsonl");
     }
 }

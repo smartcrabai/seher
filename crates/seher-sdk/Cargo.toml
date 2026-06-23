@@ -1,9 +1,9 @@
 [package]
-name = "seher-sdk"
-description = "Seher SDK: agent resolution and codexbar-backed rate-limit checks"
 authors.workspace = true
+description = "Seher SDK: agent resolution and codexbar-backed rate-limit checks"
 edition.workspace = true
 license.workspace = true
+name = "seher-sdk"
 repository.workspace = true
 version.workspace = true
 
@@ -16,7 +16,11 @@ async-trait.workspace = true
 chrono.workspace = true
 claude-agent-sdk.workspace = true
 dirs.workspace = true
+futures = "0.3"
 indexmap.workspace = true
+pi_agent_rust = { version = "0.1.18", default-features = false, features = [
+  "sqlite-sessions",
+] }
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -24,12 +28,11 @@ serde_yaml.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-zzsleep.workspace = true
-futures = "0.3"
-pi_agent_rust = { version = "0.1.18", default-features = false, features = ["sqlite-sessions"] }
-uuid = { version = "1", features = ["v4"] }
+tracing.workspace = true
 unicode-normalization = "0.1"
 unicode-width = "0.2"
+uuid = { version = "1", features = ["v4"] }
+zzsleep.workspace = true
 
 [[example]]
 name = "pi_mvp"

@@ -9,6 +9,7 @@ use super::types::{
     ClaudeTranscriptReader, FindClaudeSessionOptions, TerminalBackend, TerminalSession,
     TerminalStartOptions, WaitForAssistantResponseOptions,
 };
+use crate::sdk::util::encode_session_id;
 
 const DEFAULT_TIMEOUT_MS: u64 = 15 * 60 * 1000;
 const DEFAULT_POLL_INTERVAL_MS: u64 = 500;
@@ -343,7 +344,7 @@ impl ClaudeTerminalSdk {
 pub fn encode_transcript_path(root: &str, cwd: &str, session_id: &str) -> String {
     std::path::Path::new(root)
         .join(encode_project_dir(cwd))
-        .join(format!("{session_id}.jsonl"))
+        .join(format!("{}.jsonl", encode_session_id(session_id)))
         .to_string_lossy()
         .into_owned()
 }
