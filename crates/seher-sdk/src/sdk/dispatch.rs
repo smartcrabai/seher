@@ -291,11 +291,15 @@ pub fn stream_for_resolved(
 /// Internal retry loop used by [`run_for_resolved`].
 ///
 /// Retries [`RunError::Limit`] (rate/usage limits are always transient) and
-/// [`RunError::Other`] messages classified as transient HTTP errors.
+/// [`RunError::Other`] messages classified as transient HTTP errors. Note that
+/// [`RunError::Limit`] is retried against the *same* provider; callers that want
+/// provider fallback should handle the limit error themselves or use the async
+/// resolution path.
 /// [`RunError::Timeout`] is surfaced immediately so callers can handle timeout
 /// configuration themselves.
 ///
-/// The `sleep_fn` parameter lets tests swap real sleeping for a no-op.
+/// The `sleep_fn` parameter lets tests swap real sleeping for a no-op. The real
+/// implementation uses [`std::thread::sleep`], which blocks the calling thread.
 #[expect(
     clippy::needless_pass_by_value,
     clippy::type_complexity,
@@ -346,6 +350,9 @@ where
 ///
 /// Internally calls [`stream_for_resolved`] and folds the chunks via
 /// [`fold_stream`], retrying transient failures according to `resolved.retry`.
+/// This function is synchronous and blocks the calling thread while waiting
+/// between retry attempts. Rate-limit errors are retried against the *same*
+/// provider; use the async resolution APIs if you need provider fallback.
 ///
 /// # Errors
 ///

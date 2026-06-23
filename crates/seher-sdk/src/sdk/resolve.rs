@@ -366,8 +366,9 @@ pub async fn resolve_agent(
     }
 }
 
-/// Like [`resolve_agent`] but loops forever (until cancelled), sleeping
-/// `interval_ms` between scans when every candidate is at-limit.
+/// Like [`resolve_agent`] but loops forever (until cancelled), sleeping until the
+/// earliest rate-limit reset time between scans when every candidate is at-limit.
+/// Falls back to `interval_ms` when no reset time is known.
 ///
 /// # Errors
 ///
@@ -403,11 +404,15 @@ pub async fn poll_for_agent(
             ScanOutcome::NoAgents { probe_errors } => {
                 return Err(NoMatchingAgentError(format_probe_errors(&probe_errors)).into());
             }
-            ScanOutcome::AllLimited { .. } => {
-                let interval = opts.interval_ms.max(1);
-                let until_ms = i64::try_from(interval).unwrap_or(i64::MAX);
-                let until = Utc::now() + chrono::Duration::milliseconds(until_ms);
-                sleep_until(until, true).await;
+            ScanOutcome::AllLimited { reset_time } => {
+                if let Some(when) = reset_time {
+                    sleep_until(when, true).await;
+                } else {
+                    let interval = opts.interval_ms.max(1);
+                    let until_ms = i64::try_from(interval).unwrap_or(i64::MAX);
+                    let until = Utc::now() + chrono::Duration::milliseconds(until_ms);
+                    sleep_until(until, true).await;
+                }
             }
         }
     }
@@ -436,6 +441,11 @@ pub fn codexbar_provider_name(sdk: &str, provider: &str) -> String {
 pub struct CodexBarProbe;
 
 impl LimitProbe for CodexBarProbe {
+    /// # Errors
+    ///
+    /// This implementation never returns an error to the caller: probe failures are
+    /// treated as "not limited" so resolution can fall back to the candidate. A
+    /// warning is emitted via `tracing` so the failure is still observable.
     fn probe<'a>(
         &'a mut self,
         entry: &'a ProviderEntry,
@@ -449,7 +459,14 @@ impl LimitProbe for CodexBarProbe {
                 // binary, or a transient spawn/timeout failure all mean "we
                 // can't prove this provider is limited" — treat it as available
                 // so resolution proceeds rather than dropping the provider.
-                Err(_) => Ok(AgentLimit::NotLimited),
+                Err(e) => {
+                    tracing::warn!(
+                        provider = provider,
+                        error = %e,
+                        "codexbar limit check failed; treating provider as not limited"
+                    );
+                    Ok(AgentLimit::NotLimited)
+                }
             }
         })
     }
