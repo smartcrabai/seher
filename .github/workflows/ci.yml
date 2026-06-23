@@ -16,11 +16,11 @@ jobs:
         with:
           tool: taplo-cli
 
-      - name: Lint Cargo.toml
-        run: taplo lint Cargo.toml
+      - name: Lint Cargo.toml files
+        run: taplo lint Cargo.toml crates/*/Cargo.toml
 
       - name: Check Cargo.toml formatting
-        run: taplo fmt --check --option reorder_keys=true Cargo.toml
+        run: taplo fmt --check --option reorder_keys=true Cargo.toml crates/*/Cargo.toml
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2

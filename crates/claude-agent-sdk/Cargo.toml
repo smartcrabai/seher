@@ -1,9 +1,9 @@
 [package]
-name = "seher-claude-agent-sdk"
-description = "Rust port of anthropics/claude-agent-sdk-python: drive the Claude Code CLI as an agent runtime"
 authors.workspace = true
+description = "Rust port of anthropics/claude-agent-sdk-python: drive the Claude Code CLI as an agent runtime"
 edition.workspace = true
 license.workspace = true
+name = "seher-claude-agent-sdk"
 repository.workspace = true
 version.workspace = true
 
@@ -13,11 +13,19 @@ path = "src/lib.rs"
 
 [dependencies]
 async-trait.workspace = true
+futures = "0.3"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "io-util", "process", "sync"] }
-futures = "0.3"
+tokio = { workspace = true, features = [
+  "rt",
+  "rt-multi-thread",
+  "macros",
+  "time",
+  "io-util",
+  "process",
+  "sync",
+] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
