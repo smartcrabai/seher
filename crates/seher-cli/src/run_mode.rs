@@ -294,7 +294,7 @@ fn stream_with_http_retry(
                     "Provider '{}' returned a transient API error (attempt {}/{}): {}; retrying in {}s...",
                     resolved.provider,
                     attempt,
-                    resolved.retry.max_attempts,
+                    resolved.retry.effective_max_attempts(),
                     message,
                     delay.as_secs()
                 ));

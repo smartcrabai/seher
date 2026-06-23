@@ -9,6 +9,7 @@ use super::types::{
     ClaudeTranscriptReader, FindClaudeSessionOptions, TerminalBackend, TerminalSession,
     TerminalStartOptions, WaitForAssistantResponseOptions,
 };
+use crate::sdk::util::encode_session_id;
 
 const DEFAULT_TIMEOUT_MS: u64 = 15 * 60 * 1000;
 const DEFAULT_POLL_INTERVAL_MS: u64 = 500;
@@ -335,21 +336,6 @@ impl ClaudeTerminalSdk {
             panic!("ClaudeTerminalSdk: no reader set — use new_sdk_with_defaults()")
         })
     }
-}
-
-/// Encode a session id into a filesystem-safe file name. Prevents path-separator
-/// injection when the id is supplied by an untrusted caller.
-#[must_use]
-fn encode_session_id(id: &str) -> String {
-    id.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect()
 }
 
 /// Build the transcript file path Claude Code uses for `session_id` under `cwd`:

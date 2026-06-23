@@ -206,8 +206,9 @@ pub struct ProviderEntry {
     /// Resolved provider name. Equals the explicit `provider` field when specified
     /// in YAML, otherwise falls back to `key`.
     pub provider: String,
-    /// Underlying SDK kind. Always `"pi"` in this implementation (pi is the only
-    /// execution engine); kept as a string for forward compatibility.
+    /// Underlying SDK kind (e.g. `"pi"`, `"claude"`, `"claude-terminal"`,
+    /// `"claude-headless"`). Defaults to `"pi"` when omitted in YAML; kept as a
+    /// string for forward compatibility.
     pub sdk: String,
     /// Provider-level priority shorthand.
     pub priority: Option<i32>,

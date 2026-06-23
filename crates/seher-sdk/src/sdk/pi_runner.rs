@@ -10,6 +10,7 @@ use std::thread;
 
 use crate::sdk::errors::{LimitError, RunError};
 use crate::sdk::tool::{PiToolAdapter, SeherTool};
+use crate::sdk::util::encode_session_id;
 
 /// Phrases that indicate the pi error was caused by a rate / usage limit. Matched
 /// against tokenized words (alphanumeric + `-`) so substrings like `"5429 bytes"`
@@ -135,22 +136,6 @@ fn encode_cwd_dir(cwd: &Path) -> String {
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect()
-}
-
-/// Encode a session id into a filesystem-safe directory name. Session ids are
-/// usually UUIDs, but this prevents path-separator injection when the id comes
-/// from an untrusted source (e.g. a library caller passing an arbitrary resume id).
-#[must_use]
-fn encode_session_id(id: &str) -> String {
-    id.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
                 c
             } else {
                 '-'

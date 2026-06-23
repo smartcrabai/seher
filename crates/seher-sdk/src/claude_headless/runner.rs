@@ -308,7 +308,11 @@ mod tests {
             use std::io::Write as _;
             let mut f = std::fs::File::create(&wrapper_path).expect("create wrapper");
             writeln!(f, "#!/bin/sh").expect("write shebang");
-            writeln!(f, "sleep 60").expect("write sleep");
+            // Use `exec` so the shell process is replaced by `sleep`. Otherwise
+            // `child.kill()` terminates the shell but leaves the `sleep`
+            // grandchild orphaned, which keeps the reader threads (and the test
+            // process) alive until the full 60 seconds elapse.
+            writeln!(f, "exec sleep 60").expect("write sleep");
             // f drops here, closing the FD before exec
         }
         let mut perms = std::fs::metadata(&wrapper_path)

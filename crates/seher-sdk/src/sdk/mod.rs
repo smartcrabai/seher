@@ -7,6 +7,7 @@ pub mod pi_runner;
 pub mod resolve;
 pub mod sleep;
 pub mod tool;
+pub mod util;
 
 pub use cancel::CancelToken;
 pub use config::{
