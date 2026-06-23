@@ -17,7 +17,7 @@ path = "src/main.rs"
 [dependencies]
 chrono.workspace = true
 clap.workspace = true
-seher-sdk = { path = "../seher-sdk", version = "0.0.45" }
+seher-sdk = { path = "../seher-sdk", version = "0.0.46" }
 serde_json.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
