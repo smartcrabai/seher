@@ -6,10 +6,12 @@
 //! `process` feature. A hard timeout is enforced by polling `try_wait` and
 //! killing the child once the deadline passes.
 
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 use super::errors::CodexBarError;
 use super::types::CodexBarUsageResponse;
@@ -129,16 +131,20 @@ fn run_blocking(
     timeout: Duration,
     provider: &str,
 ) -> Result<RawOutput, CodexBarError> {
-    let mut child = match Command::new(bin)
-        .args(args)
+    let mut cmd = Command::new(bin);
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        // New process group so terminal-generated signals (e.g. Ctrl-C SIGINT)
-        // don't reach codexbar; our timeout kill targets the child directly.
-        .process_group(0)
-        .spawn()
+        .stderr(Stdio::piped());
+    // New process group so terminal-generated signals (e.g. Ctrl-C SIGINT)
+    // don't reach codexbar; our timeout kill targets the child directly.
+    // This is only available on Unix; on other platforms we spawn without it.
+    #[cfg(unix)]
     {
+        cmd.process_group(0);
+    }
+
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err(CodexBarError::NotFound {

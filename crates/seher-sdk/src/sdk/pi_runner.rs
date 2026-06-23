@@ -143,6 +143,22 @@ fn encode_cwd_dir(cwd: &Path) -> String {
         .collect()
 }
 
+/// Encode a session id into a filesystem-safe directory name. Session ids are
+/// usually UUIDs, but this prevents path-separator injection when the id comes
+/// from an untrusted source (e.g. a library caller passing an arbitrary resume id).
+#[must_use]
+fn encode_session_id(id: &str) -> String {
+    id.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
 /// Deterministic on-disk path for a pi multi-turn session, bound to `working_directory`
 /// (defaults to the process cwd) and the session `id`. Same `(cwd, id)` always maps to
 /// the same `.jsonl` file, so a follow-up turn resumes the prior conversation.
@@ -165,7 +181,8 @@ pub fn pi_session_path(working_directory: Option<&Path>, id: &str) -> PathBuf {
         })
         .join("seher")
         .join("pi-sessions");
-    base.join(encode_cwd_dir(&cwd)).join(format!("{id}.jsonl"))
+    base.join(encode_cwd_dir(&cwd))
+        .join(format!("{}.jsonl", encode_session_id(id)))
 }
 
 /// Seed a fresh, header-only session file that pi's `Session::open` accepts. pi errors
@@ -715,5 +732,19 @@ mod tests {
             pi_session_path(Some(&dir), "abc"),
             pi_session_path(Some(&canonical), "abc"),
         );
+    }
+
+    #[test]
+    fn pi_session_path_sanitizes_session_id() {
+        // Path separators and other special characters in a session id must not escape
+        // the session directory.
+        let dir = std::env::temp_dir();
+        let path = pi_session_path(Some(&dir), "../etc/passwd");
+        let file_name = path.file_name().expect("file name").to_string_lossy();
+        assert!(
+            !path.to_string_lossy().contains("../"),
+            "path must not contain traversal: {path:?}"
+        );
+        assert_eq!(file_name, "---etc-passwd.jsonl");
     }
 }

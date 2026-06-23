@@ -337,13 +337,28 @@ impl ClaudeTerminalSdk {
     }
 }
 
+/// Encode a session id into a filesystem-safe file name. Prevents path-separator
+/// injection when the id is supplied by an untrusted caller.
+#[must_use]
+fn encode_session_id(id: &str) -> String {
+    id.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
 /// Build the transcript file path Claude Code uses for `session_id` under `cwd`:
 /// `<root>/<encoded-cwd>/<session_id>.jsonl`.
 #[must_use]
 pub fn encode_transcript_path(root: &str, cwd: &str, session_id: &str) -> String {
     std::path::Path::new(root)
         .join(encode_project_dir(cwd))
-        .join(format!("{session_id}.jsonl"))
+        .join(format!("{}.jsonl", encode_session_id(session_id)))
         .to_string_lossy()
         .into_owned()
 }
