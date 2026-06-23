@@ -112,6 +112,14 @@ impl RetryConfig {
             || (self.retry_client_errors && is_client_error_retryable(message))
     }
 
+    /// Return a sane multiplier value even when a user bypasses schema
+    /// validation and supplies a value below `1.0`. Values below `1.0` would
+    /// decay the delay instead of backing off, so we clamp to `1.0`.
+    #[must_use]
+    pub fn effective_multiplier(&self) -> f64 {
+        self.multiplier.max(1.0)
+    }
+
     /// Compute the backoff delay for a given 1-based attempt number.
     #[must_use]
     #[expect(
@@ -122,7 +130,8 @@ impl RetryConfig {
     )]
     pub fn delay_for_attempt(&self, attempt: u32) -> Duration {
         let exponent = i32::try_from(attempt.saturating_sub(1)).unwrap_or(i32::MAX);
-        let delay_secs = self.initial_delay_secs as f64 * self.multiplier.powi(exponent);
+        let delay_secs =
+            self.initial_delay_secs as f64 * self.effective_multiplier().powi(exponent);
         let clamped = delay_secs.min(self.max_delay_secs as f64) as u64;
         Duration::from_secs(clamped)
     }
@@ -596,6 +605,30 @@ retryClientErrors: true
         };
         let yaml = serde_yaml::to_string(&original).expect("serialize");
         let parsed: RetryConfig = serde_yaml::from_str(&yaml).expect("deserialize");
-        assert_eq!(parsed, original);
+        assert_eq!(parsed.enabled, original.enabled);
+        assert_eq!(parsed.max_attempts, original.max_attempts);
+        assert_eq!(parsed.initial_delay_secs, original.initial_delay_secs);
+        assert_eq!(parsed.max_delay_secs, original.max_delay_secs);
+        assert!(
+            (parsed.multiplier - original.multiplier).abs() < f64::EPSILON,
+            "multiplier should round-trip exactly: got {}, expected {}",
+            parsed.multiplier,
+            original.multiplier
+        );
+        assert_eq!(parsed.retry_client_errors, original.retry_client_errors);
+    }
+
+    #[test]
+    fn retry_config_multiplier_below_one_is_clamped() {
+        let cfg = RetryConfig {
+            multiplier: 0.5,
+            ..RetryConfig::default()
+        };
+        assert!((cfg.effective_multiplier() - 1.0).abs() < f64::EPSILON);
+        // With an initial delay of 2s, attempts 1..=3 should all be 2s instead
+        // of decaying to 1s / 0.5s.
+        assert_eq!(cfg.delay_for_attempt(1).as_secs(), 2);
+        assert_eq!(cfg.delay_for_attempt(2).as_secs(), 2);
+        assert_eq!(cfg.delay_for_attempt(3).as_secs(), 2);
     }
 }

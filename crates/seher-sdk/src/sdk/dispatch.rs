@@ -50,7 +50,8 @@ pub struct RunAgentOptions {
     /// `claude-headless` backend; other backends ignore it.
     pub cancel: CancelToken,
     /// Optional callback invoked on each retry. Receives the 1-based attempt
-    /// number and the error message that triggered the retry.
+    /// number and a short human-readable summary of the error that triggered
+    /// the retry (without the partial-output length suffix).
     pub on_retry: Option<Arc<dyn Fn(u32, &str) + Send + Sync>>,
 }
 
@@ -335,8 +336,13 @@ where
                         }
                     }
                 }
+                let retry_message = match &err {
+                    RunError::Other { message, .. } => message.clone(),
+                    RunError::Limit { error, .. } => error.to_string(),
+                    RunError::Timeout { error, .. } => error.to_string(),
+                };
                 if let Some(cb) = on_retry {
-                    cb(attempt, &err.to_string());
+                    cb(attempt, &retry_message);
                 }
                 let delay = retry.delay_for_attempt(attempt);
                 sleep_fn(delay);
