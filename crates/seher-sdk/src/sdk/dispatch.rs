@@ -290,6 +290,11 @@ pub fn stream_for_resolved(
 
 /// Internal retry loop used by [`run_for_resolved`].
 ///
+/// Retries [`RunError::Limit`] (rate/usage limits are always transient) and
+/// [`RunError::Other`] messages classified as transient HTTP errors.
+/// [`RunError::Timeout`] is surfaced immediately so callers can handle timeout
+/// configuration themselves.
+///
 /// The `sleep_fn` parameter lets tests swap real sleeping for a no-op.
 #[expect(
     clippy::needless_pass_by_value,
@@ -344,8 +349,9 @@ where
 ///
 /// # Errors
 ///
-/// Returns [`RunError::Limit`] on rate/usage limits, [`RunError::Other`] for
-/// non-retryable failures, and [`RunError::Timeout`] without retry.
+/// Returns [`RunError::Limit`] after retrying with exponential backoff,
+/// [`RunError::Other`] for non-retryable failures, and [`RunError::Timeout`]
+/// without retry.
 pub fn run_for_resolved(
     resolved: &ResolvedAgent,
     prompt: String,
