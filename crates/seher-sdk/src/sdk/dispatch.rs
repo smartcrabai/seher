@@ -17,8 +17,7 @@ use crate::claude_headless::{ClaudeHeadlessRunner, ClaudeHeadlessRunnerConfig, s
 use crate::claude_terminal::{new_sdk_with_defaults, stream_via_thread};
 use crate::sdk::{
     CancelToken, PiRunner, PiRunnerOptions, ResolvedAgent, RetryConfig, RunError, SeherTool,
-    StreamChunk, is_client_error_retryable, is_transient_http_error, sdk_supports_tools,
-    split_model_ref, split_thinking_suffix,
+    StreamChunk, sdk_supports_tools, split_model_ref, split_thinking_suffix,
 };
 
 /// Options forwarded to the chosen runner backend.
@@ -289,19 +288,6 @@ pub fn stream_for_resolved(
     }
 }
 
-#[expect(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "delay values are small configuration integers; loss/truncation is acceptable"
-)]
-fn calculate_retry_delay(attempt: u32, retry: &RetryConfig) -> Duration {
-    let exponent = i32::try_from(attempt.saturating_sub(1)).unwrap_or(i32::MAX);
-    let delay_secs = retry.initial_delay_secs as f64 * retry.multiplier.powi(exponent);
-    let clamped = delay_secs.min(retry.max_delay_secs as f64) as u64;
-    Duration::from_secs(clamped)
-}
-
 /// Internal retry loop used by [`run_for_resolved`].
 ///
 /// The `sleep_fn` parameter lets tests swap real sleeping for a no-op.
@@ -328,16 +314,14 @@ where
         match result {
             Ok(output) => return Ok(output),
             Err(err) => {
-                if attempt >= retry.max_attempts || !retry.enabled {
+                if attempt >= retry.effective_max_attempts() || !retry.enabled {
                     return Err(err);
                 }
                 match &err {
                     RunError::Timeout { .. } => return Err(err),
                     RunError::Limit { .. } => {}
                     RunError::Other { message, .. } => {
-                        let retryable = is_transient_http_error(message)
-                            || (retry.retry_client_errors && is_client_error_retryable(message));
-                        if !retryable {
+                        if !retry.is_retryable_message(message) {
                             return Err(err);
                         }
                     }
@@ -345,7 +329,7 @@ where
                 if let Some(cb) = on_retry {
                     cb(attempt, &err.to_string());
                 }
-                let delay = calculate_retry_delay(attempt, retry);
+                let delay = retry.delay_for_attempt(attempt);
                 sleep_fn(delay);
                 attempt += 1;
             }

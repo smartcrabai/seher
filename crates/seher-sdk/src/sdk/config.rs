@@ -2,8 +2,12 @@
 //!
 //! Mirrors `seher-ts/packages/sdk/src/types.ts` and the validator in `validate.ts`.
 
+use std::time::Duration;
+
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+
+use crate::sdk::{is_client_error_retryable, is_transient_http_error};
 
 /// Per-provider API config forwarded to the underlying SDK constructor.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -91,6 +95,36 @@ impl RetryConfig {
 
     fn default_retry_client_errors() -> bool {
         false
+    }
+
+    /// Return a sane `max_attempts` value even when a user bypasses schema
+    /// validation and supplies `0`.
+    #[must_use]
+    pub fn effective_max_attempts(&self) -> u32 {
+        self.max_attempts.max(1)
+    }
+
+    /// Whether a free-form error message describes a failure that should be
+    /// retried under this policy.
+    #[must_use]
+    pub fn is_retryable_message(&self, message: &str) -> bool {
+        is_transient_http_error(message)
+            || (self.retry_client_errors && is_client_error_retryable(message))
+    }
+
+    /// Compute the backoff delay for a given 1-based attempt number.
+    #[must_use]
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "delay values are small configuration integers; loss/truncation is acceptable"
+    )]
+    pub fn delay_for_attempt(&self, attempt: u32) -> Duration {
+        let exponent = i32::try_from(attempt.saturating_sub(1)).unwrap_or(i32::MAX);
+        let delay_secs = self.initial_delay_secs as f64 * self.multiplier.powi(exponent);
+        let clamped = delay_secs.min(self.max_delay_secs as f64) as u64;
+        Duration::from_secs(clamped)
     }
 }
 

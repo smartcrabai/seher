@@ -463,7 +463,7 @@ providers:
 | `api.key` | string | API key (for API-key-based limit checks and pi execution) |
 | `api.endpoint` | string | API endpoint override |
 | `skills.includeClaude` | boolean | Whether to auto-discover Claude skills for this provider |
-| `retry.enabled` | boolean | Whether to retry transient provider API errors. Default: `true`. Also accepted at the top level |
+| `retry.enabled` | boolean | Whether to retry transient provider API errors in both the SDK and CLI paths. Default: `true`. Also accepted at the top level |
 | `retry.maxAttempts` | integer | Maximum retry attempts. Default: `5`. Also accepted at the top level |
 | `retry.initialDelaySecs` | integer | Delay before the first retry, in seconds. Default: `2`. Also accepted at the top level |
 | `retry.maxDelaySecs` | integer | Maximum delay between retries, in seconds. Default: `60`. Also accepted at the top level |

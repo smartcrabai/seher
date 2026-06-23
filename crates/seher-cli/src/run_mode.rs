@@ -4,6 +4,7 @@
 //! provider name is added to `exclude_providers` and resolution is retried.
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use seher::claude_terminal::{default_transcript_root, encode_transcript_path};
 use seher::sdk::{
@@ -84,8 +85,7 @@ pub fn resolve_and_stream(
         resolve_once(rt, args, mode_key, excluded, &config)
     };
     let stream_runner = |resolved: &ResolvedAgent| -> Outcome {
-        let rx = dispatch_stream(resolved, prompt, system_prompt, args, None, &cancel);
-        drain_to_stdout(rx, args.timeout, &cancel)
+        stream_with_http_retry(resolved, prompt, system_prompt, args, None, &cancel, logger)
     };
     stream_with_retry(args.timeout, logger, resolver, stream_runner)
 }
@@ -169,15 +169,15 @@ fn resume_and_stream(
         resolved.provider, resolved.sdk, resolved.model_id
     ));
 
-    let rx = dispatch_stream(
+    match stream_with_http_retry(
         &resolved,
         prompt,
         system_prompt,
         args,
         Some(resume_id),
         cancel,
-    );
-    match drain_to_stdout(rx, args.timeout, cancel) {
+        logger,
+    ) {
         Outcome::Done(t) => Ok(t),
         Outcome::Limit => Err(format!(
             "provider '{}' is rate-limited; cannot switch providers while resuming session {resume_id}",
@@ -245,6 +245,66 @@ where
                 .to_string());
             }
             Outcome::Cancelled => return Err("cancelled".to_string()),
+        }
+    }
+}
+
+/// Short polling interval used when sleeping so that cancellation is observed
+/// promptly instead of waiting for the full backoff delay.
+const RETRY_SLEEP_POLL: Duration = Duration::from_millis(50);
+
+/// Sleep for `duration`, returning early if `cancel` is signalled.
+fn sleep_with_cancel(duration: Duration, cancel: &CancelToken) {
+    let start = Instant::now();
+    while let Some(remaining) = duration.checked_sub(start.elapsed()) {
+        if cancel.is_cancelled() {
+            return;
+        }
+        std::thread::sleep(RETRY_SLEEP_POLL.min(remaining));
+    }
+}
+
+/// Run the streaming path for a resolved provider, retrying transient HTTP
+/// errors against the *same* provider before giving up.
+///
+/// This gives the CLI the same exponential-backoff retry behaviour that the
+/// blocking [`seher::sdk::run_for_resolved`] path already has. Rate/usage
+/// limits still surface as [`Outcome::Limit`] so the caller can switch
+/// providers; timeouts and cancellations are not retried.
+fn stream_with_http_retry(
+    resolved: &ResolvedAgent,
+    prompt: &str,
+    system_prompt: Option<&str>,
+    args: &Args,
+    resume: Option<&str>,
+    cancel: &CancelToken,
+    logger: &Logger,
+) -> Outcome {
+    let mut attempt: u32 = 1;
+    loop {
+        let rx = dispatch_stream(resolved, prompt, system_prompt, args, resume, cancel);
+        match drain_to_stdout(rx, args.timeout, cancel) {
+            Outcome::Error(ref message)
+                if resolved.retry.enabled
+                    && attempt < resolved.retry.effective_max_attempts()
+                    && resolved.retry.is_retryable_message(message) =>
+            {
+                let delay = resolved.retry.delay_for_attempt(attempt);
+                logger.warn(&format!(
+                    "Provider '{}' returned a transient API error (attempt {}/{}): {}; retrying in {}s...",
+                    resolved.provider,
+                    attempt,
+                    resolved.retry.max_attempts,
+                    message,
+                    delay.as_secs()
+                ));
+                sleep_with_cancel(delay, cancel);
+                if cancel.is_cancelled() {
+                    return Outcome::Cancelled;
+                }
+                attempt += 1;
+            }
+            other => return other,
         }
     }
 }
