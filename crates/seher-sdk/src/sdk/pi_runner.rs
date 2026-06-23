@@ -12,6 +12,9 @@ use crate::sdk::errors::{LimitError, RunError};
 use crate::sdk::tool::{PiToolAdapter, SeherTool};
 use crate::sdk::util::encode_session_id;
 
+/// Hard-coded skills directory shared by agent environments on this machine.
+const SKILLS_DIR: &str = ".agents/skills";
+
 /// Phrases that indicate the pi error was caused by a rate / usage limit. Matched
 /// against tokenized words (alphanumeric + `-`) so substrings like `"5429 bytes"`
 /// or `"missing 'quota' field"` do **not** trigger a false positive.
@@ -187,6 +190,34 @@ fn seed_session_file(
     }
     let line = serde_json::to_string(&header).map_err(std::io::Error::other)?;
     std::fs::write(path, format!("{line}\n"))
+}
+
+/// Load skills from the hard-coded user-wide directory (`~/.agents/skills`) and
+/// format them as a system-prompt appendix. Returns `None` when the directory
+/// is missing or contains no loadable skills.
+#[must_use]
+fn load_hardcoded_skills(working_directory: Option<&Path>) -> Option<String> {
+    let home = dirs::home_dir()?;
+    let skills_dir = home.join(SKILLS_DIR);
+    if !skills_dir.is_dir() {
+        return None;
+    }
+
+    let cwd = working_directory.map_or_else(
+        || std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        Path::to_path_buf,
+    );
+    let options = pi::resources::LoadSkillsOptions {
+        cwd,
+        agent_dir: home.join(".agents"),
+        skill_paths: vec![skills_dir],
+        include_defaults: false,
+    };
+    let result = pi::resources::load_skills(options);
+    if result.skills.is_empty() {
+        return None;
+    }
+    Some(pi::resources::format_skills_for_prompt(&result.skills))
 }
 
 pub struct PiRunner {
@@ -392,6 +423,11 @@ fn run_on_thread(
     // system prompt in the session file, so we pass it on every turn (resume included).
     let prompt_text = prompt.to_string();
 
+    // Auto-load any skills placed in the hard-coded user-wide directory. They are
+    // appended to the system prompt so they do not interfere with a user-supplied
+    // system prompt that may be a file path.
+    let skills_appendix = load_hardcoded_skills(opts.working_directory.as_deref());
+
     let provider_label = opts.provider.clone().unwrap_or_else(|| "pi".to_string());
 
     let outcome: Result<(), CloseOutcome> = futures::executor::block_on(async {
@@ -401,6 +437,7 @@ fn run_on_thread(
             api_key: opts.api_key.clone(),
             thinking,
             system_prompt: opts.system_prompt.clone(),
+            append_system_prompt: skills_appendix,
             working_directory: opts.working_directory.clone(),
             no_session: false,
             session_path: Some(session_path.clone()),

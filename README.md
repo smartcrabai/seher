@@ -452,6 +452,10 @@ providers:
       build: kimi/k1
 ```
 
+### Auto-loaded skills
+
+When a provider uses the in-process `pi` SDK (the default), Seher automatically loads any skills found under `~/.agents/skills` and appends them to the system prompt. No configuration is required; place skill directories containing a `SKILL.md` file under that path and they will be picked up on the next run. This is separate from the `skills.includeClaude` option above, which controls Claude-specific skill auto-discovery.
+
 ### Provider fields
 
 | Field | Type | Description |
