@@ -236,6 +236,7 @@ pub fn build_candidates(
             let model = entry.models.get(mode_key)?;
             let priority = model.priority.or(entry.priority).unwrap_or(0);
             let skills = cfg.resolve_skills(entry);
+            let retry = cfg.resolve_retry(entry);
             let resolved = ResolvedAgent {
                 provider: entry.provider.clone(),
                 model_id: model.model.clone(),
@@ -243,6 +244,7 @@ pub fn build_candidates(
                 sdk: entry.sdk.clone(),
                 api: entry.api.clone(),
                 skills,
+                retry,
             };
             Some(Candidate {
                 priority,
@@ -471,7 +473,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::sdk::config::{ModelEntry, ProviderApi, ProviderEntry, SkillsConfig};
+    use crate::sdk::config::{ModelEntry, ProviderApi, ProviderEntry, RetryConfig, SkillsConfig};
     use indexmap::IndexMap;
 
     fn entry(
@@ -498,6 +500,7 @@ mod tests {
             priority,
             api: None,
             skills: None,
+            retry: None,
             models: m,
         }
     }
@@ -514,6 +517,7 @@ mod tests {
         Config {
             providers,
             skills: None,
+            retry: None,
         }
     }
 
@@ -605,6 +609,41 @@ mod tests {
             Some("sk-test")
         );
         assert!(!r.skills.include_claude);
+    }
+
+    #[test]
+    fn resolved_agent_carries_root_retry_config() {
+        let mut e = entry("kimi", "kimi", None, &[("build", "kimi/k1", None)]);
+        e.retry = None;
+        let c = Config {
+            providers: vec![e],
+            skills: None,
+            retry: Some(RetryConfig {
+                retry_client_errors: true,
+                ..RetryConfig::default()
+            }),
+        };
+        let candidates = build_candidates(&c, "build", None, &[]);
+        assert!(candidates[0].resolved.retry.retry_client_errors);
+    }
+
+    #[test]
+    fn resolved_agent_carries_provider_retry_config_over_root() {
+        let mut e = entry("kimi", "kimi", None, &[("build", "kimi/k1", None)]);
+        e.retry = Some(RetryConfig {
+            enabled: false,
+            ..RetryConfig::default()
+        });
+        let c = Config {
+            providers: vec![e],
+            skills: None,
+            retry: Some(RetryConfig {
+                enabled: true,
+                ..RetryConfig::default()
+            }),
+        };
+        let candidates = build_candidates(&c, "build", None, &[]);
+        assert!(!candidates[0].resolved.retry.enabled);
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -299,6 +299,7 @@ fn dispatch_stream(
             system_prompt: system_prompt.map(str::to_string),
             timeout_ms: args.timeout,
             cancel: cancel.clone(),
+            on_retry: None,
         },
     )
 }
@@ -327,6 +328,7 @@ mod tests {
             sdk: "pi".to_string(),
             api: None,
             skills: ResolvedSkillsConfig::default(),
+            retry: seher::sdk::RetryConfig::default(),
         }
     }
 

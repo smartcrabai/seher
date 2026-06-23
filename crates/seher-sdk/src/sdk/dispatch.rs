@@ -8,18 +8,25 @@
 //! This module centralises the dispatch logic that previously lived in
 //! `seher_cli::run_mode::dispatch_stream`.
 
+use std::sync::Arc;
 use std::sync::mpsc::Receiver;
+use std::time::Duration;
 
 use crate::claude_agent::{ClaudeAgentRunnerConfig, stream_agent};
 use crate::claude_headless::{ClaudeHeadlessRunner, ClaudeHeadlessRunnerConfig, stream_headless};
 use crate::claude_terminal::{new_sdk_with_defaults, stream_via_thread};
 use crate::sdk::{
-    CancelToken, PiRunner, PiRunnerOptions, ResolvedAgent, RunError, SeherTool, StreamChunk,
-    sdk_supports_tools, split_model_ref, split_thinking_suffix,
+    CancelToken, PiRunner, PiRunnerOptions, ResolvedAgent, RetryConfig, RunError, SeherTool,
+    StreamChunk, is_client_error_retryable, is_transient_http_error, sdk_supports_tools,
+    split_model_ref, split_thinking_suffix,
 };
 
 /// Options forwarded to the chosen runner backend.
-#[derive(Default)]
+#[derive(Default, Clone)]
+#[expect(
+    clippy::type_complexity,
+    reason = "callback type is intentionally simple"
+)]
 pub struct RunAgentOptions {
     /// Working directory the agent operates in.
     pub working_dir: Option<std::path::PathBuf>,
@@ -43,6 +50,9 @@ pub struct RunAgentOptions {
     /// runner should abort as soon as possible. Currently forwarded to the
     /// `claude-headless` backend; other backends ignore it.
     pub cancel: CancelToken,
+    /// Optional callback invoked on each retry. Receives the 1-based attempt
+    /// number and the error message that triggered the retry.
+    pub on_retry: Option<Arc<dyn Fn(u32, &str) + Send + Sync>>,
 }
 
 /// Output of a completed [`run_for_resolved`] call.
@@ -279,33 +289,117 @@ pub fn stream_for_resolved(
     }
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "delay values are small configuration integers; loss/truncation is acceptable"
+)]
+fn calculate_retry_delay(attempt: u32, retry: &RetryConfig) -> Duration {
+    let exponent = i32::try_from(attempt.saturating_sub(1)).unwrap_or(i32::MAX);
+    let delay_secs = retry.initial_delay_secs as f64 * retry.multiplier.powi(exponent);
+    let clamped = delay_secs.min(retry.max_delay_secs as f64) as u64;
+    Duration::from_secs(clamped)
+}
+
+/// Internal retry loop used by [`run_for_resolved`].
+///
+/// The `sleep_fn` parameter lets tests swap real sleeping for a no-op.
+#[expect(
+    clippy::needless_pass_by_value,
+    clippy::type_complexity,
+    reason = "mirrors the public run_for_resolved signature; callback type is intentionally simple"
+)]
+pub(crate) fn run_with_retry_inner<F, S>(
+    mut run: F,
+    prompt: String,
+    opts: RunAgentOptions,
+    retry: &RetryConfig,
+    on_retry: Option<&dyn Fn(u32, &str)>,
+    mut sleep_fn: S,
+) -> Result<RunOutput, RunError>
+where
+    F: FnMut(String, RunAgentOptions) -> Result<RunOutput, RunError>,
+    S: FnMut(Duration),
+{
+    let mut attempt = 1;
+    loop {
+        let result = run(prompt.clone(), opts.clone());
+        match result {
+            Ok(output) => return Ok(output),
+            Err(err) => {
+                if attempt >= retry.max_attempts || !retry.enabled {
+                    return Err(err);
+                }
+                match &err {
+                    RunError::Timeout { .. } => return Err(err),
+                    RunError::Limit { .. } => {}
+                    RunError::Other { message, .. } => {
+                        let retryable = is_transient_http_error(message)
+                            || (retry.retry_client_errors && is_client_error_retryable(message));
+                        if !retryable {
+                            return Err(err);
+                        }
+                    }
+                }
+                if let Some(cb) = on_retry {
+                    cb(attempt, &err.to_string());
+                }
+                let delay = calculate_retry_delay(attempt, retry);
+                sleep_fn(delay);
+                attempt += 1;
+            }
+        }
+    }
+}
+
 /// Run a prompt through the resolved SDK and return the full output.
 ///
 /// Internally calls [`stream_for_resolved`] and folds the chunks via
-/// [`fold_stream`].
+/// [`fold_stream`], retrying transient failures according to `resolved.retry`.
 ///
 /// # Errors
 ///
 /// Returns [`RunError::Limit`] on rate/usage limits, [`RunError::Other`] for
-/// all other failures.
+/// non-retryable failures, and [`RunError::Timeout`] without retry.
 pub fn run_for_resolved(
     resolved: &ResolvedAgent,
     prompt: String,
     opts: RunAgentOptions,
 ) -> Result<RunOutput, RunError> {
-    let rx = stream_for_resolved(resolved, prompt, opts);
-    fold_stream(&rx)
+    let on_retry_holder = opts.on_retry.clone();
+    #[expect(
+        clippy::type_complexity,
+        reason = "callback type is intentionally simple"
+    )]
+    let on_retry: Option<&dyn Fn(u32, &str)> =
+        on_retry_holder.as_deref().map(|f| f as &dyn Fn(u32, &str));
+    run_with_retry_inner(
+        |p, o| {
+            let rx = stream_for_resolved(resolved, p, o);
+            fold_stream(&rx)
+        },
+        prompt,
+        opts,
+        &resolved.retry,
+        on_retry,
+        std::thread::sleep,
+    )
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "tests may panic on unexpected fixtures")]
+#[expect(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "tests may panic on unexpected fixtures"
+)]
 mod tests {
     use std::sync::Arc;
     use std::sync::mpsc::channel;
 
     use super::*;
-    use crate::sdk::config::ResolvedSkillsConfig;
-    use crate::sdk::errors::LimitError;
+    use crate::sdk::config::{ResolvedSkillsConfig, RetryConfig};
+    use crate::sdk::errors::{LimitError, TimeoutError};
 
     fn make_resolved(sdk: &str, provider: &str, model_id: &str) -> ResolvedAgent {
         ResolvedAgent {
@@ -315,6 +409,7 @@ mod tests {
             sdk: sdk.to_string(),
             api: None,
             skills: ResolvedSkillsConfig::default(),
+            retry: RetryConfig::default(),
         }
     }
 
@@ -589,5 +684,407 @@ mod tests {
             }
             other => panic!("expected RunError::Other, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // run_with_retry_inner
+    // -----------------------------------------------------------------------
+
+    fn retry_config_with_client_errors() -> RetryConfig {
+        RetryConfig {
+            retry_client_errors: true,
+            ..RetryConfig::default()
+        }
+    }
+
+    fn other_error(message: &str) -> RunError {
+        RunError::Other {
+            message: message.to_string(),
+            partial: String::new(),
+        }
+    }
+
+    fn limit_error() -> RunError {
+        RunError::Limit {
+            error: LimitError {
+                provider: "claude".to_string(),
+                reset_at: None,
+            },
+            partial: String::new(),
+        }
+    }
+
+    fn timeout_error() -> RunError {
+        RunError::Timeout {
+            error: TimeoutError {
+                ms: 1000,
+                label: "test",
+            },
+            partial: String::new(),
+        }
+    }
+
+    #[test]
+    fn retry_succeeds_on_first_attempt() {
+        // Given: a run that always succeeds
+        // When: run_with_retry_inner is called
+        // Then: it returns Ok immediately with no retries
+        let run = |_prompt: String, _opts: RunAgentOptions| {
+            Ok(RunOutput {
+                text: "hello".to_string(),
+                session_id: None,
+            })
+        };
+        let result = run_with_retry_inner(
+            run,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            &RetryConfig::default(),
+            None,
+            |_| {},
+        );
+        assert_eq!(result.unwrap().text, "hello");
+    }
+
+    #[test]
+    fn retry_limit_error_then_success() {
+        // Given: a run that fails with Limit once then succeeds
+        // When: run_with_retry_inner is called
+        // Then: it retries once and returns Ok
+        let mut calls = 0;
+        let run = |_prompt: String, _opts: RunAgentOptions| {
+            calls += 1;
+            if calls == 1 {
+                Err(limit_error())
+            } else {
+                Ok(RunOutput {
+                    text: "ok".to_string(),
+                    session_id: None,
+                })
+            }
+        };
+        let result = run_with_retry_inner(
+            run,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            &RetryConfig::default(),
+            None,
+            |_| {},
+        );
+        assert_eq!(result.unwrap().text, "ok");
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn retry_401_with_client_errors_enabled_then_success() {
+        // Given: retry_client_errors is true and a 401 occurs once
+        // When: run_with_retry_inner is called
+        // Then: it retries and succeeds
+        let mut calls = 0;
+        let run = |_prompt: String, _opts: RunAgentOptions| {
+            calls += 1;
+            if calls == 1 {
+                Err(other_error("Anthropic API error (HTTP 401): auth_error"))
+            } else {
+                Ok(RunOutput {
+                    text: "ok".to_string(),
+                    session_id: None,
+                })
+            }
+        };
+        let result = run_with_retry_inner(
+            run,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            &retry_config_with_client_errors(),
+            None,
+            |_| {},
+        );
+        assert_eq!(result.unwrap().text, "ok");
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn retry_401_without_client_errors_fails_immediately() {
+        // Given: retry_client_errors is false (default) and a 401 occurs
+        // When: run_with_retry_inner is called
+        // Then: it returns the error without retrying
+        let mut calls = 0;
+        let run = |_prompt: String, _opts: RunAgentOptions| {
+            calls += 1;
+            Err(other_error("Anthropic API error (HTTP 401): auth_error"))
+        };
+        let result = run_with_retry_inner(
+            run,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            &RetryConfig::default(),
+            None,
+            |_| {},
+        );
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn retry_404_with_client_errors_enabled_then_success() {
+        // Given: retry_client_errors is true and a 404 occurs once
+        // When: run_with_retry_inner is called
+        // Then: it retries and succeeds
+        let mut calls = 0;
+        let run = |_prompt: String, _opts: RunAgentOptions| {
+            calls += 1;
+            if calls == 1 {
+                Err(other_error("Anthropic API error (HTTP 404): not found"))
+            } else {
+                Ok(RunOutput {
+                    text: "ok".to_string(),
+                    session_id: None,
+                })
+            }
+        };
+        let result = run_with_retry_inner(
+            run,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            &retry_config_with_client_errors(),
+            None,
+            |_| {},
+        );
+        assert_eq!(result.unwrap().text, "ok");
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn retry_404_without_client_errors_fails_immediately() {
+        // Given: retry_client_errors is false (default) and a 404 occurs
+        // When: run_with_retry_inner is called
+        // Then: it returns the error without retrying
+        let mut calls = 0;
+        let run = |_prompt: String, _opts: RunAgentOptions| {
+            calls += 1;
+            Err(other_error("Anthropic API error (HTTP 404): not found"))
+        };
+        let result = run_with_retry_inner(
+            run,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            &RetryConfig::default(),
+            None,
+            |_| {},
+        );
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn retry_500_always_retries_regardless_of_client_error_flag() {
+        // Given: a 500 occurs once and retry_client_errors is false
+        // When: run_with_retry_inner is called
+        // Then: it retries anyway because 5xx are always transient
+        let mut calls = 0;
+        let run = |_prompt: String, _opts: RunAgentOptions| {
+            calls += 1;
+            if calls == 1 {
+                Err(other_error("Anthropic API error (HTTP 500): internal"))
+            } else {
+                Ok(RunOutput {
+                    text: "ok".to_string(),
+                    session_id: None,
+                })
+            }
+        };
+        let result = run_with_retry_inner(
+            run,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            &RetryConfig::default(),
+            None,
+            |_| {},
+        );
+        assert_eq!(result.unwrap().text, "ok");
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn retry_403_fails_immediately() {
+        // Given: a 403 occurs
+        // When: run_with_retry_inner is called
+        // Then: it returns the error without retrying
+        let mut calls = 0;
+        let run = |_prompt: String, _opts: RunAgentOptions| {
+            calls += 1;
+            Err(other_error("Anthropic API error (HTTP 403): forbidden"))
+        };
+        let result = run_with_retry_inner(
+            run,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            &retry_config_with_client_errors(),
+            None,
+            |_| {},
+        );
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn retry_disabled_fails_immediately_on_transient_error() {
+        // Given: retries are disabled and a transient 429 occurs
+        // When: run_with_retry_inner is called
+        // Then: it returns the error without retrying
+        let mut calls = 0;
+        let run = |_prompt: String, _opts: RunAgentOptions| {
+            calls += 1;
+            Err(other_error("Anthropic API error (HTTP 429): rate limited"))
+        };
+        let cfg = RetryConfig {
+            enabled: false,
+            ..RetryConfig::default()
+        };
+        let result = run_with_retry_inner(
+            run,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            &cfg,
+            None,
+            |_| {},
+        );
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn retry_exhausted_returns_last_error() {
+        // Given: every attempt fails with a transient error and max_attempts is 3
+        // When: run_with_retry_inner is called
+        // Then: it returns the last error after 3 attempts
+        let mut calls = 0;
+        let run = |_prompt: String, _opts: RunAgentOptions| {
+            calls += 1;
+            Err(other_error(&format!("HTTP 500 attempt {calls}")))
+        };
+        let cfg = RetryConfig {
+            max_attempts: 3,
+            ..RetryConfig::default()
+        };
+        let result = run_with_retry_inner(
+            run,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            &cfg,
+            None,
+            |_| {},
+        );
+        match result {
+            Err(RunError::Other { message, .. }) => {
+                assert!(message.contains("attempt 3"), "got: {message}");
+            }
+            other => panic!("expected attempt 3 error, got {other:?}"),
+        }
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn retry_timeout_fails_immediately() {
+        // Given: a timeout occurs
+        // When: run_with_retry_inner is called
+        // Then: it returns the error without retrying
+        let mut calls = 0;
+        let run = |_prompt: String, _opts: RunAgentOptions| {
+            calls += 1;
+            Err(timeout_error())
+        };
+        let result = run_with_retry_inner(
+            run,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            &RetryConfig::default(),
+            None,
+            |_| {},
+        );
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn retry_delay_doubles_each_attempt_until_max() {
+        // Given: a run that always fails transiently and a retry config with
+        // initialDelaySecs=2, multiplier=2, maxDelaySecs=60
+        // When: run_with_retry_inner is called
+        // Then: sleep durations are 2s, 4s, 8s, 16s, ... clamped at 60s
+        let run = |_prompt: String, _opts: RunAgentOptions| Err(other_error("HTTP 500"));
+        let mut sleeps: Vec<u64> = Vec::new();
+        let cfg = RetryConfig {
+            max_attempts: 6,
+            ..RetryConfig::default()
+        };
+        let _ = run_with_retry_inner(
+            run,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            &cfg,
+            None,
+            |d| sleeps.push(d.as_secs()),
+        );
+        assert_eq!(sleeps, vec![2, 4, 8, 16, 32]);
+    }
+
+    #[test]
+    fn retry_delay_clamps_at_max_delay_secs() {
+        // Given: a retry config with a low maxDelaySecs
+        // When: run_with_retry_inner is called repeatedly
+        // Then: sleep durations never exceed maxDelaySecs
+        let run = |_prompt: String, _opts: RunAgentOptions| Err(other_error("HTTP 500"));
+        let mut sleeps: Vec<u64> = Vec::new();
+        let cfg = RetryConfig {
+            max_attempts: 5,
+            initial_delay_secs: 10,
+            max_delay_secs: 15,
+            multiplier: 2.0,
+            ..RetryConfig::default()
+        };
+        let _ = run_with_retry_inner(
+            run,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            &cfg,
+            None,
+            |d| sleeps.push(d.as_secs()),
+        );
+        assert_eq!(sleeps, vec![10, 15, 15, 15]);
+    }
+
+    #[test]
+    fn retry_invokes_on_callback_once_per_retry() {
+        // Given: a run that fails once then succeeds and an on_retry callback
+        // When: run_with_retry_inner is called
+        // Then: the callback is invoked exactly once with attempt=1
+        let mut calls = 0;
+        let run = |_prompt: String, _opts: RunAgentOptions| {
+            calls += 1;
+            if calls == 1 {
+                Err(other_error("HTTP 500"))
+            } else {
+                Ok(RunOutput {
+                    text: "ok".to_string(),
+                    session_id: None,
+                })
+            }
+        };
+        let callback_attempts = std::cell::RefCell::new(Vec::new());
+        let cb = |attempt: u32, _msg: &str| {
+            callback_attempts.borrow_mut().push(attempt);
+        };
+        let result = run_with_retry_inner(
+            run,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            &RetryConfig::default(),
+            Some(&cb),
+            |_| {},
+        );
+        assert_eq!(result.unwrap().text, "ok");
+        assert_eq!(*callback_attempts.borrow(), vec![1]);
     }
 }

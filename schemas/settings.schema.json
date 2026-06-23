@@ -13,6 +13,10 @@
       "$ref": "#/$defs/skillsConfig",
       "description": "Top-level skill-discovery defaults. Each provider may override this via its own `skills` block."
     },
+    "retry": {
+      "$ref": "#/$defs/retryConfig",
+      "description": "Top-level retry policy defaults. Each provider may override this via its own `retry` block."
+    },
     "providers": {
       "type": "object",
       "description": "Map of provider entries. The map key doubles as the provider label and the default provider name.",
@@ -29,6 +33,47 @@
         "includeClaude": {
           "type": "boolean",
           "description": "Whether to auto-discover Claude skills. Default: true."
+        }
+      },
+      "additionalProperties": false
+    },
+    "retryConfig": {
+      "type": "object",
+      "description": "Exponential-backoff retry policy for transient provider API errors. Provider-level settings override root-level settings as a whole; missing values fall back to the defaults shown below.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether retries are enabled. Default: true.",
+          "default": true
+        },
+        "maxAttempts": {
+          "type": "integer",
+          "description": "Maximum number of attempts before giving up. Default: 5.",
+          "default": 5,
+          "minimum": 1
+        },
+        "initialDelaySecs": {
+          "type": "integer",
+          "description": "Delay before the first retry, in seconds. Default: 2.",
+          "default": 2,
+          "minimum": 0
+        },
+        "maxDelaySecs": {
+          "type": "integer",
+          "description": "Maximum delay between retries, in seconds. Default: 60.",
+          "default": 60,
+          "minimum": 0
+        },
+        "multiplier": {
+          "type": "number",
+          "description": "Multiplier applied to the delay after each retry. Default: 2.0.",
+          "default": 2.0,
+          "minimum": 1.0
+        },
+        "retryClientErrors": {
+          "type": "boolean",
+          "description": "Opt-in flag to also retry HTTP 401/404 errors. Some providers return these during transient outages, but normally they indicate authentication or routing failures. Default: false.",
+          "default": false
         }
       },
       "additionalProperties": false
@@ -71,6 +116,10 @@
         "skills": {
           "$ref": "#/$defs/skillsConfig",
           "description": "Per-provider override of the top-level skills config."
+        },
+        "retry": {
+          "$ref": "#/$defs/retryConfig",
+          "description": "Per-provider override of the top-level retry policy. This replaces the root retry block entirely rather than merging individual fields."
         },
         "models": {
           "type": "object",

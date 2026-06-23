@@ -394,6 +394,15 @@ If none of these exist, an empty config is used (and no providers are available)
 skills:
   includeClaude: true
 
+# Top-level retry policy defaults (optional). Provider-level `retry` blocks
+# replace these settings entirely rather than merging individual fields.
+retry:
+  enabled: true
+  maxAttempts: 5
+  initialDelaySecs: 2
+  maxDelaySecs: 60
+  multiplier: 2.0
+
 providers:
   # Map key doubles as the provider label and the default provider name.
   claude:
@@ -432,6 +441,15 @@ providers:
       includeClaude: false   # per-provider override of the top-level default
     models:
       build: zai/glm-4.6
+
+  kimi:
+    # Some providers occasionally return HTTP 401/404 during transient outages.
+    # Set retryClientErrors to true to opt in to retrying those status codes.
+    retry:
+      enabled: true
+      retryClientErrors: true
+    models:
+      build: kimi/k1
 ```
 
 ### Provider fields
@@ -445,6 +463,12 @@ providers:
 | `api.key` | string | API key (for API-key-based limit checks and pi execution) |
 | `api.endpoint` | string | API endpoint override |
 | `skills.includeClaude` | boolean | Whether to auto-discover Claude skills for this provider |
+| `retry.enabled` | boolean | Whether to retry transient provider API errors. Default: `true`. Also accepted at the top level |
+| `retry.maxAttempts` | integer | Maximum retry attempts. Default: `5`. Also accepted at the top level |
+| `retry.initialDelaySecs` | integer | Delay before the first retry, in seconds. Default: `2`. Also accepted at the top level |
+| `retry.maxDelaySecs` | integer | Maximum delay between retries, in seconds. Default: `60`. Also accepted at the top level |
+| `retry.multiplier` | number | Backoff multiplier applied after each retry. Default: `2.0`. Also accepted at the top level |
+| `retry.retryClientErrors` | boolean | Opt-in flag to also retry HTTP 401/404 errors that some providers return during transient outages. Default: `false`. Also accepted at the top level |
 | `models` | map | **Required.** Maps a mode key (`plan`, `build`, or any custom key passed via `-m`) to a model |
 
 ### Model entries

@@ -39,6 +39,74 @@ impl Default for ResolvedSkillsConfig {
     }
 }
 
+/// Retry policy configuration.
+///
+/// Provider-level settings override root-level settings; missing values fall
+/// back to the defaults below.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct RetryConfig {
+    #[serde(default = "RetryConfig::default_enabled", rename = "enabled")]
+    pub enabled: bool,
+    #[serde(default = "RetryConfig::default_max_attempts", rename = "maxAttempts")]
+    pub max_attempts: u32,
+    #[serde(
+        default = "RetryConfig::default_initial_delay_secs",
+        rename = "initialDelaySecs"
+    )]
+    pub initial_delay_secs: u64,
+    #[serde(
+        default = "RetryConfig::default_max_delay_secs",
+        rename = "maxDelaySecs"
+    )]
+    pub max_delay_secs: u64,
+    #[serde(default = "RetryConfig::default_multiplier", rename = "multiplier")]
+    pub multiplier: f64,
+    #[serde(
+        default = "RetryConfig::default_retry_client_errors",
+        rename = "retryClientErrors"
+    )]
+    pub retry_client_errors: bool,
+}
+
+impl RetryConfig {
+    fn default_enabled() -> bool {
+        true
+    }
+
+    fn default_max_attempts() -> u32 {
+        5
+    }
+
+    fn default_initial_delay_secs() -> u64 {
+        2
+    }
+
+    fn default_max_delay_secs() -> u64 {
+        60
+    }
+
+    fn default_multiplier() -> f64 {
+        2.0
+    }
+
+    fn default_retry_client_errors() -> bool {
+        false
+    }
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Self::default_enabled(),
+            max_attempts: Self::default_max_attempts(),
+            initial_delay_secs: Self::default_initial_delay_secs(),
+            max_delay_secs: Self::default_max_delay_secs(),
+            multiplier: Self::default_multiplier(),
+            retry_client_errors: Self::default_retry_client_errors(),
+        }
+    }
+}
+
 /// Per-mode model entry inside a [`ProviderEntry`].
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ModelEntry {
@@ -80,11 +148,13 @@ pub(crate) struct ProviderEntryRaw {
     pub api: Option<ProviderApi>,
     #[serde(default)]
     pub skills: Option<SkillsConfig>,
+    #[serde(default)]
+    pub retry: Option<RetryConfig>,
     pub models: IndexMap<String, ModelEntryRaw>,
 }
 
 /// A single provider in the YAML `providers` map (after normalization).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProviderEntry {
     /// YAML map key as written in the config (stable label).
     pub key: String,
@@ -100,6 +170,8 @@ pub struct ProviderEntry {
     pub priority: Option<i32>,
     pub api: Option<ProviderApi>,
     pub skills: Option<SkillsConfig>,
+    /// Provider-level retry policy override.
+    pub retry: Option<RetryConfig>,
     /// Mode -> model entry. Keys include `plan`, `build`, plus user-defined keys.
     pub models: IndexMap<String, ModelEntry>,
 }
@@ -111,13 +183,16 @@ pub(crate) struct ConfigRaw {
     pub providers: IndexMap<String, ProviderEntryRaw>,
     #[serde(default)]
     pub skills: Option<SkillsConfig>,
+    #[serde(default)]
+    pub retry: Option<RetryConfig>,
 }
 
 /// Normalized config root.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Config {
     pub providers: Vec<ProviderEntry>,
     pub skills: Option<SkillsConfig>,
+    pub retry: Option<RetryConfig>,
 }
 
 impl Config {
@@ -132,6 +207,17 @@ impl Config {
                 .and_then(|s| s.include_claude)
                 .or_else(|| self.skills.as_ref().and_then(|s| s.include_claude))
                 .unwrap_or(true),
+        }
+    }
+
+    /// Resolve effective retry config for a provider entry, falling back to root,
+    /// then to hard-coded defaults.
+    #[must_use]
+    pub fn resolve_retry(&self, entry: &ProviderEntry) -> RetryConfig {
+        match (&entry.retry, &self.retry) {
+            (Some(provider_retry), _) => provider_retry.clone(),
+            (None, Some(root_retry)) => root_retry.clone(),
+            (None, None) => RetryConfig::default(),
         }
     }
 }
@@ -155,6 +241,7 @@ impl From<ConfigRaw> for Config {
                     priority: p.priority,
                     api: p.api,
                     skills: p.skills,
+                    retry: p.retry,
                     models,
                 }
             })
@@ -162,12 +249,13 @@ impl From<ConfigRaw> for Config {
         Self {
             providers,
             skills: raw.skills,
+            retry: raw.retry,
         }
     }
 }
 
 /// Output of [`resolve_agent`](crate::sdk::resolve::resolve_agent): which provider/model to use.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedAgent {
     /// Resolved provider name (e.g., "claude", "zai").
     pub provider: String,
@@ -181,6 +269,8 @@ pub struct ResolvedAgent {
     pub api: Option<ProviderApi>,
     /// Skill discovery flags resolved from per-provider > root > defaults.
     pub skills: ResolvedSkillsConfig,
+    /// Retry policy resolved from per-provider > root > defaults.
+    pub retry: RetryConfig,
 }
 
 #[cfg(test)]
@@ -280,6 +370,7 @@ providers:
             priority: None,
             api: None,
             skills: None,
+            retry: None,
             models: IndexMap::new(),
         };
         assert!(cfg.resolve_skills(&entry).include_claude);
@@ -292,6 +383,7 @@ providers:
             skills: Some(SkillsConfig {
                 include_claude: Some(false),
             }),
+            retry: None,
         };
         let entry = ProviderEntry {
             key: "x".into(),
@@ -303,8 +395,173 @@ providers:
             skills: Some(SkillsConfig {
                 include_claude: Some(true),
             }),
+            retry: None,
             models: IndexMap::new(),
         };
         assert!(cfg.resolve_skills(&entry).include_claude);
+    }
+
+    // -----------------------------------------------------------------------
+    // RetryConfig parsing and resolution
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn retry_config_defaults() {
+        let cfg = RetryConfig::default();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.max_attempts, 5);
+        assert_eq!(cfg.initial_delay_secs, 2);
+        assert_eq!(cfg.max_delay_secs, 60);
+        assert!((cfg.multiplier - 2.0).abs() < f64::EPSILON);
+        assert!(!cfg.retry_client_errors);
+    }
+
+    #[test]
+    fn retry_config_parses_camel_case_yaml() {
+        let yaml = "
+enabled: false
+maxAttempts: 3
+initialDelaySecs: 1
+maxDelaySecs: 10
+multiplier: 1.5
+retryClientErrors: true
+";
+        let parsed: RetryConfig = serde_yaml::from_str(yaml).expect("parse");
+        assert!(!parsed.enabled);
+        assert_eq!(parsed.max_attempts, 3);
+        assert_eq!(parsed.initial_delay_secs, 1);
+        assert_eq!(parsed.max_delay_secs, 10);
+        assert!((parsed.multiplier - 1.5).abs() < f64::EPSILON);
+        assert!(parsed.retry_client_errors);
+    }
+
+    #[test]
+    fn retry_config_partial_yaml_uses_defaults_for_missing_fields() {
+        let yaml = "maxAttempts: 2";
+        let parsed: RetryConfig = serde_yaml::from_str(yaml).expect("parse");
+        assert!(parsed.enabled);
+        assert_eq!(parsed.max_attempts, 2);
+        assert!(!parsed.retry_client_errors);
+    }
+
+    #[test]
+    fn retry_resolution_uses_defaults_when_no_config() {
+        let cfg = Config::default();
+        let entry = ProviderEntry {
+            key: "x".into(),
+            order: 0,
+            provider: "x".into(),
+            sdk: "pi".into(),
+            priority: None,
+            api: None,
+            skills: None,
+            retry: None,
+            models: IndexMap::new(),
+        };
+        let resolved = cfg.resolve_retry(&entry);
+        assert!(resolved.enabled);
+        assert_eq!(resolved.max_attempts, 5);
+        assert!(!resolved.retry_client_errors);
+    }
+
+    #[test]
+    fn retry_resolution_root_overrides_defaults() {
+        let cfg = Config {
+            providers: vec![],
+            skills: None,
+            retry: Some(RetryConfig {
+                enabled: false,
+                ..RetryConfig::default()
+            }),
+        };
+        let entry = ProviderEntry {
+            key: "x".into(),
+            order: 0,
+            provider: "x".into(),
+            sdk: "pi".into(),
+            priority: None,
+            api: None,
+            skills: None,
+            retry: None,
+            models: IndexMap::new(),
+        };
+        assert!(!cfg.resolve_retry(&entry).enabled);
+    }
+
+    #[test]
+    fn retry_resolution_provider_overrides_root() {
+        let cfg = Config {
+            providers: vec![],
+            skills: None,
+            retry: Some(RetryConfig {
+                enabled: false,
+                ..RetryConfig::default()
+            }),
+        };
+        let entry = ProviderEntry {
+            key: "x".into(),
+            order: 0,
+            provider: "x".into(),
+            sdk: "pi".into(),
+            priority: None,
+            api: None,
+            skills: None,
+            retry: Some(RetryConfig {
+                enabled: true,
+                retry_client_errors: true,
+                ..RetryConfig::default()
+            }),
+            models: IndexMap::new(),
+        };
+        let resolved = cfg.resolve_retry(&entry);
+        assert!(resolved.enabled);
+        assert!(resolved.retry_client_errors);
+    }
+
+    #[test]
+    fn retry_resolution_provider_replaces_root_entirely() {
+        // Per the design, RetryConfig is treated as a whole Option<RetryConfig>;
+        // a provider-level override does NOT merge individual fields with root.
+        let cfg = Config {
+            providers: vec![],
+            skills: None,
+            retry: Some(RetryConfig {
+                max_attempts: 3,
+                ..RetryConfig::default()
+            }),
+        };
+        let entry = ProviderEntry {
+            key: "x".into(),
+            order: 0,
+            provider: "x".into(),
+            sdk: "pi".into(),
+            priority: None,
+            api: None,
+            skills: None,
+            retry: Some(RetryConfig {
+                enabled: false,
+                ..RetryConfig::default()
+            }),
+            models: IndexMap::new(),
+        };
+        let resolved = cfg.resolve_retry(&entry);
+        assert!(!resolved.enabled);
+        // max_attempts comes from provider defaults, NOT from root's 3.
+        assert_eq!(resolved.max_attempts, 5);
+    }
+
+    #[test]
+    fn retry_config_roundtrips_through_yaml() {
+        let original = RetryConfig {
+            enabled: true,
+            max_attempts: 7,
+            initial_delay_secs: 3,
+            max_delay_secs: 120,
+            multiplier: 3.0,
+            retry_client_errors: true,
+        };
+        let yaml = serde_yaml::to_string(&original).expect("serialize");
+        let parsed: RetryConfig = serde_yaml::from_str(&yaml).expect("deserialize");
+        assert_eq!(parsed, original);
     }
 }
