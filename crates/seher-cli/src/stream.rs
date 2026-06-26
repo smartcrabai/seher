@@ -18,14 +18,14 @@ pub enum Outcome {
 /// Where the stream drain should emit output.
 #[derive(Clone, Copy)]
 pub enum StreamOutput {
-    /// Write deltas and the final newline to the supplied writer (stdout in production).
-    Stdout,
+    /// Forward deltas and the final newline to the supplied writer (stdout in production).
+    Forward,
     /// Suppress all output to the writer; only collect the concatenated text.
     CaptureOnly,
 }
 
 /// Drain a `Receiver<StreamChunk>` according to `output`, writing each delta as
-/// it arrives only when [`StreamOutput::Stdout`] is selected.
+/// it arrives only when [`StreamOutput::Forward`] is selected.
 ///
 /// `timeout_ms` is the total deadline (in ms) from "now" -- it does NOT abort the
 /// in-flight worker thread; on timeout, the receiver is dropped and the worker
@@ -90,11 +90,18 @@ pub fn drain_stream<W: Write>(
         };
         match chunk {
             StreamChunk::Delta(d) => {
-                if matches!(output, StreamOutput::Stdout) {
-                    let _ = writer.write_all(d.as_bytes());
-                    let _ = writer.flush();
-                }
                 full.push_str(&d);
+                if matches!(output, StreamOutput::Forward)
+                    && let Err(e) = writer.write_all(d.as_bytes()).and_then(|()| writer.flush())
+                {
+                    // Piping into `head` and similar tools closes the read end
+                    // once they have enough data. Treat that as a successful
+                    // run rather than a fatal error.
+                    if e.kind() == std::io::ErrorKind::BrokenPipe {
+                        return Outcome::Done(full);
+                    }
+                    return Outcome::Error(format!("failed to write stream output: {e}"));
+                }
             }
             // Session id is metadata -- keep stdout clean for piping and surface it on
             // stderr so a follow-up turn can resume with `--resume <id>`.
@@ -102,9 +109,13 @@ pub fn drain_stream<W: Write>(
                 eprintln!("session: {id}");
             }
             StreamChunk::Done(t) => {
-                if matches!(output, StreamOutput::Stdout) {
-                    let _ = writer.write_all(b"\n");
-                    let _ = writer.flush();
+                if matches!(output, StreamOutput::Forward)
+                    && let Err(e) = writer.write_all(b"\n").and_then(|()| writer.flush())
+                {
+                    if e.kind() == std::io::ErrorKind::BrokenPipe {
+                        return Outcome::Done(if t.is_empty() { full } else { t });
+                    }
+                    return Outcome::Error(format!("failed to write stream output: {e}"));
                 }
                 return Outcome::Done(if t.is_empty() { full } else { t });
             }
@@ -132,7 +143,7 @@ pub fn drain_to_stdout(
 ) -> Outcome {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    drain_stream(rx, timeout_ms, cancel, StreamOutput::Stdout, &mut out)
+    drain_stream(rx, timeout_ms, cancel, StreamOutput::Forward, &mut out)
 }
 
 /// Drain a `Receiver<StreamChunk>` without writing to stdout, returning the
@@ -346,15 +357,77 @@ mod tests {
     }
 
     #[test]
-    fn capture_only_stdout_policy_writes_deltas_and_final_newline() {
+    fn forward_policy_writes_deltas_and_final_newline() {
         let (tx, rx) = channel();
         tx.send(StreamChunk::Delta("hello".to_string())).unwrap();
         tx.send(StreamChunk::Done(String::new())).unwrap();
         drop(tx);
         let mut buf: Vec<u8> = Vec::new();
-        let outcome = drain_stream(rx, None, &no_cancel(), StreamOutput::Stdout, &mut buf);
+        let outcome = drain_stream(rx, None, &no_cancel(), StreamOutput::Forward, &mut buf);
         assert!(matches!(outcome, Outcome::Done(_)), "expected Done");
         assert_eq!(String::from_utf8(buf).unwrap(), "hello\n");
+    }
+
+    #[test]
+    fn forward_writer_error_surfaces_as_outcome_error() {
+        struct FailingWriter;
+        impl std::io::Write for FailingWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "simulated write failure",
+                ))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "simulated flush failure",
+                ))
+            }
+        }
+
+        let (tx, rx) = channel();
+        tx.send(StreamChunk::Delta("hello".to_string())).unwrap();
+        tx.send(StreamChunk::Done(String::new())).unwrap();
+        drop(tx);
+        let mut writer = FailingWriter;
+        let outcome = drain_stream(rx, None, &no_cancel(), StreamOutput::Forward, &mut writer);
+        assert!(
+            matches!(outcome, Outcome::Error(ref m) if m.contains("simulated")),
+            "expected Error from the writer, got {outcome:?}",
+            outcome = OutcomeDebug(&outcome)
+        );
+    }
+
+    #[test]
+    fn broken_pipe_during_forward_is_treated_as_done() {
+        struct BrokenPipeWriter;
+        impl std::io::Write for BrokenPipeWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "simulated broken pipe",
+                ))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "simulated broken pipe",
+                ))
+            }
+        }
+
+        let (tx, rx) = channel();
+        tx.send(StreamChunk::Delta("hello".to_string())).unwrap();
+        tx.send(StreamChunk::Done(String::new())).unwrap();
+        drop(tx);
+        let mut writer = BrokenPipeWriter;
+        let outcome = drain_stream(rx, None, &no_cancel(), StreamOutput::Forward, &mut writer);
+        assert!(
+            matches!(outcome, Outcome::Done(ref s) if s == "hello"),
+            "expected Done after BrokenPipe, got {outcome:?}",
+            outcome = OutcomeDebug(&outcome)
+        );
     }
 
     #[test]

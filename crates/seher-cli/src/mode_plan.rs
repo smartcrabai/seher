@@ -55,7 +55,7 @@ pub fn run(
         build_key,
         None,
         logger,
-        StreamOutput::Stdout,
+        StreamOutput::Forward,
     )?;
     Ok(())
 }

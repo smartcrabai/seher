@@ -1,0 +1,1601 @@
+diff --git a/.handoff.md b/.handoff.md
+new file mode 100644
+index 0000000..f1ac5fd
+--- /dev/null
++++ b/.handoff.md
+@@ -0,0 +1,37 @@
++# Handoff: Plan-mode TTY suspension fix verification complete
++
++## Status
++
++Verification of the `seher plan` TTY-suspension fix is complete. All requirements from `/Users/takumi/.local/share/cruise/sessions/20260625101833293_66edf215f19b495fa6c9ce7083c6e3ac/plan.md` are implemented and no code changes were required.
++
++## What was done
++
++- Ran `cargo clippy --all-features --all-targets` -> clean (no warnings).
++- Ran `cargo test -p seher-cli` -> 43 passed, 0 failed.
++- Ran `cargo test -p seher-sdk` -> 167 passed, 0 failed.
++- Ran `cargo test --all` -> all passed.
++- Manually ran `./target/debug/seher plan hello` in the agent harness (non-foreground / no TTY):
++  - Got explicit error `cannot open controlling terminal /dev/tty: Device not configured (os error 6)` and exit code 1.
++  - Confirmed no `zsh: suspended (tty output)` occurs.
++- Verified source files implement the plan:
++  - `crates/seher-cli/src/stream.rs`: `StreamOutput` enum with `Stdout`/`CaptureOnly`, `drain_stream`, `drain_to_capture`.
++  - `crates/seher-cli/src/prompt.rs`: `ensure_editor_available()` foreground check via `tcgetpgrp`/`getpgrp`, `/dev/tty` editor stdio.
++  - `crates/seher-cli/src/mode_plan.rs`: plan generation uses `CaptureOnly`, build phase uses `Stdout`.
++  - `crates/seher-cli/src/mode_build.rs`: build mode uses `Stdout`.
++  - `crates/seher-cli/src/run_mode.rs`: output policy threaded through `resolve_and_stream`/`stream_with_http_retry`.
++  - `README.md`: plan-mode description updated (lines 59-60, 113-114).
++- Used `agent-browser` to view a local verification report and then closed it.
++- Stopped the temporary local HTTP server used to serve the report.
++
++## What remains
++
++Nothing blocking. Optional follow-ups:
++
++1. (Optional) In a real foreground macOS/Linux terminal, run `EDITOR=true seher plan hello` to confirm the editor opens and the plan is not pre-dumped to stdout. This cannot be fully exercised inside the agent harness because `/dev/tty` is not available here.
++2. (Optional) Merge the branch once the above manual check is satisfied.
++
++## Next-agent starting position
++
++1. Branch is at commit `a3a29ca` (after `bb2b6b8` plan-mode fix + ASCII compliance pass).
++2. No code changes are pending; `git status` shows only this `.handoff.md` file untracked.
++3. If desired, run the optional foreground-terminal manual test and merge.
+diff --git a/Cargo.lock b/Cargo.lock
+index 082d75f..bae99d3 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -3867,6 +3867,7 @@ version = "0.0.47"
+ dependencies = [
+  "chrono",
+  "clap",
++ "libc",
+  "seher-sdk",
+  "serde_json",
+  "tempfile",
+diff --git a/Cargo.toml b/Cargo.toml
+index 579c7bf..8193832 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -21,6 +21,7 @@ claude-agent-sdk = { path = "crates/claude-agent-sdk", version = "0.0.47", packa
+ dirs = "6.0"
+ hmac = "0.13"
+ indexmap = { version = "2", features = ["serde"] }
++libc = "0.2"
+ regex = "1"
+ reqwest = { version = "0.13", default-features = false, features = [
+   "rustls",
+diff --git a/README.md b/README.md
+index d9c7ebe..173c017 100644
+--- a/README.md
++++ b/README.md
+@@ -2,7 +2,7 @@
+ 
+ Seher picks the highest-priority coding agent that is **not** currently rate-limited, then runs a `plan` / `build` prompt through it. If every configured agent is at its limit, seher waits until the earliest reset and tries again.
+ 
+-Prompts are executed in-process by the [`pi`](https://github.com/Dicklesworthstone/pi_agent_rust) agent engine, or via the local `claude` CLI. There are three CLI backends: `claude-terminal` (drives `claude` via tmux), `claude-headless` (runs `claude -p` as a subprocess), and `claude` (drives the CLI through the in-tree [`claude-agent-sdk`](crates/claude-agent-sdk) crate — a Rust port of [`anthropics/claude-agent-sdk-python`](https://github.com/anthropics/claude-agent-sdk-python) — which adds stream-json output, the control protocol, and in-process MCP tools). Rate-limit detection is delegated to the external [`codexbar`](https://codexbar.app/) binary, which seher invokes per provider.
++Prompts are executed in-process by the [`pi`](https://github.com/Dicklesworthstone/pi_agent_rust) agent engine, or via the local `claude` CLI. There are three CLI backends: `claude-terminal` (drives `claude` via tmux), `claude-headless` (runs `claude -p` as a subprocess), and `claude` (drives the CLI through the in-tree [`claude-agent-sdk`](crates/claude-agent-sdk) crate -- a Rust port of [`anthropics/claude-agent-sdk-python`](https://github.com/anthropics/claude-agent-sdk-python) -- which adds stream-json output, the control protocol, and in-process MCP tools). Rate-limit detection is delegated to the external [`codexbar`](https://codexbar.app/) binary, which seher invokes per provider.
+ 
+ The repository is a Cargo workspace with three crates:
+ 
+@@ -28,7 +28,7 @@ codexbar must be installed and on `PATH` (or pointed to via `SEHER_CODEXBAR_BIN`
+ 
+ ## Installation
+ 
+-### Homebrew (macOS / Linux) — recommended
++### Homebrew (macOS / Linux) -- recommended
+ 
+ ```sh
+ brew install smartcrabai/tap/seher
+@@ -52,14 +52,15 @@ cargo install --git https://github.com/smartcrabai/seher seher-cli
+ ## Usage
+ 
+ ```sh
+-# Build mode (default) — resolve a build-mode provider and run the prompt
++# Build mode (default) -- resolve a build-mode provider and run the prompt
+ seher "fix bugs"
+ seher build "fix bugs"
+ 
+-# Plan mode — generate a plan, open it in $EDITOR for review, then execute it
++# Plan mode -- generate a plan (captured, not printed), open it in $EDITOR for review, then execute it
++# Requires a foreground terminal so the editor can be opened safely.
+ seher plan "add OAuth login"
+ 
+-# No prompt → input via stdin or $EDITOR (defaults to vim)
++# No prompt -> input via stdin or $EDITOR (defaults to vim)
+ seher
+ echo "fix bugs" | seher
+ 
+@@ -110,7 +111,7 @@ When no prompt is given on the command line, seher resolves it in this order:
+ ### Modes
+ 
+ - **`build`** (default): resolves the highest-priority non-limited provider for the `build` mode key and streams the prompt through it.
+-- **`plan`**: first resolves the `plan` mode key and streams a Markdown implementation plan (the model is instructed to output *only* the plan and touch no files). The plan opens in `$EDITOR` for review/editing; the edited plan is then wrapped and executed under the `build` mode key. Leaving the editor empty cancels the run.
++- **`plan`**: first resolves the `plan` mode key and generates a Markdown implementation plan (the model is instructed to output *only* the plan and touch no files). The generated plan is captured internally instead of streamed to stdout, then opened in `$EDITOR` for review/editing. The edited plan is wrapped and executed under the `build` mode key, whose output is streamed to stdout as usual. Leaving the editor empty cancels the run. Because `plan` must launch an editor, it requires a foreground terminal; running without one exits with an explicit error instead of being suspended.
+ 
+ The first trailing token (`plan` or `build`) selects the mode; anything else is treated as the start of the prompt and defaults to build mode. `-m/--model` overrides both the plan and build keys used during resolution.
+ 
+@@ -146,7 +147,7 @@ installed on the host (or pointed to via `SEHER_CODEXBAR_BIN`).
+ 
+ The library exposes two layers.
+ 
+-### Low level — run a prompt through pi
++### Low level -- run a prompt through pi
+ 
+ `PiRunner` streams a prompt through the `pi` engine. `stream` returns a channel of
+ `StreamChunk` values (`Delta`, `Done`, `Session`, `Limit`, `Error`) and runs pi on
+@@ -191,7 +192,7 @@ loop {
+ also binds where multi-turn session files live. Both `stream` and the blocking
+ `run` convenience take a `resume` argument: `None` starts a fresh session (a new
+ id is generated and emitted as the first chunk via `StreamChunk::Session`), and
+-`Some(id)` continues a prior turn — pass the same `working_directory` the session
++`Some(id)` continues a prior turn -- pass the same `working_directory` the session
+ was created with:
+ 
+ ```rust
+@@ -205,10 +206,10 @@ let runner = PiRunner::new(PiRunnerOptions {
+     ..PiRunnerOptions::default()
+ });
+ 
+-// Turn 1 — fresh session. `run` returns the full text plus the session id.
++// Turn 1 -- fresh session. `run` returns the full text plus the session id.
+ let first = runner.run("implement the feature".to_string(), None)?;
+ 
+-// Turn 2 — same runner options, resumed by id.
++// Turn 2 -- same runner options, resumed by id.
+ let second = runner.run("now add tests".to_string(), Some(first.session_id))?;
+ ```
+ 
+@@ -223,7 +224,7 @@ contract via `claude --resume <id>`.
+ prompt runs. A `SeherTool` pairs a name/description and a JSON Schema
+ (`type: object` with `properties`) with a synchronous handler. The handler
+ receives the raw JSON input the model produced; `Ok(text)` becomes the tool
+-result, and `Err(message)` is fed back to the model with `is_error: true` —
++result, and `Err(message)` is fed back to the model with `is_error: true` --
+ standard function-calling behavior, so the model can recover or retry without
+ aborting the turn:
+ 
+@@ -262,8 +263,8 @@ created.
+ 
+ Tool-capable SDKs:
+ 
+-- **`pi`** — tools are injected directly into the in-process agent session.
+-- **`claude`** — tools are served through the SDK MCP control channel of
++- **`pi`** -- tools are injected directly into the in-process agent session.
++- **`claude`** -- tools are served through the SDK MCP control channel of
+   `claude-agent-sdk` (in-process JSON-RPC, no external server needed). Pass
+   the same `Vec<SeherTool>` via `ClaudeAgentRunnerConfig.tools` in
+   `seher::claude_agent::stream_agent`. The toolbox is auto-registered under
+@@ -278,7 +279,7 @@ on `ResolveOptions`/`PollOptions` so resolution drops non-tool-capable
+ candidates instead of silently ignoring the tools; if every candidate is
+ dropped, resolution fails with a `NoMatching` error explaining why.
+ 
+-### High level — resolve a non-limited provider, then run
++### High level -- resolve a non-limited provider, then run
+ 
+ `resolve_agent` applies the same priority + rate-limit logic as the CLI and returns
+ the winning `ResolvedAgent`. It is async; pair it with `CodexBarProbe` (which queries
+@@ -310,7 +311,7 @@ println!("selected {} (pi/{})", resolved.provider, resolved.model_id);
+ 
+ See `crates/seher-sdk/examples/pi_mvp.rs` for a runnable example, and
+ `crates/seher-cli/src/run_mode.rs` for the full
+-resolve → stream → retry-on-limit loop.
++resolve -> stream -> retry-on-limit loop.
+ 
+ ### Driving the `claude` CLI directly
+ 
+@@ -367,7 +368,7 @@ let opts = ClaudeAgentOptions {
+ let mut stream = query("Summarize the README.", Some(opts), None).await?;
+ while let Some(msg) = stream.next().await {
+     if let Message::Assistant(a) = msg? {
+-        // …
++        // ...
+     }
+ }
+ ```
+@@ -462,7 +463,7 @@ When a provider uses the in-process `pi` SDK (the default), Seher automatically
+ |-------|------|-------------|
+ | *(map key)* | string | Provider label and default provider name |
+ | `provider` | string | Explicit provider name; defaults to the map key |
+-| `sdk` | string | Execution engine. Defaults to `"pi"`. Executable engines in this build: `pi` (in-process), `claude` (drives the local `claude` CLI through `claude-agent-sdk` — stream-json + in-process MCP tools), `claude-terminal` (via tmux), and `claude-headless` (runs `claude -p` as a subprocess); other kinds are filtered out (see *Cross-implementation portability*). `pi` and `claude` support custom tools; the two CLI-only backends do not |
++| `sdk` | string | Execution engine. Defaults to `"pi"`. Executable engines in this build: `pi` (in-process), `claude` (drives the local `claude` CLI through `claude-agent-sdk` -- stream-json + in-process MCP tools), `claude-terminal` (via tmux), and `claude-headless` (runs `claude -p` as a subprocess); other kinds are filtered out (see *Cross-implementation portability*). `pi` and `claude` support custom tools; the two CLI-only backends do not |
+ | `priority` | integer (`i32`) | Provider-level priority. Used when a model entry omits its own `priority` |
+ | `api.key` | string | API key (for API-key-based limit checks and pi execution) |
+ | `api.endpoint` | string | API endpoint override |
+@@ -488,7 +489,7 @@ models:
+ 
+ The **model id** uses a `provider/model` shape. The segment before the first `/` is passed to pi as the provider (e.g. `anthropic`, `openai`); the rest is the model name. A model id without a `/` is passed through as the model with no explicit provider.
+ 
+-A trailing `:` suffix on the model name selects pi's **thinking level**: `model:thinking` (e.g. `anthropic/claude-opus-4-5:high`, `opus-4.7:medium`). Recognized levels are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh` (plus the aliases pi accepts: `none`/`0`, `min`, `1`, `med`/`2`, `3`, `4`). A suffix that is not a recognized level stays part of the model name, so OpenRouter-style variants like `openrouter/meta-llama/llama-3.1-8b-instruct:free` keep working. The level only applies to pi execution — with the `claude`, `claude-terminal`, and `claude-headless` SDKs a recognized suffix is stripped and ignored. Without a suffix, pi's default (no extended thinking) is used.
++A trailing `:` suffix on the model name selects pi's **thinking level**: `model:thinking` (e.g. `anthropic/claude-opus-4-5:high`, `opus-4.7:medium`). Recognized levels are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh` (plus the aliases pi accepts: `none`/`0`, `min`, `1`, `med`/`2`, `3`, `4`). A suffix that is not a recognized level stays part of the model name, so OpenRouter-style variants like `openrouter/meta-llama/llama-3.1-8b-instruct:free` keep working. The level only applies to pi execution -- with the `claude`, `claude-terminal`, and `claude-headless` SDKs a recognized suffix is stripped and ignored. Without a suffix, pi's default (no extended thinking) is used.
+ 
+ For pi execution, the API key comes from `api.key`, falling back to `ANTHROPIC_API_KEY` (when the model provider is `anthropic`) or `OPENAI_API_KEY` (when it is `openai`).
+ 
+@@ -525,7 +526,7 @@ providers:
+ 
+ ## Cross-implementation portability
+ 
+-Seher has a TypeScript counterpart (`seher-ts`) that supports additional `sdk` engines (`codex`, `copilot`, `cursor`, `kimi`, `opencode`, …). To keep a single `config.yaml` portable between both implementations, this Rust build **accepts** providers tagged with those SDK kinds but silently filters them out of the candidate list (executable engines here are `pi`, `claude`, `claude-terminal`, and `claude-headless`). A one-time warning is printed at startup for each skipped provider.
++Seher has a TypeScript counterpart (`seher-ts`) that supports additional `sdk` engines (`codex`, `copilot`, `cursor`, `kimi`, `opencode`, ...). To keep a single `config.yaml` portable between both implementations, this Rust build **accepts** providers tagged with those SDK kinds but silently filters them out of the candidate list (executable engines here are `pi`, `claude`, `claude-terminal`, and `claude-headless`). A one-time warning is printed at startup for each skipped provider.
+ 
+ 
+ ## License
+diff --git a/crates/claude-agent-sdk/src/client.rs b/crates/claude-agent-sdk/src/client.rs
+index 870f801..4b5659c 100644
+--- a/crates/claude-agent-sdk/src/client.rs
++++ b/crates/claude-agent-sdk/src/client.rs
+@@ -46,7 +46,7 @@ impl ClaudeSDKClient {
+         }
+     }
+ 
+-    /// Inject a custom transport (e.g. for tests). Must not be connected yet —
++    /// Inject a custom transport (e.g. for tests). Must not be connected yet --
+     /// [`Self::connect`] will connect it.
+     #[must_use]
+     pub fn with_transport(mut self, transport: Box<dyn Transport>) -> Self {
+diff --git a/crates/claude-agent-sdk/src/control.rs b/crates/claude-agent-sdk/src/control.rs
+index 0a9e450..b036ea9 100644
+--- a/crates/claude-agent-sdk/src/control.rs
++++ b/crates/claude-agent-sdk/src/control.rs
+@@ -3,9 +3,9 @@
+ //! The CLI multiplexes two kinds of frames on stdout:
+ //!
+ //! - Regular messages (`type` in `"user" | "assistant" | "system" | "result" |
+-//!   "stream_event"`) — surfaced as a [`Message`](crate::types::Message) to
++//!   "stream_event"`) -- surfaced as a [`Message`](crate::types::Message) to
+ //!   the caller.
+-//! - **Control requests** (`type == "control_request"`) — requests for the SDK
++//! - **Control requests** (`type == "control_request"`) -- requests for the SDK
+ //!   to do something *before* the next user turn proceeds: dispatch an MCP
+ //!   tool call, ask the user whether a tool may run, fire a hook, etc.
+ //!
+@@ -65,7 +65,7 @@ impl ControlResponse {
+ /// The transport already pulled out `request_id`; the handler only needs to
+ /// look at `request` (which carries `subtype` plus the payload) and return a
+ /// [`ControlResponse`]. Returning [`ControlResponse::Error`] tells the CLI
+-/// the request failed — it then aborts the in-flight tool call (or whatever
++/// the request failed -- it then aborts the in-flight tool call (or whatever
+ /// triggered the request) and yields a normal error to the user.
+ #[async_trait]
+ pub trait ControlHandler: Send + Sync + 'static {
+diff --git a/crates/claude-agent-sdk/src/errors.rs b/crates/claude-agent-sdk/src/errors.rs
+index f38042b..c66f1f2 100644
+--- a/crates/claude-agent-sdk/src/errors.rs
++++ b/crates/claude-agent-sdk/src/errors.rs
+@@ -61,7 +61,7 @@ impl ClaudeSDKError {
+     pub(crate) fn json_decode(line: &str, err: serde_json::Error) -> Self {
+         // Truncate on a UTF-8 char boundary; slicing on a raw byte index would
+         // panic if the 100th byte sits inside a multibyte codepoint
+-        // (Japanese, emoji, accented Latin, …).
++        // (Japanese, emoji, accented Latin, ...).
+         let snippet = if line.len() > 100 {
+             let cut = line
+                 .char_indices()
+@@ -113,7 +113,7 @@ mod tests {
+ 
+     #[test]
+     fn json_decode_does_not_panic_on_multibyte_boundary() {
+-        // Each U+3042 is 3 bytes; 40 of them = 120 bytes — the cut at byte 100
++        // Each U+3042 is 3 bytes; 40 of them = 120 bytes -- the cut at byte 100
+         // would land mid-codepoint with a naive slice. The safe version must
+         // round down to the previous char boundary.
+         let long: String = "\u{3042}".repeat(40);
+diff --git a/crates/claude-agent-sdk/src/lib.rs b/crates/claude-agent-sdk/src/lib.rs
+index bf18a56..0ab6eb3 100644
+--- a/crates/claude-agent-sdk/src/lib.rs
++++ b/crates/claude-agent-sdk/src/lib.rs
+@@ -5,8 +5,8 @@
+ //!
+ //! Two entrypoints, matching the Python SDK:
+ //!
+-//! * [`query`] — one-shot, fire-and-forget. Yields messages until the CLI exits.
+-//! * [`ClaudeSDKClient`] — stateful client with `connect` / `query` /
++//! * [`query`] -- one-shot, fire-and-forget. Yields messages until the CLI exits.
++//! * [`ClaudeSDKClient`] -- stateful client with `connect` / `query` /
+ //!   `receive_messages` / `end_input` / `disconnect`.
+ //!
+ //! Python-SDK control commands such as `interrupt`, `set_model`, and the
+diff --git a/crates/claude-agent-sdk/src/query.rs b/crates/claude-agent-sdk/src/query.rs
+index d758b8c..705ea98 100644
+--- a/crates/claude-agent-sdk/src/query.rs
++++ b/crates/claude-agent-sdk/src/query.rs
+@@ -18,7 +18,7 @@ use crate::types::{ClaudeAgentOptions, Message};
+ ///   mode and pre-applying any configuration. The provided transport is
+ ///   connected if not already, the prompt is pushed as a `user` frame in
+ ///   streaming mode, and stdin is closed so the CLI exits when done.
+-///   **`options` is *not* applied to a caller-supplied transport** — fields
++///   **`options` is *not* applied to a caller-supplied transport** -- fields
+ ///   like `sdk_mcp_server`, `model`, and `allowed_tools` only take effect on
+ ///   the default transport built from `options`. If you need both a custom
+ ///   transport and option-driven configuration, build the transport via
+@@ -27,7 +27,7 @@ use crate::types::{ClaudeAgentOptions, Message};
+ ///
+ /// # Errors
+ ///
+-/// Returns whatever the underlying transport surfaces — spawn failures,
++/// Returns whatever the underlying transport surfaces -- spawn failures,
+ /// JSON decode errors, or CLI process errors. Individual yielded items are
+ /// `Result<Message>` so per-frame parse failures don't kill the whole stream.
+ pub async fn query(
+diff --git a/crates/claude-agent-sdk/src/tool.rs b/crates/claude-agent-sdk/src/tool.rs
+index d3ce595..6eae36a 100644
+--- a/crates/claude-agent-sdk/src/tool.rs
++++ b/crates/claude-agent-sdk/src/tool.rs
+@@ -3,7 +3,7 @@
+ //! The Claude CLI talks to in-process tools by sending JSON-RPC requests
+ //! inside a `control_request` of subtype `mcp_message`. We implement just
+ //! enough of the MCP protocol to serve `tools/list` and `tools/call` from
+-//! a callable Rust closure registry — no need to depend on a full MCP crate
++//! a callable Rust closure registry -- no need to depend on a full MCP crate
+ //! when those are the only two methods exercised against an in-process
+ //! server.
+ //!
+@@ -111,7 +111,7 @@ impl AgentToolbox {
+     /// Process a single JSON-RPC request (what arrives inside an
+     /// `mcp_message` control request).
+     ///
+-    /// Returns a JSON-RPC response object — already including `jsonrpc`,
++    /// Returns a JSON-RPC response object -- already including `jsonrpc`,
+     /// `id`, and either `result` or `error`. The transport wraps this in a
+     /// `control_response`.
+     #[must_use]
+@@ -188,7 +188,7 @@ fn jsonrpc_error(id: &Value, code: i32, message: &str) -> Value {
+ 
+ /// [`ControlHandler`] that routes `mcp_message` requests to a single toolbox.
+ ///
+-/// Other control subtypes (`can_use_tool`, `hook_callback`, …) are rejected
++/// Other control subtypes (`can_use_tool`, `hook_callback`, ...) are rejected
+ /// with `ControlResponse::Error` since we don't model them yet.
+ pub struct ToolboxControlHandler {
+     toolbox: Arc<AgentToolbox>,
+diff --git a/crates/claude-agent-sdk/src/transport/mod.rs b/crates/claude-agent-sdk/src/transport/mod.rs
+index 027c948..fcdf21a 100644
+--- a/crates/claude-agent-sdk/src/transport/mod.rs
++++ b/crates/claude-agent-sdk/src/transport/mod.rs
+@@ -15,7 +15,7 @@ use crate::errors::Result;
+ ///
+ /// - [`connect`](Transport::connect) spawns / opens the channel.
+ /// - [`write`](Transport::write) sends a single JSON line (no trailing
+-///   newline — the impl adds one).
++///   newline -- the impl adds one).
+ /// - [`take_message_stream`](Transport::take_message_stream) hands out the
+ ///   stream of incoming JSON frames **once**. Subsequent calls return an
+ ///   immediately-errored stream. The returned stream is `'static`, so it can
+diff --git a/crates/claude-agent-sdk/src/transport/subprocess_cli.rs b/crates/claude-agent-sdk/src/transport/subprocess_cli.rs
+index 3b24e56..cd392c5 100644
+--- a/crates/claude-agent-sdk/src/transport/subprocess_cli.rs
++++ b/crates/claude-agent-sdk/src/transport/subprocess_cli.rs
+@@ -29,16 +29,16 @@ const SDK_ENTRYPOINT: &str = "sdk-rust";
+ /// CLI's stdout as a stream of JSON values.
+ ///
+ /// `prompt` controls input:
+-/// - `Some(text)` → string mode: `--print "<text>"` (no stdin streaming).
+-/// - `None` → streaming mode: callers push JSON frames via
++/// - `Some(text)` -> string mode: `--print "<text>"` (no stdin streaming).
++/// - `None` -> streaming mode: callers push JSON frames via
+ ///   [`Transport::write`].
+ pub struct SubprocessCliTransport {
+     options: ClaudeAgentOptions,
+     prompt: Option<String>,
+     cli_path: Option<PathBuf>,
+     child: Option<Child>,
+-    /// Writer task channel. All stdin writes — both caller-initiated
+-    /// (`write()`) and `control_response`s emitted by the demux loop — go
++    /// Writer task channel. All stdin writes -- both caller-initiated
++    /// (`write()`) and `control_response`s emitted by the demux loop -- go
+     /// through here so we never have two writers racing on the same pipe.
+     write_tx: Option<mpsc::Sender<String>>,
+     stdout_rx: Option<mpsc::Receiver<Result<serde_json::Value>>>,
+@@ -93,8 +93,8 @@ impl SubprocessCliTransport {
+     ///
+     /// **Overrides** any handler that was auto-registered from
+     /// `options.sdk_mcp_server`. If you want both an in-process toolbox
+-    /// *and* extra handling (hooks, `can_use_tool`, …), build your own
+-    /// composite handler and register it here — do not rely on stacking.
++    /// *and* extra handling (hooks, `can_use_tool`, ...), build your own
++    /// composite handler and register it here -- do not rely on stacking.
+     #[must_use]
+     pub fn with_control_handler(mut self, handler: Arc<dyn ControlHandler>) -> Self {
+         self.control_handler = Some(handler);
+@@ -130,14 +130,14 @@ impl SubprocessCliTransport {
+     #[must_use]
+     #[expect(
+         clippy::too_many_lines,
+-        reason = "one branch per CLI flag — splitting hurts readability more than it helps"
++        reason = "one branch per CLI flag -- splitting hurts readability more than it helps"
+     )]
+     pub fn build_args(&self) -> Vec<String> {
+         let mut args: Vec<String> = vec!["--output-format".into(), "stream-json".into()];
+         args.extend(["--verbose".into()]);
+ 
+         if self.prompt.is_some() {
+-            // string mode — caller passes `--print "<prompt>"`
++            // string mode -- caller passes `--print "<prompt>"`
+         } else {
+             args.extend(["--input-format".into(), "stream-json".into()]);
+         }
+@@ -224,7 +224,7 @@ impl SubprocessCliTransport {
+             .collect();
+         if let Some(tb) = &self.options.sdk_mcp_server {
+             // Mirrors the Python SDK: in-process toolboxes are advertised as
+-            // `{"type": "sdk", "name": "<name>"}` — the actual handler runs
++            // `{"type": "sdk", "name": "<name>"}` -- the actual handler runs
+             // here, not in the CLI.
+             mcp_map.insert(
+                 tb.name.clone(),
+@@ -327,13 +327,13 @@ impl Transport for SubprocessCliTransport {
+         // How it holds the stdin writer depends on whether a control handler
+         // is registered:
+         //
+-        // * No handler → a *weak* sender. There is no control_response to
++        // * No handler -> a *weak* sender. There is no control_response to
+         //   write, so dropping the caller's `write_tx` (e.g. from
+         //   `end_input`) should close the writer channel and shut down stdin
+         //   immediately. A strong clone would keep the writer alive until the
+         //   reader exits, defeating `end_input`.
+         //
+-        // * Handler present (e.g. an `sdk_mcp_server` toolbox) → a *strong*
++        // * Handler present (e.g. an `sdk_mcp_server` toolbox) -> a *strong*
+         //   sender. The CLI sends its `mcp_message: initialize` handshake
+         //   *after* the caller has typically already called `end_input()`,
+         //   which drops the transport's strong `write_tx`. With only a weak
+@@ -528,7 +528,7 @@ async fn read_stdout_loop(
+ /// pass (stdout EOF) an incomplete tail is reported as a JSON decode error so
+ /// the caller sees *something*.
+ ///
+-/// Returns `false` when the public message channel is closed — the caller
++/// Returns `false` when the public message channel is closed -- the caller
+ /// should stop reading.
+ async fn drain_accum(
+     accum: &mut String,
+@@ -563,8 +563,8 @@ async fn drain_accum(
+                 return true;
+             }
+             Some(Err(e)) => {
+-                // Drop one line — likely a [SandboxDebug] or other
+-                // non-JSON line — and try again.
++                // Drop one line -- likely a [SandboxDebug] or other
++                // non-JSON line -- and try again.
+                 let snippet_for_err = accum.clone();
+                 if let Some(nl) = accum.find('\n') {
+                     accum.drain(..=nl);
+@@ -827,7 +827,7 @@ mod tests {
+             "request": {"subtype": "mcp_message"}
+         });
+         assert!(dispatch_frame(frame, &msg_tx, None, &weak).await);
+-        // Nothing to verify on write_rx — receiver was dropped too. The
++        // Nothing to verify on write_rx -- receiver was dropped too. The
+         // success criterion is that the call returned without blocking.
+     }
+ 
+diff --git a/crates/claude-agent-sdk/src/types.rs b/crates/claude-agent-sdk/src/types.rs
+index 7cebfd1..6093563 100644
+--- a/crates/claude-agent-sdk/src/types.rs
++++ b/crates/claude-agent-sdk/src/types.rs
+@@ -1,4 +1,4 @@
+-//! Message, content-block, and option types — the public data model.
++//! Message, content-block, and option types -- the public data model.
+ //!
+ //! Mirrors `claude_agent_sdk.types` with a Rust-flavored API. Only the fields
+ //! we actually consume or forward are modeled strictly; everything else is
+@@ -91,7 +91,7 @@ impl McpServerConfig {
+ #[derive(Debug, Clone, Default)]
+ #[expect(
+     clippy::struct_excessive_bools,
+-    reason = "1:1 mapping with CLI boolean flags — bundling them into an enum hurts ergonomics"
++    reason = "1:1 mapping with CLI boolean flags -- bundling them into an enum hurts ergonomics"
+ )]
+ pub struct ClaudeAgentOptions {
+     pub system_prompt: Option<SystemPrompt>,
+diff --git a/crates/seher-cli/Cargo.toml b/crates/seher-cli/Cargo.toml
+index 126e78d..4c5f8a7 100644
+--- a/crates/seher-cli/Cargo.toml
++++ b/crates/seher-cli/Cargo.toml
+@@ -17,6 +17,7 @@ path = "src/main.rs"
+ [dependencies]
+ chrono.workspace = true
+ clap.workspace = true
++libc.workspace = true
+ seher-sdk = { path = "../seher-sdk", version = "0.0.47" }
+ serde_json.workspace = true
+ tempfile.workspace = true
+diff --git a/crates/seher-cli/src/args.rs b/crates/seher-cli/src/args.rs
+index 539ee51..292bdc9 100644
+--- a/crates/seher-cli/src/args.rs
++++ b/crates/seher-cli/src/args.rs
+@@ -232,7 +232,7 @@ mod tests {
+     #[test]
+     fn cwd_is_canonicalized() {
+         let a = parse(&["--cwd", "/tmp", "build", "x"]).expect("ok");
+-        // macOS: /tmp is a symlink to /private/tmp — canonicalize resolves it.
++        // macOS: /tmp is a symlink to /private/tmp -- canonicalize resolves it.
+         let expected = std::fs::canonicalize("/tmp")
+             .expect("canonicalize /tmp")
+             .to_string_lossy()
+diff --git a/crates/seher-cli/src/mode_build.rs b/crates/seher-cli/src/mode_build.rs
+index 62329b7..1985a16 100644
+--- a/crates/seher-cli/src/mode_build.rs
++++ b/crates/seher-cli/src/mode_build.rs
+@@ -1,6 +1,7 @@
+ use crate::args::Args;
+ use crate::logger::Logger;
+ use crate::run_mode::resolve_and_stream;
++use crate::stream::StreamOutput;
+ 
+ /// Run a build-mode prompt: resolve the highest-priority non-limited provider for
+ /// the build mode key and stream the prompt through it.
+@@ -15,6 +16,14 @@ pub fn run(
+     logger: &Logger,
+ ) -> Result<(), String> {
+     let mode_key = args.model.clone().unwrap_or_else(|| "build".to_string());
+-    resolve_and_stream(rt, prompt, args, &mode_key, None, logger)?;
++    resolve_and_stream(
++        rt,
++        prompt,
++        args,
++        &mode_key,
++        None,
++        logger,
++        StreamOutput::Stdout,
++    )?;
+     Ok(())
+ }
+diff --git a/crates/seher-cli/src/mode_plan.rs b/crates/seher-cli/src/mode_plan.rs
+index d4070bf..94f2cd0 100644
+--- a/crates/seher-cli/src/mode_plan.rs
++++ b/crates/seher-cli/src/mode_plan.rs
+@@ -2,6 +2,7 @@ use crate::args::Args;
+ use crate::logger::Logger;
+ use crate::prompt;
+ use crate::run_mode::resolve_and_stream;
++use crate::stream::StreamOutput;
+ 
+ const PLAN_SYSTEM_PROMPT: &str = "You are an implementation planner. The user will give you a task. Your job is to produce a clear, step-by-step implementation plan in Markdown.\n\nStrict rules:\n- Output ONLY the plan in Markdown. No greetings, no questions, no commentary.\n- Do not write or modify any files. Do not call any tools.\n- Use sections like \"## Goal\", \"## Approach\", \"## Steps\", \"## Risks\" as appropriate.\n- The plan will be reviewed by the user in an editor and then executed by another agent.";
+ 
+@@ -23,11 +24,21 @@ pub fn run(
+     let plan_key = args.model.as_deref().unwrap_or("plan");
+     let build_key = args.model.as_deref().unwrap_or("build");
+ 
+-    // 1) stream the plan
+-    let plan_text =
+-        resolve_and_stream(rt, prompt, args, plan_key, Some(PLAN_SYSTEM_PROMPT), logger)?;
++    // Fail fast if the editor cannot be safely opened, before paying for plan generation.
++    prompt::ensure_editor_available().map_err(|e| e.to_string())?;
+ 
+-    // 2) edit in $EDITOR seeded with the streamed plan
++    // 1) generate the plan without streaming to stdout
++    let plan_text = resolve_and_stream(
++        rt,
++        prompt,
++        args,
++        plan_key,
++        Some(PLAN_SYSTEM_PROMPT),
++        logger,
++        StreamOutput::CaptureOnly,
++    )?;
++
++    // 2) edit in $EDITOR seeded with the captured plan
+     let edited = prompt::edit_with_seed(&plan_text).map_err(|e| e.to_string())?;
+     let trimmed = edited.trim();
+     if trimmed.is_empty() {
+@@ -35,8 +46,16 @@ pub fn run(
+         return Ok(());
+     }
+ 
+-    // 3) re-resolve under build mode and run the approved plan
++    // 3) re-resolve under build mode and stream the execution
+     let build_prompt = format!("<plan>\n{trimmed}\n</plan>\n\nExecute the plan above.");
+-    resolve_and_stream(rt, &build_prompt, args, build_key, None, logger)?;
++    resolve_and_stream(
++        rt,
++        &build_prompt,
++        args,
++        build_key,
++        None,
++        logger,
++        StreamOutput::Stdout,
++    )?;
+     Ok(())
+ }
+diff --git a/crates/seher-cli/src/prompt.rs b/crates/seher-cli/src/prompt.rs
+index 05312df..5815b33 100644
+--- a/crates/seher-cli/src/prompt.rs
++++ b/crates/seher-cli/src/prompt.rs
+@@ -1,8 +1,8 @@
+ use std::io::{IsTerminal, Read, Write};
+ 
+ /// Resolve the prompt text following TS [`resolvePrompt`] semantics:
+-///   1. trailing positional args → join with space
+-///   2. stdin (when not a TTY) → use trimmed content
++///   1. trailing positional args -> join with space
++///   2. stdin (when not a TTY) -> use trimmed content
+ ///   3. else, open `$EDITOR` to type
+ ///
+ /// Returns `None` if the resolved prompt is empty.
+@@ -31,29 +31,90 @@ pub fn resolve(trailing: &[String]) -> Option<String> {
+         };
+     }
+ 
+-    // TTY → editor
++    // TTY -> editor
+     edit_with_seed("")
+         .ok()
+         .filter(|s| !s.trim().is_empty())
+         .map(|s| s.trim().to_string())
+ }
+ 
++/// Check whether the editor can be safely launched in the current environment.
++///
++/// On Unix this verifies that the process group owns the controlling terminal
++/// (`tcgetpgrp` == `getpgrp`). On non-Unix it checks that stdin/stdout are
++/// terminals. Returns an actionable error so callers can fail explicitly
++/// instead of being suspended with `SIGTTOU`/`SIGTTIN`.
++pub fn ensure_editor_available() -> Result<(), Box<dyn std::error::Error>> {
++    #[cfg(unix)]
++    {
++        use std::os::fd::AsRawFd;
++        let tty = std::fs::OpenOptions::new()
++            .read(true)
++            .write(true)
++            .open("/dev/tty")
++            .map_err(|e| format!("cannot open controlling terminal /dev/tty: {e}"))?;
++        let fd = tty.as_raw_fd();
++        // SAFETY: `fd` is valid for the lifetime of `tty`.
++        let tty_pgrp = unsafe { libc::tcgetpgrp(fd) };
++        if tty_pgrp < 0 {
++            return Err("cannot determine foreground process group".into());
++        }
++        let our_pgrp = unsafe { libc::getpgrp() };
++        if tty_pgrp != our_pgrp {
++            return Err("seher is not running in the foreground terminal. \
++                 Run `fg` to bring it to the foreground, then try again."
++                .into());
++        }
++    }
++    #[cfg(not(unix))]
++    {
++        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
++            return Err(
++                "stdin/stdout is not a terminal; open an interactive terminal to edit.".into(),
++            );
++        }
++    }
++    Ok(())
++}
++
+ /// Open `$EDITOR` (default `vim`) on a temp file seeded with `seed` and return
+ /// the user-edited content (untrimmed).
+ ///
+ /// # Errors
+ ///
+-/// Returns any IO error from creating the temp file or invoking the editor.
++/// Returns any IO error from creating the temp file or invoking the editor,
++/// or [`ensure_editor_available`] if the environment is not TTY-safe.
+ pub fn edit_with_seed(seed: &str) -> Result<String, Box<dyn std::error::Error>> {
++    ensure_editor_available()?;
++
+     let mut tmp = tempfile::NamedTempFile::new()?;
+     if !seed.is_empty() {
+         tmp.write_all(seed.as_bytes())?;
+         tmp.flush()?;
+     }
+     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
+-    let status = std::process::Command::new(&editor)
+-        .arg(tmp.path())
+-        .status()?;
++    let mut cmd = std::process::Command::new(&editor);
++    cmd.arg(tmp.path());
++
++    #[cfg(unix)]
++    {
++        use std::process::Stdio;
++        // Re-open /dev/tty explicitly so the editor always talks to the user's
++        // terminal even when stdin/stdout have been redirected.
++        let tty = std::fs::OpenOptions::new()
++            .read(true)
++            .write(true)
++            .open("/dev/tty")
++            .map_err(|e| format!("cannot open /dev/tty for editor: {e}"))?;
++        let stdin = tty.try_clone()?;
++        let stdout = tty.try_clone()?;
++        let stderr = tty;
++        cmd.stdin(Stdio::from(stdin))
++            .stdout(Stdio::from(stdout))
++            .stderr(Stdio::from(stderr));
++    }
++
++    let status = cmd.status()?;
+     if !status.success() {
+         return Err(format!("editor '{editor}' exited with status {status}").into());
+     }
+@@ -87,4 +148,47 @@ mod tests {
+         let r = resolve(&["  hi  ".to_string()]);
+         assert_eq!(r.as_deref(), Some("hi"));
+     }
++
++    #[test]
++    fn ensure_editor_available_is_callable_without_panic() {
++        // Foreground status is environment-dependent; we only verify the
++        // function returns a Result (Ok or Err) rather than panicking.
++        let _ = ensure_editor_available();
++    }
++
++    /// Restores an environment variable to its previous value when dropped,
++    /// even if the test panics.
++    struct EnvVarGuard {
++        key: &'static str,
++        previous: Option<String>,
++    }
++
++    impl EnvVarGuard {
++        fn set(key: &'static str, value: &str) -> Self {
++            let previous = std::env::var(key).ok();
++            unsafe { std::env::set_var(key, value) };
++            Self { key, previous }
++        }
++    }
++
++    impl Drop for EnvVarGuard {
++        fn drop(&mut self) {
++            match self.previous.take() {
++                Some(v) => unsafe { std::env::set_var(self.key, v) },
++                None => unsafe { std::env::remove_var(self.key) },
++            }
++        }
++    }
++
++    #[test]
++    fn edit_with_seed_returns_error_when_editor_exits_nonzero() {
++        // EDITOR=false always exits with a non-zero status, so edit_with_seed
++        // must return an error regardless of the test environment.
++        let _guard = EnvVarGuard::set("EDITOR", "false");
++        let result = edit_with_seed("seed");
++        assert!(
++            result.is_err(),
++            "edit_with_seed must fail when the editor exits with a non-zero status"
++        );
++    }
+ }
+diff --git a/crates/seher-cli/src/run_mode.rs b/crates/seher-cli/src/run_mode.rs
+index 7d52db1..7fcd03f 100644
+--- a/crates/seher-cli/src/run_mode.rs
++++ b/crates/seher-cli/src/run_mode.rs
+@@ -15,9 +15,9 @@ use seher::sdk::{
+ 
+ use crate::args::Args;
+ use crate::logger::Logger;
+-use crate::stream::{Outcome, drain_to_stdout};
++use crate::stream::{Outcome, StreamOutput, drain_to_capture, drain_to_stdout};
+ 
+-/// Run the full "resolve → stream" loop, returning the concatenated assistant
++/// Run the full "resolve -> stream" loop, returning the concatenated assistant
+ /// text on success.
+ ///
+ /// # Errors
+@@ -30,6 +30,7 @@ pub fn resolve_and_stream(
+     mode_key: &str,
+     system_prompt: Option<&str>,
+     logger: &Logger,
++    output: StreamOutput,
+ ) -> Result<String, String> {
+     // Load config + detect browser session once; reuse across retry attempts.
+     let config: Config = load_config(args.config.as_deref()).map_err(|e| e.to_string())?;
+@@ -44,7 +45,7 @@ pub fn resolve_and_stream(
+         ));
+     }
+ 
+-    // Shared cancel token — signalled by the SIGINT handler below so that
++    // Shared cancel token -- signalled by the SIGINT handler below so that
+     // all streaming paths (drain_to_stdout, headless runner) can observe it.
+     let cancel = CancelToken::new();
+     let cancel_for_signal = cancel.clone();
+@@ -65,7 +66,7 @@ pub fn resolve_and_stream(
+         });
+     });
+ 
+-    // Resuming pins to the backend that owns the session — the retry-on-limit provider
++    // Resuming pins to the backend that owns the session -- the retry-on-limit provider
+     // switch is disabled, since a session id is meaningless to a different backend.
+     if let Some(resume_id) = args.resume.clone() {
+         return resume_and_stream(
+@@ -78,6 +79,7 @@ pub fn resolve_and_stream(
+             &config,
+             &resume_id,
+             &cancel,
++            output,
+         );
+     }
+ 
+@@ -85,7 +87,16 @@ pub fn resolve_and_stream(
+         resolve_once(rt, args, mode_key, excluded, &config)
+     };
+     let stream_runner = |resolved: &ResolvedAgent| -> Outcome {
+-        stream_with_http_retry(resolved, prompt, system_prompt, args, None, &cancel, logger)
++        stream_with_http_retry(
++            resolved,
++            prompt,
++            system_prompt,
++            args,
++            None,
++            &cancel,
++            logger,
++            output,
++        )
+     };
+     stream_with_retry(args.timeout, logger, resolver, stream_runner)
+ }
+@@ -151,6 +162,7 @@ fn resume_and_stream(
+     config: &Config,
+     resume_id: &str,
+     cancel: &CancelToken,
++    output: StreamOutput,
+ ) -> Result<String, String> {
+     let cwd = effective_cwd(args);
+     let pinned = probe_session_backend(&cwd, resume_id).ok_or_else(|| {
+@@ -160,7 +172,7 @@ fn resume_and_stream(
+     let resolved = resolve_once(rt, args, mode_key, &[], config)?;
+     if !sdk_backends_compatible(&resolved.sdk, pinned) {
+         return Err(format!(
+-            "resumed session '{resume_id}' belongs to backend '{pinned}', but the resolver selected '{}' (provider '{}') — it may be rate-limited or lower priority; pass --provider to force the matching one",
++            "resumed session '{resume_id}' belongs to backend '{pinned}', but the resolver selected '{}' (provider '{}') -- it may be rate-limited or lower priority; pass --provider to force the matching one",
+             resolved.sdk, resolved.provider
+         ));
+     }
+@@ -177,6 +189,7 @@ fn resume_and_stream(
+         Some(resume_id),
+         cancel,
+         logger,
++        output,
+     ) {
+         Outcome::Done(t) => Ok(t),
+         Outcome::Limit => Err(format!(
+@@ -271,6 +284,10 @@ fn sleep_with_cancel(duration: Duration, cancel: &CancelToken) {
+ /// blocking [`seher::sdk::run_for_resolved`] path already has. Rate/usage
+ /// limits still surface as [`Outcome::Limit`] so the caller can switch
+ /// providers; timeouts and cancellations are not retried.
++#[expect(
++    clippy::too_many_arguments,
++    reason = "internal retry wrapper that mirrors run_for_resolved options"
++)]
+ fn stream_with_http_retry(
+     resolved: &ResolvedAgent,
+     prompt: &str,
+@@ -279,11 +296,16 @@ fn stream_with_http_retry(
+     resume: Option<&str>,
+     cancel: &CancelToken,
+     logger: &Logger,
++    output: StreamOutput,
+ ) -> Outcome {
+     let mut attempt: u32 = 1;
+     loop {
+         let rx = dispatch_stream(resolved, prompt, system_prompt, args, resume, cancel);
+-        match drain_to_stdout(rx, args.timeout, cancel) {
++        let outcome = match output {
++            StreamOutput::Stdout => drain_to_stdout(rx, args.timeout, cancel),
++            StreamOutput::CaptureOnly => drain_to_capture(rx, args.timeout, cancel),
++        };
++        match outcome {
+             Outcome::Error(ref message)
+                 if resolved.retry.enabled
+                     && attempt < resolved.retry.effective_max_attempts()
+@@ -443,7 +465,7 @@ mod tests {
+             if n >= 2 {
+                 return Err("no more candidates".to_string());
+             }
+-            // Pretend resolver returns "a" regardless of excluded — checks dedup.
++            // Pretend resolver returns "a" regardless of excluded -- checks dedup.
+             let _ = excluded;
+             Ok(make_resolved("a", "anthropic/x"))
+         };
+@@ -523,7 +545,7 @@ mod tests {
+         assert_eq!(
+             *call_count.borrow(),
+             1,
+-            "resolver must be called exactly once — no retry on Cancelled"
++            "resolver must be called exactly once -- no retry on Cancelled"
+         );
+     }
+ }
+diff --git a/crates/seher-cli/src/stream.rs b/crates/seher-cli/src/stream.rs
+index c4b9a4d..dc959a6 100644
+--- a/crates/seher-cli/src/stream.rs
++++ b/crates/seher-cli/src/stream.rs
+@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
+ 
+ use seher::sdk::{CancelToken, StreamChunk};
+ 
+-/// Result of [`drain_to_stdout`]. `Limit` carries no payload — the caller already
++/// Result of [`drain_to_stdout`]. `Limit` carries no payload -- the caller already
+ /// has the [`crate::run_mode`] `ResolvedAgent` whose `provider` is what gets
+ /// added to the exclude list.
+ pub enum Outcome {
+@@ -15,9 +15,19 @@ pub enum Outcome {
+     Cancelled,
+ }
+ 
+-/// Drain a `Receiver<StreamChunk>` to stdout, writing each delta as it arrives.
++/// Where the stream drain should emit output.
++#[derive(Clone, Copy)]
++pub enum StreamOutput {
++    /// Write deltas and the final newline to the supplied writer (stdout in production).
++    Stdout,
++    /// Suppress all output to the writer; only collect the concatenated text.
++    CaptureOnly,
++}
++
++/// Drain a `Receiver<StreamChunk>` according to `output`, writing each delta as
++/// it arrives only when [`StreamOutput::Stdout`] is selected.
+ ///
+-/// `timeout_ms` is the total deadline (in ms) from "now" — it does NOT abort the
++/// `timeout_ms` is the total deadline (in ms) from "now" -- it does NOT abort the
+ /// in-flight worker thread; on timeout, the receiver is dropped and the worker
+ /// is left to finish in the background. Returns `Outcome::Done` with the
+ /// concatenated text on success.
+@@ -25,16 +35,16 @@ pub enum Outcome {
+     clippy::needless_pass_by_value,
+     reason = "takes ownership of the receiver so it is dropped on return, signaling the worker the consumer is gone"
+ )]
+-pub fn drain_to_stdout(
++pub fn drain_stream<W: Write>(
+     rx: Receiver<StreamChunk>,
+     timeout_ms: Option<u64>,
+     cancel: &CancelToken,
++    output: StreamOutput,
++    writer: &mut W,
+ ) -> Outcome {
+-    // Short poll interval used when there is no deadline — lets cancel checks
++    // Short poll interval used when there is no deadline -- lets cancel checks
+     // fire even while blocked on recv, instead of waiting for the next chunk.
+     const CANCEL_POLL: Duration = Duration::from_millis(50);
+-    let stdout = std::io::stdout();
+-    let mut out = stdout.lock();
+     let mut full = String::new();
+     let deadline = timeout_ms.map(|t| Instant::now() + Duration::from_millis(t));
+ 
+@@ -80,24 +90,28 @@ pub fn drain_to_stdout(
+         };
+         match chunk {
+             StreamChunk::Delta(d) => {
+-                let _ = out.write_all(d.as_bytes());
+-                let _ = out.flush();
++                if matches!(output, StreamOutput::Stdout) {
++                    let _ = writer.write_all(d.as_bytes());
++                    let _ = writer.flush();
++                }
+                 full.push_str(&d);
+             }
+-            // Session id is metadata — keep stdout clean for piping and surface it on
++            // Session id is metadata -- keep stdout clean for piping and surface it on
+             // stderr so a follow-up turn can resume with `--resume <id>`.
+             StreamChunk::Session(id) => {
+                 eprintln!("session: {id}");
+             }
+             StreamChunk::Done(t) => {
+-                let _ = out.write_all(b"\n");
+-                let _ = out.flush();
++                if matches!(output, StreamOutput::Stdout) {
++                    let _ = writer.write_all(b"\n");
++                    let _ = writer.flush();
++                }
+                 return Outcome::Done(if t.is_empty() { full } else { t });
+             }
+             StreamChunk::Limit(_) => return Outcome::Limit,
+             StreamChunk::Error(m) => {
+                 // If cancellation is active, the error was most likely caused
+-                // by the runner aborting due to the cancel signal — report it
++                // by the runner aborting due to the cancel signal -- report it
+                 // as Cancelled rather than a generic error.
+                 if cancel.is_cancelled() {
+                     return Outcome::Cancelled;
+@@ -108,6 +122,37 @@ pub fn drain_to_stdout(
+     }
+ }
+ 
++/// Drain a `Receiver<StreamChunk>` to stdout, writing each delta as it arrives.
++///
++/// See [`drain_stream`] for details.
++pub fn drain_to_stdout(
++    rx: Receiver<StreamChunk>,
++    timeout_ms: Option<u64>,
++    cancel: &CancelToken,
++) -> Outcome {
++    let stdout = std::io::stdout();
++    let mut out = stdout.lock();
++    drain_stream(rx, timeout_ms, cancel, StreamOutput::Stdout, &mut out)
++}
++
++/// Drain a `Receiver<StreamChunk>` without writing to stdout, returning the
++/// concatenated text on success.
++///
++/// See [`drain_stream`] for details.
++pub fn drain_to_capture(
++    rx: Receiver<StreamChunk>,
++    timeout_ms: Option<u64>,
++    cancel: &CancelToken,
++) -> Outcome {
++    drain_stream(
++        rx,
++        timeout_ms,
++        cancel,
++        StreamOutput::CaptureOnly,
++        &mut std::io::sink(),
++    )
++}
++
+ #[cfg(test)]
+ #[expect(clippy::unwrap_used, reason = "tests may panic on unexpected fixtures")]
+ mod tests {
+@@ -185,7 +230,7 @@ mod tests {
+ 
+     #[test]
+     fn disconnected_without_terminal_returns_error() {
+-        // tx is dropped before sending Done/Limit/Error — must NOT be reported as success.
++        // tx is dropped before sending Done/Limit/Error -- must NOT be reported as success.
+         let (tx, rx) = channel::<StreamChunk>();
+         drop(tx);
+         match drain_to_stdout(rx, None, &no_cancel()) {
+@@ -199,7 +244,7 @@ mod tests {
+ 
+     #[test]
+     fn disconnected_with_timeout_set_returns_error() {
+-        // Same as above but with a timeout configured — the disconnect path
++        // Same as above but with a timeout configured -- the disconnect path
+         // through recv_timeout must also classify as Error, not Timeout.
+         let (tx, rx) = channel::<StreamChunk>();
+         drop(tx);
+@@ -264,6 +309,116 @@ mod tests {
+         drop(tx);
+     }
+ 
++    // -----------------------------------------------------------------------
++    // Capture-only output policy
++    // -----------------------------------------------------------------------
++
++    #[test]
++    fn capture_only_returns_concatenated_deltas() {
++        let (tx, rx) = channel();
++        tx.send(StreamChunk::Delta("ab".to_string())).unwrap();
++        tx.send(StreamChunk::Delta("cd".to_string())).unwrap();
++        tx.send(StreamChunk::Done(String::new())).unwrap();
++        drop(tx);
++        match drain_to_capture(rx, None, &no_cancel()) {
++            Outcome::Done(s) => assert_eq!(s, "abcd"),
++            other => panic!(
++                "unexpected outcome: {other:?}",
++                other = OutcomeDebug(&other)
++            ),
++        }
++    }
++
++    #[test]
++    fn capture_only_writes_nothing_to_writer() {
++        let (tx, rx) = channel();
++        tx.send(StreamChunk::Delta("must not appear".to_string()))
++            .unwrap();
++        tx.send(StreamChunk::Done(String::new())).unwrap();
++        drop(tx);
++        let mut buf: Vec<u8> = Vec::new();
++        let outcome = drain_stream(rx, None, &no_cancel(), StreamOutput::CaptureOnly, &mut buf);
++        assert!(matches!(outcome, Outcome::Done(_)), "expected Done");
++        assert!(
++            buf.is_empty(),
++            "CaptureOnly must not write deltas or final newline"
++        );
++    }
++
++    #[test]
++    fn capture_only_stdout_policy_writes_deltas_and_final_newline() {
++        let (tx, rx) = channel();
++        tx.send(StreamChunk::Delta("hello".to_string())).unwrap();
++        tx.send(StreamChunk::Done(String::new())).unwrap();
++        drop(tx);
++        let mut buf: Vec<u8> = Vec::new();
++        let outcome = drain_stream(rx, None, &no_cancel(), StreamOutput::Stdout, &mut buf);
++        assert!(matches!(outcome, Outcome::Done(_)), "expected Done");
++        assert_eq!(String::from_utf8(buf).unwrap(), "hello\n");
++    }
++
++    #[test]
++    fn capture_only_limit_returns_limit_outcome() {
++        use seher::sdk::LimitError;
++        let (tx, rx) = channel();
++        tx.send(StreamChunk::Delta("partial".to_string())).unwrap();
++        tx.send(StreamChunk::Limit(LimitError {
++            provider: "anthropic".to_string(),
++            reset_at: None,
++        }))
++        .unwrap();
++        drop(tx);
++        match drain_to_capture(rx, None, &no_cancel()) {
++            Outcome::Limit => {}
++            other => panic!(
++                "unexpected outcome: {other:?}",
++                other = OutcomeDebug(&other)
++            ),
++        }
++    }
++
++    #[test]
++    fn capture_only_error_chunk_returns_error_outcome() {
++        let (tx, rx) = channel();
++        tx.send(StreamChunk::Error("boom".to_string())).unwrap();
++        drop(tx);
++        match drain_to_capture(rx, None, &no_cancel()) {
++            Outcome::Error(m) => assert_eq!(m, "boom"),
++            other => panic!(
++                "unexpected outcome: {other:?}",
++                other = OutcomeDebug(&other)
++            ),
++        }
++    }
++
++    #[test]
++    fn capture_only_timeout_returns_timeout_outcome() {
++        let (tx, rx) = channel::<StreamChunk>();
++        match drain_to_capture(rx, Some(50), &no_cancel()) {
++            Outcome::Timeout => {}
++            other => panic!(
++                "unexpected outcome: {other:?}",
++                other = OutcomeDebug(&other)
++            ),
++        }
++        drop(tx);
++    }
++
++    #[test]
++    fn capture_only_cancelled_token_returns_cancelled_outcome() {
++        let (tx, rx) = channel::<StreamChunk>();
++        let cancel = CancelToken::new();
++        cancel.cancel();
++        match drain_to_capture(rx, Some(5_000), &cancel) {
++            Outcome::Cancelled => {}
++            other => panic!(
++                "expected Cancelled, got: {other:?}",
++                other = OutcomeDebug(&other)
++            ),
++        }
++        drop(tx);
++    }
++
+     // -----------------------------------------------------------------------
+     // Helpers
+     // -----------------------------------------------------------------------
+diff --git a/crates/seher-sdk/src/claude_agent/mod.rs b/crates/seher-sdk/src/claude_agent/mod.rs
+index e35d65a..3b5d61d 100644
+--- a/crates/seher-sdk/src/claude_agent/mod.rs
++++ b/crates/seher-sdk/src/claude_agent/mod.rs
+@@ -53,7 +53,7 @@ pub struct ClaudeAgentRunnerConfig {
+ /// Each `text` content block in an assistant message is emitted as
+ /// [`StreamChunk::Delta`]. Rate-limit errors are translated to
+ /// [`StreamChunk::Limit`]. Everything else (`tool_use`, `tool_result`,
+-/// `thinking`, etc.) is observed but not forwarded — callers wanting richer
++/// `thinking`, etc.) is observed but not forwarded -- callers wanting richer
+ /// surface should use `claude-agent-sdk` directly.
+ ///
+ /// Rate-limit detection consults both the SDK error message and the trailing
+@@ -139,7 +139,7 @@ async fn run_async(
+         SubprocessCliTransport::one_shot(opts, prompt)
+     };
+     if let Err(e) = transport.connect().await {
+-        // No stderr yet — fall back to the SDK message alone.
++        // No stderr yet -- fall back to the SDK message alone.
+         send_error_with_stderr(tx, &provider_label, &e.to_string(), &[]);
+         return;
+     }
+@@ -147,7 +147,7 @@ async fn run_async(
+     // Drain stderr into a small ring buffer so we can inspect it after a
+     // transport error or premature stream end. Without this, the CLI's
+     // rate-limit messages on stderr are silently dropped. We retain the
+-    // JoinHandle to await drain completion after the child exits — see the
++    // JoinHandle to await drain completion after the child exits -- see the
+     // `await_stderr_drain` call below for the race-avoidance rationale.
+     // Spawned before the streaming-mode write so that a write failure
+     // (typically caused by the child dying mid-handshake) still has access to
+@@ -223,7 +223,7 @@ async fn run_async(
+     }
+     // Drop the message stream to release its receiver, then close the
+     // transport (waits up to 5s for the child to exit). Only *after* the
+-    // child is gone is stderr guaranteed to be at EOF — so we then await the
++    // child is gone is stderr guaranteed to be at EOF -- so we then await the
+     // drain task, which exits once its mpsc upstream closes. Without this,
+     // snapshotting too early would miss the rate-limit line that arrived in
+     // the same scheduling tick as the stdout error.
+@@ -328,9 +328,9 @@ fn build_options(config: &ClaudeAgentRunnerConfig) -> ClaudeAgentOptions {
+ 
+ /// Wrap a [`SeherTool`] (sync handler) as an [`AgentTool`].
+ ///
+-/// `SeherTool::handler` and `AgentTool::handler` are *the same type* — both
++/// `SeherTool::handler` and `AgentTool::handler` are *the same type* -- both
+ /// are the type alias `Arc<dyn Fn(Value) -> Result<String, String> + Send +
+-/// Sync>` — so the handler can be `Arc::clone`'d straight through with no
++/// Sync>` -- so the handler can be `Arc::clone`'d straight through with no
+ /// wrapping closure.
+ fn seher_tool_to_agent_tool(t: &SeherTool) -> AgentTool {
+     AgentTool::new(
+diff --git a/crates/seher-sdk/src/claude_headless/runner.rs b/crates/seher-sdk/src/claude_headless/runner.rs
+index db97875..e660046 100644
+--- a/crates/seher-sdk/src/claude_headless/runner.rs
++++ b/crates/seher-sdk/src/claude_headless/runner.rs
+@@ -2,7 +2,7 @@
+ //!
+ //! Spawns `claude -p "<prompt>"` as a child process and streams stdout back as
+ //! `StreamChunk`s. Much simpler than `claude-terminal` (no tmux, no transcript
+-//! polling) — just a blocking subprocess call.
++//! polling) -- just a blocking subprocess call.
+ 
+ use std::io::Read as _;
+ use std::process::{Command, Stdio};
+@@ -127,7 +127,7 @@ impl ClaudeHeadlessRunner {
+                         // (e.g. `sleep` spawned by a shell wrapper) may still hold
+                         // the pipe write-ends open, causing read_to_string to block
+                         // until they exit. Since we're cancelling, we don't need
+-                        // the output — drop the handles and let the threads finish
++                        // the output -- drop the handles and let the threads finish
+                         // on their own.
+                         drop(stdout_handle.take());
+                         drop(stderr_handle.take());
+@@ -336,7 +336,7 @@ mod tests {
+             cancel_for_thread.cancel();
+         });
+ 
+-        // When: run() is called — it should be interrupted by the cancel
++        // When: run() is called -- it should be interrupted by the cancel
+         // Then: returns Err containing "cancel" well before the 60-second sleep ends
+         let start = std::time::Instant::now();
+         let result = runner.run("ignored-prompt");
+diff --git a/crates/seher-sdk/src/claude_terminal/detect.rs b/crates/seher-sdk/src/claude_terminal/detect.rs
+index 5732483..d51268c 100644
+--- a/crates/seher-sdk/src/claude_terminal/detect.rs
++++ b/crates/seher-sdk/src/claude_terminal/detect.rs
+@@ -11,7 +11,7 @@ fn make_regex(pattern: &str) -> Regex {
+     Regex::new(pattern).unwrap_or_else(|e| panic!("invalid static regex: {e}"))
+ }
+ 
+-// ── ANSI escape stripping ────────────────────────────────────────────────────
++// -- ANSI escape stripping ----------------------------------------------------
+ 
+ static ANSI_ESCAPE: LazyLock<Regex> = LazyLock::new(|| make_regex(r"\x1b\[[\d;?]*[A-Za-z]"));
+ 
+@@ -19,7 +19,7 @@ fn strip_ansi(s: &str) -> String {
+     ANSI_ESCAPE.replace_all(s, "").into_owned()
+ }
+ 
+-// ── Session-limit detection ──────────────────────────────────────────────────
++// -- Session-limit detection --------------------------------------------------
+ 
+ static SESSION_LIMIT_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+     make_regex(
+@@ -55,9 +55,9 @@ pub fn detect_session_limit(screen: &str) -> Option<Option<String>> {
+     Some(reset_info)
+ }
+ 
+-// ── Paste-visible detection ──────────────────────────────────────────────────
++// -- Paste-visible detection --------------------------------------------------
+ 
+-// Collapsed paste patterns — Claude TUI collapses long pastes into a citation.
++// Collapsed paste patterns -- Claude TUI collapses long pastes into a citation.
+ static COLLAPSED_PASTE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+     vec![
+         make_regex(r"\[Pasted\s+text\s+#\d+\s+\+\d+\s+lines\]"),
+@@ -130,7 +130,7 @@ fn prefix_needle(prompt: &str) -> String {
+ }
+ 
+ /// Cell width of a single Unicode scalar value.
+-/// Zero-width chars (combining marks, ZWJ, BOM, variation selectors) → 0.
++/// Zero-width chars (combining marks, ZWJ, BOM, variation selectors) -> 0.
+ /// Others use `unicode-width` which covers CJK wide chars (2 cells).
+ fn char_cell_width(c: char) -> usize {
+     // Zero-width ranges from the TS implementation
+@@ -189,7 +189,7 @@ fn take_prefix_by_cell_width(s: &str, max_cells: usize) -> String {
+     chars[begin..end].iter().collect()
+ }
+ 
+-/// Normalize text for fuzzy matching: strip ANSI → NFC → remove all whitespace.
++/// Normalize text for fuzzy matching: strip ANSI -> NFC -> remove all whitespace.
+ #[must_use]
+ pub fn normalize_for_match(s: &str) -> String {
+     let no_ansi = strip_ansi(s);
+@@ -280,7 +280,7 @@ mod tests {
+ 
+     #[test]
+     fn detect_session_limit_absent() {
+-        assert!(detect_session_limit("Normal Claude prompt ❯").is_none());
++        assert!(detect_session_limit("Normal Claude prompt >").is_none());
+     }
+ 
+     #[test]
+diff --git a/crates/seher-sdk/src/claude_terminal/sdk.rs b/crates/seher-sdk/src/claude_terminal/sdk.rs
+index 4483238..79d913a 100644
+--- a/crates/seher-sdk/src/claude_terminal/sdk.rs
++++ b/crates/seher-sdk/src/claude_terminal/sdk.rs
+@@ -16,6 +16,7 @@ const DEFAULT_POLL_INTERVAL_MS: u64 = 500;
+ const DEFAULT_READY_TIMEOUT_MS: u64 = 30 * 1000;
+ const DEFAULT_PASTE_VISIBLE_TIMEOUT_MS: u64 = 90 * 1000;
+ const DEFAULT_READY_POLL_INTERVAL_MS: u64 = 100;
++// sakoku-ignore-next-line
+ const DEFAULT_READY_INDICATOR: &str = "❯";
+ const DEFAULT_PERMISSION_MODE: &str = "bypassPermissions";
+ const CAPTURE_FAILURE_LIMIT: usize = 3;
+@@ -198,7 +199,7 @@ impl ClaudeTerminalSdk {
+         self.wait_for_paste_visible(session, prompt, paste_visible_ms, ready_poll_ms)?;
+         self.backend().submit(session)?;
+ 
+-        // Resume appends to the existing `<id>.jsonl`, so there is no new file to find —
++        // Resume appends to the existing `<id>.jsonl`, so there is no new file to find --
+         // the transcript path is derived directly from the id + cwd. A fresh session
+         // instead waits for a brand-new transcript to appear.
+         let session_ref = match resume {
+@@ -327,13 +328,13 @@ impl ClaudeTerminalSdk {
+ 
+     fn backend(&self) -> &dyn TerminalBackend {
+         self.config.backend.as_deref().unwrap_or_else(|| {
+-            panic!("ClaudeTerminalSdk: no backend set — use new_sdk_with_defaults()")
++            panic!("ClaudeTerminalSdk: no backend set -- use new_sdk_with_defaults()")
+         })
+     }
+ 
+     fn reader(&self) -> &dyn ClaudeTranscriptReader {
+         self.config.reader.as_deref().unwrap_or_else(|| {
+-            panic!("ClaudeTerminalSdk: no reader set — use new_sdk_with_defaults()")
++            panic!("ClaudeTerminalSdk: no reader set -- use new_sdk_with_defaults()")
+         })
+     }
+ }
+@@ -376,7 +377,7 @@ pub fn new_sdk_with_defaults(
+ /// emitting `StreamChunk`s compatible with seher-cli's `drain_to_stdout`.
+ ///
+ /// `resume` continues a prior Claude session id; `None` starts a fresh one. The
+-/// resulting session id is emitted via [`StreamChunk::Session`] before the text chunk —
++/// resulting session id is emitted via [`StreamChunk::Session`] before the text chunk --
+ /// though, since Claude assigns the id mid-run, nothing is emitted until the run
+ /// completes (the whole response arrives as a single `Delta`).
+ #[must_use]
+diff --git a/crates/seher-sdk/src/claude_terminal/tmux_backend.rs b/crates/seher-sdk/src/claude_terminal/tmux_backend.rs
+index 5b3334a..41a5f78 100644
+--- a/crates/seher-sdk/src/claude_terminal/tmux_backend.rs
++++ b/crates/seher-sdk/src/claude_terminal/tmux_backend.rs
+@@ -79,7 +79,7 @@ impl TerminalBackend for TmuxBackend {
+             &["load-buffer", "-b", &buffer_name, "-"],
+             Some(text),
+         )?;
+-        // paste-buffer: bracketed paste event to the TUI — no Enter sent
++        // paste-buffer: bracketed paste event to the TUI -- no Enter sent
+         let paste_result = self.run_tmux(
+             "paste-buffer",
+             &["paste-buffer", "-b", &buffer_name, "-t", &session.id],
+diff --git a/crates/seher-sdk/src/claude_terminal/transcript.rs b/crates/seher-sdk/src/claude_terminal/transcript.rs
+index 3920715..1451cb5 100644
+--- a/crates/seher-sdk/src/claude_terminal/transcript.rs
++++ b/crates/seher-sdk/src/claude_terminal/transcript.rs
+@@ -55,7 +55,7 @@ fn ts_to_ms(ts: &str) -> Option<u64> {
+ }
+ 
+ /// Whether a transcript message belongs to the current turn (timestamp at or after the
+-/// `after_ms` cutoff). Untimestamped lines are conservatively kept — in real Claude
++/// `after_ms` cutoff). Untimestamped lines are conservatively kept -- in real Claude
+ /// transcripts the scanned line types (`assistant`/`user`/`system`) always carry one.
+ fn msg_in_window(m: &TranscriptMessage, after_ms: u64) -> bool {
+     match m.timestamp.as_deref().and_then(ts_to_ms) {
+@@ -85,7 +85,7 @@ fn project_dir(root: &str, cwd: &str) -> PathBuf {
+     PathBuf::from(root).join(encode_project_dir(cwd))
+ }
+ 
+-// ── FileSystemTranscriptReader ───────────────────────────────────────────────
++// -- FileSystemTranscriptReader -----------------------------------------------
+ 
+ #[derive(Default)]
+ pub struct FileSystemTranscriptReader;
+@@ -323,7 +323,7 @@ not-json
+ {"type":"system","subtype":"turn_duration","timestamp":"2026-06-01T00:00:01.000Z"}
+ {"type":"assistant","message":{"content":"new"},"timestamp":"2026-06-01T12:00:00.000Z"}"#;
+         let msgs = parse_jsonl(raw);
+-        // Cutoff at 2026-06-01T06:00:00Z (epoch ms) — only the "new" assistant message qualifies.
++        // Cutoff at 2026-06-01T06:00:00Z (epoch ms) -- only the "new" assistant message qualifies.
+         let cutoff = ts_to_ms("2026-06-01T06:00:00.000Z").unwrap();
+         let scan = scan_transcript(&msgs, cutoff);
+         assert_eq!(
+diff --git a/crates/seher-sdk/src/claude_terminal/types.rs b/crates/seher-sdk/src/claude_terminal/types.rs
+index 9e4fea1..45fe701 100644
+--- a/crates/seher-sdk/src/claude_terminal/types.rs
++++ b/crates/seher-sdk/src/claude_terminal/types.rs
+@@ -17,7 +17,7 @@ pub trait TerminalBackend: Send + Sync {
+     /// # Errors
+     /// Returns an error if the tmux session cannot be started.
+     fn start(&self, options: TerminalStartOptions) -> Result<TerminalSession, ClaudeTerminalError>;
+-    /// Send text as paste without Enter — callers verify render then call `submit()`.
++    /// Send text as paste without Enter -- callers verify render then call `submit()`.
+     ///
+     /// # Errors
+     /// Returns an error if the paste operation fails.
+@@ -58,7 +58,7 @@ pub struct WaitForAssistantResponseOptions {
+     pub timeout_ms: u64,
+     pub poll_interval_ms: u64,
+     /// Only messages whose `timestamp` is at or after this epoch-ms cutoff count toward
+-    /// completion. For a fresh session this is the launch time (harmless — the transcript
++    /// completion. For a fresh session this is the launch time (harmless -- the transcript
+     /// is empty); for a resumed session it excludes the prior turns already in the file.
+     pub after_ms: u64,
+ }
+@@ -134,7 +134,7 @@ pub struct ClaudeRunOutput {
+     pub session_id: String,
+ }
+ 
+-// ── Errors ──────────────────────────────────────────────────────────────────
++// -- Errors ------------------------------------------------------------------
+ 
+ #[derive(Debug, thiserror::Error)]
+ pub enum ClaudeTerminalError {
+diff --git a/crates/seher-sdk/src/codexbar/client.rs b/crates/seher-sdk/src/codexbar/client.rs
+index 136e519..0ad93da 100644
+--- a/crates/seher-sdk/src/codexbar/client.rs
++++ b/crates/seher-sdk/src/codexbar/client.rs
+@@ -219,7 +219,7 @@ fn parse_response(
+     let value: serde_json::Value =
+         serde_json::from_str(stdout).map_err(|e| CodexBarError::Parse(e.to_string()))?;
+     // codexbar emits a JSON array (one entry per provider) even when --provider
+-    // selects a single one — unwrap to the matching entry.
++    // selects a single one -- unwrap to the matching entry.
+     let entries = value
+         .as_array()
+         .ok_or_else(|| CodexBarError::NonArray(provider.to_string()))?;
+diff --git a/crates/seher-sdk/src/sdk/config_loader.rs b/crates/seher-sdk/src/sdk/config_loader.rs
+index 9779e90..05566fc 100644
+--- a/crates/seher-sdk/src/sdk/config_loader.rs
++++ b/crates/seher-sdk/src/sdk/config_loader.rs
+@@ -50,7 +50,7 @@ pub fn resolve_config_path(override_path: Option<&Path>) -> Result<Option<PathBu
+ }
+ 
+ /// Load and normalize the YAML config from the resolved path. If no file is found,
+-/// returns the default (empty) config — same as TS `loadConfig` returning the
++/// returns the default (empty) config -- same as TS `loadConfig` returning the
+ /// default empty config.
+ ///
+ /// # Errors
+diff --git a/crates/seher-sdk/src/sdk/dispatch.rs b/crates/seher-sdk/src/sdk/dispatch.rs
+index 2230045..1856da1 100644
+--- a/crates/seher-sdk/src/sdk/dispatch.rs
++++ b/crates/seher-sdk/src/sdk/dispatch.rs
+@@ -81,7 +81,7 @@ pub(crate) enum BackendChoice {
+     ClaudeTerminal {
+         model: Option<String>,
+     },
+-    /// Unknown sdk kind — will emit a [`StreamChunk::Error`] on the channel.
++    /// Unknown sdk kind -- will emit a [`StreamChunk::Error`] on the channel.
+     Unsupported {
+         message: String,
+     },
+@@ -609,7 +609,7 @@ mod tests {
+ 
+     #[test]
+     fn fold_stream_accumulates_deltas_and_returns_on_done() {
+-        // Given: a channel with Session → Delta → Delta → Done(empty)
++        // Given: a channel with Session -> Delta -> Delta -> Done(empty)
+         // When: fold_stream consumes the channel
+         // Then: RunOutput has the concatenated text and the session id
+         let (tx, rx) = channel();
+@@ -646,7 +646,7 @@ mod tests {
+ 
+     #[test]
+     fn fold_stream_limit_returns_err_with_partial_text() {
+-        // Given: a channel with Delta("partial") → Limit
++        // Given: a channel with Delta("partial") -> Limit
+         // When: fold_stream consumes the channel
+         // Then: Err(RunError::Limit { partial: "partial", .. })
+         let (tx, rx) = channel();
+diff --git a/crates/seher-sdk/src/sdk/pi_runner.rs b/crates/seher-sdk/src/sdk/pi_runner.rs
+index ed951f8..52735ac 100644
+--- a/crates/seher-sdk/src/sdk/pi_runner.rs
++++ b/crates/seher-sdk/src/sdk/pi_runner.rs
+@@ -76,7 +76,7 @@ pub enum StreamChunk {
+     Session(String),
+     /// pi returned an error that looked like a rate/usage limit.
+     Limit(LimitError),
+-    /// Any other error (provider error, transport error, …) — stringified.
++    /// Any other error (provider error, transport error, ...) -- stringified.
+     Error(String),
+ }
+ 
+@@ -157,7 +157,7 @@ pub fn pi_session_path(working_directory: Option<&Path>, id: &str) -> PathBuf {
+         Path::to_path_buf,
+     );
+     // Canonicalize so symlinked/relative forms of the same directory encode identically
+-    // (mirrors claude_terminal::encode_project_dir) — otherwise a session written from a
++    // (mirrors claude_terminal::encode_project_dir) -- otherwise a session written from a
+     // non-canonical cwd could not be found when probed with the canonical one.
+     let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
+     let base = dirs::data_dir()
+@@ -317,10 +317,10 @@ fn validate_tool_names(tools: &[SeherTool]) -> Result<(), String> {
+ /// `(model, thinking)`.
+ ///
+ /// The suffix is recognized **only** when it parses as a pi thinking level
+-/// (`off`, `minimal`, `low`, `medium`, `high`, `xhigh` and their aliases —
++/// (`off`, `minimal`, `low`, `medium`, `high`, `xhigh` and their aliases --
+ /// see [`pi::model::ThinkingLevel`]'s `FromStr`). Anything else stays part of
+-/// the model name, so model ids with a legitimate `:` — e.g. `OpenRouter`
+-/// variants like `meta-llama/llama-3.1-8b-instruct:free` — pass through
++/// the model name, so model ids with a legitimate `:` -- e.g. `OpenRouter`
++/// variants like `meta-llama/llama-3.1-8b-instruct:free` -- pass through
+ /// untouched.
+ #[must_use]
+ pub fn split_thinking_suffix(model: &str) -> (&str, Option<&str>) {
+@@ -392,7 +392,7 @@ fn run_on_thread(
+     let session_id = resume.map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_string);
+     let session_path = pi_session_path(opts.working_directory.as_deref(), &session_id);
+ 
+-    // A fresh conversation must seed the session file before create_agent_session —
++    // A fresh conversation must seed the session file before create_agent_session --
+     // pi only opens existing files at `session_path` (a resumed one already exists).
+     if resume.is_none() {
+         let created = session_path
+diff --git a/crates/seher-sdk/src/sdk/resolve.rs b/crates/seher-sdk/src/sdk/resolve.rs
+index 2772e8a..e9f6662 100644
+--- a/crates/seher-sdk/src/sdk/resolve.rs
++++ b/crates/seher-sdk/src/sdk/resolve.rs
+@@ -131,10 +131,10 @@ pub struct Candidate {
+ 
+ /// Supported `sdk` values that can actually be executed by this implementation.
+ ///
+-/// - `pi` — in-process execution engine, supports custom tools.
+-/// - `claude-terminal` — drives the local `claude` CLI via tmux.
+-/// - `claude-headless` — drives `claude -p` as a subprocess.
+-/// - `claude` — drives the `claude` CLI through the `claude-agent-sdk` crate
++/// - `pi` -- in-process execution engine, supports custom tools.
++/// - `claude-terminal` -- drives the local `claude` CLI via tmux.
++/// - `claude-headless` -- drives `claude -p` as a subprocess.
++/// - `claude` -- drives the `claude` CLI through the `claude-agent-sdk` crate
+ ///   (stream-json + control protocol); supports in-process MCP tools.
+ ///
+ /// Providers tagged with other seher-ts-only SDK kinds (`codex`, `copilot`,
+@@ -266,7 +266,7 @@ pub enum ScanOutcome {
+     AllLimited {
+         reset_time: Option<DateTime<Utc>>,
+     },
+-    /// No candidates were available — either the list was empty, or every probe
++    /// No candidates were available -- either the list was empty, or every probe
+     /// errored. `probe_errors` records the latter so callers can surface root cause.
+     NoAgents {
+         probe_errors: Vec<(String, String)>,
+@@ -457,7 +457,7 @@ impl LimitProbe for CodexBarProbe {
+                 Ok(limit) => Ok(limit),
+                 // A missing codexbar entry (community providers), an absent
+                 // binary, or a transient spawn/timeout failure all mean "we
+-                // can't prove this provider is limited" — treat it as available
++                // can't prove this provider is limited" -- treat it as available
+                 // so resolution proceeds rather than dropping the provider.
+                 Err(e) => {
+                     tracing::warn!(
+@@ -929,7 +929,7 @@ mod tests {
+ 
+     #[tokio::test(flavor = "current_thread")]
+     async fn poll_for_agent_returns_canceled_when_signal_preflipped() {
+-        // cancel is already true before the first poll iteration → must short-circuit.
++        // cancel is already true before the first poll iteration -> must short-circuit.
+         let c = cfg(vec![entry("a", "a", Some(1), &[("build", "x", None)])]);
+         let mut probe = MockProbe {
+             outcomes: HashMap::new(),
+diff --git a/crates/seher-sdk/src/sdk/tool.rs b/crates/seher-sdk/src/sdk/tool.rs
+index b8e4364..835b969 100644
+--- a/crates/seher-sdk/src/sdk/tool.rs
++++ b/crates/seher-sdk/src/sdk/tool.rs
+@@ -2,7 +2,7 @@
+ //!
+ //! A [`SeherTool`] pairs a JSON Schema with a synchronous handler. Before a prompt
+ //! runs, [`crate::sdk::PiRunner`] converts each one into a `pi::tools::Tool`
+-//! ([`PiToolAdapter`]) and injects it into the live agent session — pi's
++//! ([`PiToolAdapter`]) and injects it into the live agent session -- pi's
+ //! `SessionOptions` has no custom-tool field, so injection happens post-creation
+ //! via `AgentSessionHandle::session_mut()`.
+ //!
+diff --git a/schemas/settings.schema.json b/schemas/settings.schema.json
+index b2290ac..ecb765a 100644
+--- a/schemas/settings.schema.json
++++ b/schemas/settings.schema.json
+@@ -89,7 +89,7 @@
+         },
+         "sdk": {
+           "type": "string",
+-          "description": "Execution engine. Defaults to \"pi\". Executable in this build: `pi` (in-process pi_agent_rust), `claude` (drives the local `claude` CLI through `claude-agent-sdk` — stream-json + in-process MCP tools), `claude-terminal` (drives the local `claude` CLI via tmux), and `claude-headless` (runs `claude -p` as a subprocess). The seher-ts-only kinds (`codex`, `copilot`, `cursor`, `kimi`, `opencode`) are accepted for cross-implementation portability but silently filtered out of the candidate list at startup. `pi` and `claude` support custom tools; the two CLI-only backends do not",
++          "description": "Execution engine. Defaults to \"pi\". Executable in this build: `pi` (in-process pi_agent_rust), `claude` (drives the local `claude` CLI through `claude-agent-sdk` -- stream-json + in-process MCP tools), `claude-terminal` (drives the local `claude` CLI via tmux), and `claude-headless` (runs `claude -p` as a subprocess). The seher-ts-only kinds (`codex`, `copilot`, `cursor`, `kimi`, `opencode`) are accepted for cross-implementation portability but silently filtered out of the candidate list at startup. `pi` and `claude` support custom tools; the two CLI-only backends do not",
+           "default": "pi",
+           "examples": [
+             "pi",

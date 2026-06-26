@@ -43,9 +43,16 @@ fn run() -> i32 {
         };
     }
 
-    let Some(prompt) = prompt::resolve(&args.prompt_tokens) else {
-        eprintln!("Empty prompt; nothing to do.");
-        return 1;
+    let prompt = match prompt::resolve(&args.prompt_tokens) {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            eprintln!("Empty prompt; nothing to do.");
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
     };
 
     let logger = logger::Logger::new(args.quiet);

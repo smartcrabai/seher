@@ -302,7 +302,7 @@ fn stream_with_http_retry(
     loop {
         let rx = dispatch_stream(resolved, prompt, system_prompt, args, resume, cancel);
         let outcome = match output {
-            StreamOutput::Stdout => drain_to_stdout(rx, args.timeout, cancel),
+            StreamOutput::Forward => drain_to_stdout(rx, args.timeout, cancel),
             StreamOutput::CaptureOnly => drain_to_capture(rx, args.timeout, cancel),
         };
         match outcome {

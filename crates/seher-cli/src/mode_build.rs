@@ -23,7 +23,7 @@ pub fn run(
         &mode_key,
         None,
         logger,
-        StreamOutput::Stdout,
+        StreamOutput::Forward,
     )?;
     Ok(())
 }

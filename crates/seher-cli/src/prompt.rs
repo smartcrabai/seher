@@ -5,37 +5,41 @@ use std::io::{IsTerminal, Read, Write};
 ///   2. stdin (when not a TTY) -> use trimmed content
 ///   3. else, open `$EDITOR` to type
 ///
-/// Returns `None` if the resolved prompt is empty.
-pub fn resolve(trailing: &[String]) -> Option<String> {
+/// Returns `Ok(None)` if the resolved prompt is empty, or `Err` if the editor
+/// could not be invoked (e.g. the process is not in the foreground).
+pub fn resolve(trailing: &[String]) -> Result<Option<String>, String> {
     if !trailing.is_empty() {
         let joined = trailing.join(" ");
         let trimmed = joined.trim();
-        return if trimmed.is_empty() {
+        return Ok(if trimmed.is_empty() {
             None
         } else {
             Some(trimmed.to_string())
-        };
+        });
     }
 
     let stdin = std::io::stdin();
     if !stdin.is_terminal() {
         let mut content = String::new();
         if stdin.lock().read_to_string(&mut content).is_err() {
-            return None;
+            return Ok(None);
         }
         let trimmed = content.trim();
-        return if trimmed.is_empty() {
+        return Ok(if trimmed.is_empty() {
             None
         } else {
             Some(trimmed.to_string())
-        };
+        });
     }
 
     // TTY -> editor
-    edit_with_seed("")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| s.trim().to_string())
+    let text = edit_with_seed("").map_err(|e| e.to_string())?;
+    let trimmed = text.trim();
+    Ok(if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    })
 }
 
 /// Check whether the editor can be safely launched in the current environment.
@@ -122,31 +126,32 @@ pub fn edit_with_seed(seed: &str) -> Result<String, Box<dyn std::error::Error>> 
 }
 
 #[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "tests may panic on unexpected fixtures")]
 mod tests {
     use super::*;
 
     #[test]
     fn trailing_words_are_joined_with_spaces() {
         let r = resolve(&["hello".to_string(), "world".to_string()]);
-        assert_eq!(r.as_deref(), Some("hello world"));
+        assert_eq!(r.unwrap().as_deref(), Some("hello world"));
     }
 
     #[test]
     fn trailing_single_word_returns_that_word() {
         let r = resolve(&["alone".to_string()]);
-        assert_eq!(r.as_deref(), Some("alone"));
+        assert_eq!(r.unwrap().as_deref(), Some("alone"));
     }
 
     #[test]
     fn trailing_only_whitespace_returns_none() {
         let r = resolve(&["   ".to_string(), "\t".to_string()]);
-        assert_eq!(r, None);
+        assert_eq!(r.unwrap(), None);
     }
 
     #[test]
     fn trailing_surrounding_whitespace_is_trimmed() {
         let r = resolve(&["  hi  ".to_string()]);
-        assert_eq!(r.as_deref(), Some("hi"));
+        assert_eq!(r.unwrap().as_deref(), Some("hi"));
     }
 
     #[test]
@@ -156,23 +161,43 @@ mod tests {
         let _ = ensure_editor_available();
     }
 
+    /// Serialize access to the process environment across test threads.
+    ///
+    /// `std::env::set_var`/`remove_var` are `unsafe` because concurrent reads
+    /// from other threads are undefined behavior. Holding this mutex while
+    /// mutating (and while the edited value is observable) prevents that race.
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Restores an environment variable to its previous value when dropped,
     /// even if the test panics.
     struct EnvVarGuard {
         key: &'static str,
         previous: Option<String>,
+        /// Keeps the environment lock held for the lifetime of the guard so
+        /// that no other test thread can read the variable while it is being
+        /// modified or restored.
+        #[expect(dead_code, reason = "the guard is held only for its Drop side effect")]
+        lock: std::sync::MutexGuard<'static, ()>,
     }
 
     impl EnvVarGuard {
         fn set(key: &'static str, value: &str) -> Self {
+            let lock = ENV_MUTEX.lock().unwrap();
             let previous = std::env::var(key).ok();
+            // SAFETY: we hold `ENV_MUTEX`, so no other thread can read this
+            // variable concurrently for the lifetime of the returned guard.
             unsafe { std::env::set_var(key, value) };
-            Self { key, previous }
+            Self {
+                key,
+                previous,
+                lock,
+            }
         }
     }
 
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
+            // SAFETY: we still hold `ENV_MUTEX` while this guard is alive.
             match self.previous.take() {
                 Some(v) => unsafe { std::env::set_var(self.key, v) },
                 None => unsafe { std::env::remove_var(self.key) },
@@ -181,9 +206,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn edit_with_seed_returns_error_when_editor_exits_nonzero() {
-        // EDITOR=false always exits with a non-zero status, so edit_with_seed
-        // must return an error regardless of the test environment.
+        // `false` always exits with a non-zero status on Unix, so
+        // edit_with_seed must return an error regardless of the test environment.
         let _guard = EnvVarGuard::set("EDITOR", "false");
         let result = edit_with_seed("seed");
         assert!(
