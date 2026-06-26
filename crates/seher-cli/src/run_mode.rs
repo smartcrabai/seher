@@ -15,7 +15,7 @@ use seher::sdk::{
 
 use crate::args::Args;
 use crate::logger::Logger;
-use crate::stream::{Outcome, drain_to_stdout};
+use crate::stream::{Outcome, StreamOutput, drain_to_capture, drain_to_stdout};
 
 /// Run the full "resolve → stream" loop, returning the concatenated assistant
 /// text on success.
@@ -30,6 +30,7 @@ pub fn resolve_and_stream(
     mode_key: &str,
     system_prompt: Option<&str>,
     logger: &Logger,
+    output: StreamOutput,
 ) -> Result<String, String> {
     // Load config + detect browser session once; reuse across retry attempts.
     let config: Config = load_config(args.config.as_deref()).map_err(|e| e.to_string())?;
@@ -78,6 +79,7 @@ pub fn resolve_and_stream(
             &config,
             &resume_id,
             &cancel,
+            output,
         );
     }
 
@@ -85,7 +87,16 @@ pub fn resolve_and_stream(
         resolve_once(rt, args, mode_key, excluded, &config)
     };
     let stream_runner = |resolved: &ResolvedAgent| -> Outcome {
-        stream_with_http_retry(resolved, prompt, system_prompt, args, None, &cancel, logger)
+        stream_with_http_retry(
+            resolved,
+            prompt,
+            system_prompt,
+            args,
+            None,
+            &cancel,
+            logger,
+            output,
+        )
     };
     stream_with_retry(args.timeout, logger, resolver, stream_runner)
 }
@@ -151,6 +162,7 @@ fn resume_and_stream(
     config: &Config,
     resume_id: &str,
     cancel: &CancelToken,
+    output: StreamOutput,
 ) -> Result<String, String> {
     let cwd = effective_cwd(args);
     let pinned = probe_session_backend(&cwd, resume_id).ok_or_else(|| {
@@ -177,6 +189,7 @@ fn resume_and_stream(
         Some(resume_id),
         cancel,
         logger,
+        output,
     ) {
         Outcome::Done(t) => Ok(t),
         Outcome::Limit => Err(format!(
@@ -271,6 +284,10 @@ fn sleep_with_cancel(duration: Duration, cancel: &CancelToken) {
 /// blocking [`seher::sdk::run_for_resolved`] path already has. Rate/usage
 /// limits still surface as [`Outcome::Limit`] so the caller can switch
 /// providers; timeouts and cancellations are not retried.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal retry wrapper that mirrors run_for_resolved options"
+)]
 fn stream_with_http_retry(
     resolved: &ResolvedAgent,
     prompt: &str,
@@ -279,11 +296,16 @@ fn stream_with_http_retry(
     resume: Option<&str>,
     cancel: &CancelToken,
     logger: &Logger,
+    output: StreamOutput,
 ) -> Outcome {
     let mut attempt: u32 = 1;
     loop {
         let rx = dispatch_stream(resolved, prompt, system_prompt, args, resume, cancel);
-        match drain_to_stdout(rx, args.timeout, cancel) {
+        let outcome = match output {
+            StreamOutput::Stdout => drain_to_stdout(rx, args.timeout, cancel),
+            StreamOutput::CaptureOnly => drain_to_capture(rx, args.timeout, cancel),
+        };
+        match outcome {
             Outcome::Error(ref message)
                 if resolved.retry.enabled
                     && attempt < resolved.retry.effective_max_attempts()

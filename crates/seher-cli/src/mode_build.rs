@@ -1,6 +1,7 @@
 use crate::args::Args;
 use crate::logger::Logger;
 use crate::run_mode::resolve_and_stream;
+use crate::stream::StreamOutput;
 
 /// Run a build-mode prompt: resolve the highest-priority non-limited provider for
 /// the build mode key and stream the prompt through it.
@@ -15,6 +16,14 @@ pub fn run(
     logger: &Logger,
 ) -> Result<(), String> {
     let mode_key = args.model.clone().unwrap_or_else(|| "build".to_string());
-    resolve_and_stream(rt, prompt, args, &mode_key, None, logger)?;
+    resolve_and_stream(
+        rt,
+        prompt,
+        args,
+        &mode_key,
+        None,
+        logger,
+        StreamOutput::Stdout,
+    )?;
     Ok(())
 }

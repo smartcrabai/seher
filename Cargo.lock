@@ -3867,6 +3867,7 @@ version = "0.0.47"
 dependencies = [
  "chrono",
  "clap",
+ "libc",
  "seher-sdk",
  "serde_json",
  "tempfile",

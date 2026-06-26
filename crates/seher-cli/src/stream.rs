@@ -15,7 +15,17 @@ pub enum Outcome {
     Cancelled,
 }
 
-/// Drain a `Receiver<StreamChunk>` to stdout, writing each delta as it arrives.
+/// Where the stream drain should emit output.
+#[derive(Clone, Copy)]
+pub enum StreamOutput {
+    /// Write deltas and the final newline to the supplied writer (stdout in production).
+    Stdout,
+    /// Suppress all output to the writer; only collect the concatenated text.
+    CaptureOnly,
+}
+
+/// Drain a `Receiver<StreamChunk>` according to `output`, writing each delta as
+/// it arrives only when [`StreamOutput::Stdout`] is selected.
 ///
 /// `timeout_ms` is the total deadline (in ms) from "now" — it does NOT abort the
 /// in-flight worker thread; on timeout, the receiver is dropped and the worker
@@ -25,16 +35,16 @@ pub enum Outcome {
     clippy::needless_pass_by_value,
     reason = "takes ownership of the receiver so it is dropped on return, signaling the worker the consumer is gone"
 )]
-pub fn drain_to_stdout(
+pub fn drain_stream<W: Write>(
     rx: Receiver<StreamChunk>,
     timeout_ms: Option<u64>,
     cancel: &CancelToken,
+    output: StreamOutput,
+    writer: &mut W,
 ) -> Outcome {
     // Short poll interval used when there is no deadline — lets cancel checks
     // fire even while blocked on recv, instead of waiting for the next chunk.
     const CANCEL_POLL: Duration = Duration::from_millis(50);
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
     let mut full = String::new();
     let deadline = timeout_ms.map(|t| Instant::now() + Duration::from_millis(t));
 
@@ -80,8 +90,10 @@ pub fn drain_to_stdout(
         };
         match chunk {
             StreamChunk::Delta(d) => {
-                let _ = out.write_all(d.as_bytes());
-                let _ = out.flush();
+                if matches!(output, StreamOutput::Stdout) {
+                    let _ = writer.write_all(d.as_bytes());
+                    let _ = writer.flush();
+                }
                 full.push_str(&d);
             }
             // Session id is metadata — keep stdout clean for piping and surface it on
@@ -90,8 +102,10 @@ pub fn drain_to_stdout(
                 eprintln!("session: {id}");
             }
             StreamChunk::Done(t) => {
-                let _ = out.write_all(b"\n");
-                let _ = out.flush();
+                if matches!(output, StreamOutput::Stdout) {
+                    let _ = writer.write_all(b"\n");
+                    let _ = writer.flush();
+                }
                 return Outcome::Done(if t.is_empty() { full } else { t });
             }
             StreamChunk::Limit(_) => return Outcome::Limit,
@@ -106,6 +120,37 @@ pub fn drain_to_stdout(
             }
         }
     }
+}
+
+/// Drain a `Receiver<StreamChunk>` to stdout, writing each delta as it arrives.
+///
+/// See [`drain_stream`] for details.
+pub fn drain_to_stdout(
+    rx: Receiver<StreamChunk>,
+    timeout_ms: Option<u64>,
+    cancel: &CancelToken,
+) -> Outcome {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    drain_stream(rx, timeout_ms, cancel, StreamOutput::Stdout, &mut out)
+}
+
+/// Drain a `Receiver<StreamChunk>` without writing to stdout, returning the
+/// concatenated text on success.
+///
+/// See [`drain_stream`] for details.
+pub fn drain_to_capture(
+    rx: Receiver<StreamChunk>,
+    timeout_ms: Option<u64>,
+    cancel: &CancelToken,
+) -> Outcome {
+    drain_stream(
+        rx,
+        timeout_ms,
+        cancel,
+        StreamOutput::CaptureOnly,
+        &mut std::io::sink(),
+    )
 }
 
 #[cfg(test)]
@@ -255,6 +300,116 @@ mod tests {
         // When: drain_to_stdout is called
         // Then: returns Cancelled (not Done) because the token was cancelled
         match drain_to_stdout(rx, Some(5_000), &cancel) {
+            Outcome::Cancelled => {}
+            other => panic!(
+                "expected Cancelled, got: {other:?}",
+                other = OutcomeDebug(&other)
+            ),
+        }
+        drop(tx);
+    }
+
+    // -----------------------------------------------------------------------
+    // Capture-only output policy
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn capture_only_returns_concatenated_deltas() {
+        let (tx, rx) = channel();
+        tx.send(StreamChunk::Delta("ab".to_string())).unwrap();
+        tx.send(StreamChunk::Delta("cd".to_string())).unwrap();
+        tx.send(StreamChunk::Done(String::new())).unwrap();
+        drop(tx);
+        match drain_to_capture(rx, None, &no_cancel()) {
+            Outcome::Done(s) => assert_eq!(s, "abcd"),
+            other => panic!(
+                "unexpected outcome: {other:?}",
+                other = OutcomeDebug(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn capture_only_writes_nothing_to_writer() {
+        let (tx, rx) = channel();
+        tx.send(StreamChunk::Delta("must not appear".to_string()))
+            .unwrap();
+        tx.send(StreamChunk::Done(String::new())).unwrap();
+        drop(tx);
+        let mut buf: Vec<u8> = Vec::new();
+        let outcome = drain_stream(rx, None, &no_cancel(), StreamOutput::CaptureOnly, &mut buf);
+        assert!(matches!(outcome, Outcome::Done(_)), "expected Done");
+        assert!(
+            buf.is_empty(),
+            "CaptureOnly must not write deltas or final newline"
+        );
+    }
+
+    #[test]
+    fn capture_only_stdout_policy_writes_deltas_and_final_newline() {
+        let (tx, rx) = channel();
+        tx.send(StreamChunk::Delta("hello".to_string())).unwrap();
+        tx.send(StreamChunk::Done(String::new())).unwrap();
+        drop(tx);
+        let mut buf: Vec<u8> = Vec::new();
+        let outcome = drain_stream(rx, None, &no_cancel(), StreamOutput::Stdout, &mut buf);
+        assert!(matches!(outcome, Outcome::Done(_)), "expected Done");
+        assert_eq!(String::from_utf8(buf).unwrap(), "hello\n");
+    }
+
+    #[test]
+    fn capture_only_limit_returns_limit_outcome() {
+        use seher::sdk::LimitError;
+        let (tx, rx) = channel();
+        tx.send(StreamChunk::Delta("partial".to_string())).unwrap();
+        tx.send(StreamChunk::Limit(LimitError {
+            provider: "anthropic".to_string(),
+            reset_at: None,
+        }))
+        .unwrap();
+        drop(tx);
+        match drain_to_capture(rx, None, &no_cancel()) {
+            Outcome::Limit => {}
+            other => panic!(
+                "unexpected outcome: {other:?}",
+                other = OutcomeDebug(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn capture_only_error_chunk_returns_error_outcome() {
+        let (tx, rx) = channel();
+        tx.send(StreamChunk::Error("boom".to_string())).unwrap();
+        drop(tx);
+        match drain_to_capture(rx, None, &no_cancel()) {
+            Outcome::Error(m) => assert_eq!(m, "boom"),
+            other => panic!(
+                "unexpected outcome: {other:?}",
+                other = OutcomeDebug(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn capture_only_timeout_returns_timeout_outcome() {
+        let (tx, rx) = channel::<StreamChunk>();
+        match drain_to_capture(rx, Some(50), &no_cancel()) {
+            Outcome::Timeout => {}
+            other => panic!(
+                "unexpected outcome: {other:?}",
+                other = OutcomeDebug(&other)
+            ),
+        }
+        drop(tx);
+    }
+
+    #[test]
+    fn capture_only_cancelled_token_returns_cancelled_outcome() {
+        let (tx, rx) = channel::<StreamChunk>();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        match drain_to_capture(rx, Some(5_000), &cancel) {
             Outcome::Cancelled => {}
             other => panic!(
                 "expected Cancelled, got: {other:?}",
