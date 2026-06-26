@@ -61,7 +61,7 @@ impl ClaudeSDKError {
     pub(crate) fn json_decode(line: &str, err: serde_json::Error) -> Self {
         // Truncate on a UTF-8 char boundary; slicing on a raw byte index would
         // panic if the 100th byte sits inside a multibyte codepoint
-        // (Japanese, emoji, accented Latin, …).
+        // (Japanese, emoji, accented Latin, ...).
         let snippet = if line.len() > 100 {
             let cut = line
                 .char_indices()
@@ -113,7 +113,7 @@ mod tests {
 
     #[test]
     fn json_decode_does_not_panic_on_multibyte_boundary() {
-        // Each U+3042 is 3 bytes; 40 of them = 120 bytes — the cut at byte 100
+        // Each U+3042 is 3 bytes; 40 of them = 120 bytes -- the cut at byte 100
         // would land mid-codepoint with a naive slice. The safe version must
         // round down to the previous char boundary.
         let long: String = "\u{3042}".repeat(40);

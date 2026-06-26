@@ -3,7 +3,7 @@
 //! The Claude CLI talks to in-process tools by sending JSON-RPC requests
 //! inside a `control_request` of subtype `mcp_message`. We implement just
 //! enough of the MCP protocol to serve `tools/list` and `tools/call` from
-//! a callable Rust closure registry — no need to depend on a full MCP crate
+//! a callable Rust closure registry -- no need to depend on a full MCP crate
 //! when those are the only two methods exercised against an in-process
 //! server.
 //!
@@ -111,7 +111,7 @@ impl AgentToolbox {
     /// Process a single JSON-RPC request (what arrives inside an
     /// `mcp_message` control request).
     ///
-    /// Returns a JSON-RPC response object — already including `jsonrpc`,
+    /// Returns a JSON-RPC response object -- already including `jsonrpc`,
     /// `id`, and either `result` or `error`. The transport wraps this in a
     /// `control_response`.
     #[must_use]
@@ -188,7 +188,7 @@ fn jsonrpc_error(id: &Value, code: i32, message: &str) -> Value {
 
 /// [`ControlHandler`] that routes `mcp_message` requests to a single toolbox.
 ///
-/// Other control subtypes (`can_use_tool`, `hook_callback`, …) are rejected
+/// Other control subtypes (`can_use_tool`, `hook_callback`, ...) are rejected
 /// with `ControlResponse::Error` since we don't model them yet.
 pub struct ToolboxControlHandler {
     toolbox: Arc<AgentToolbox>,

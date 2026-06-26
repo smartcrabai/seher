@@ -18,7 +18,7 @@ use crate::types::{ClaudeAgentOptions, Message};
 ///   mode and pre-applying any configuration. The provided transport is
 ///   connected if not already, the prompt is pushed as a `user` frame in
 ///   streaming mode, and stdin is closed so the CLI exits when done.
-///   **`options` is *not* applied to a caller-supplied transport** — fields
+///   **`options` is *not* applied to a caller-supplied transport** -- fields
 ///   like `sdk_mcp_server`, `model`, and `allowed_tools` only take effect on
 ///   the default transport built from `options`. If you need both a custom
 ///   transport and option-driven configuration, build the transport via
@@ -27,7 +27,7 @@ use crate::types::{ClaudeAgentOptions, Message};
 ///
 /// # Errors
 ///
-/// Returns whatever the underlying transport surfaces — spawn failures,
+/// Returns whatever the underlying transport surfaces -- spawn failures,
 /// JSON decode errors, or CLI process errors. Individual yielded items are
 /// `Result<Message>` so per-frame parse failures don't kill the whole stream.
 pub async fn query(

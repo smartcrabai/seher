@@ -2,7 +2,7 @@
 //!
 //! Spawns `claude -p "<prompt>"` as a child process and streams stdout back as
 //! `StreamChunk`s. Much simpler than `claude-terminal` (no tmux, no transcript
-//! polling) — just a blocking subprocess call.
+//! polling) -- just a blocking subprocess call.
 
 use std::io::Read as _;
 use std::process::{Command, Stdio};
@@ -127,7 +127,7 @@ impl ClaudeHeadlessRunner {
                         // (e.g. `sleep` spawned by a shell wrapper) may still hold
                         // the pipe write-ends open, causing read_to_string to block
                         // until they exit. Since we're cancelling, we don't need
-                        // the output — drop the handles and let the threads finish
+                        // the output -- drop the handles and let the threads finish
                         // on their own.
                         drop(stdout_handle.take());
                         drop(stderr_handle.take());
@@ -336,7 +336,7 @@ mod tests {
             cancel_for_thread.cancel();
         });
 
-        // When: run() is called — it should be interrupted by the cancel
+        // When: run() is called -- it should be interrupted by the cancel
         // Then: returns Err containing "cancel" well before the 60-second sleep ends
         let start = std::time::Instant::now();
         let result = runner.run("ignored-prompt");

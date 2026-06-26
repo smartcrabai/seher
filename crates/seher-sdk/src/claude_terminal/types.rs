@@ -17,7 +17,7 @@ pub trait TerminalBackend: Send + Sync {
     /// # Errors
     /// Returns an error if the tmux session cannot be started.
     fn start(&self, options: TerminalStartOptions) -> Result<TerminalSession, ClaudeTerminalError>;
-    /// Send text as paste without Enter — callers verify render then call `submit()`.
+    /// Send text as paste without Enter -- callers verify render then call `submit()`.
     ///
     /// # Errors
     /// Returns an error if the paste operation fails.
@@ -58,7 +58,7 @@ pub struct WaitForAssistantResponseOptions {
     pub timeout_ms: u64,
     pub poll_interval_ms: u64,
     /// Only messages whose `timestamp` is at or after this epoch-ms cutoff count toward
-    /// completion. For a fresh session this is the launch time (harmless — the transcript
+    /// completion. For a fresh session this is the launch time (harmless -- the transcript
     /// is empty); for a resumed session it excludes the prior turns already in the file.
     pub after_ms: u64,
 }
@@ -134,7 +134,7 @@ pub struct ClaudeRunOutput {
     pub session_id: String,
 }
 
-// ── Errors ──────────────────────────────────────────────────────────────────
+// -- Errors ------------------------------------------------------------------
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClaudeTerminalError {

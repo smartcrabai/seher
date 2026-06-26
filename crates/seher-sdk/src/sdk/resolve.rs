@@ -131,10 +131,10 @@ pub struct Candidate {
 
 /// Supported `sdk` values that can actually be executed by this implementation.
 ///
-/// - `pi` — in-process execution engine, supports custom tools.
-/// - `claude-terminal` — drives the local `claude` CLI via tmux.
-/// - `claude-headless` — drives `claude -p` as a subprocess.
-/// - `claude` — drives the `claude` CLI through the `claude-agent-sdk` crate
+/// - `pi` -- in-process execution engine, supports custom tools.
+/// - `claude-terminal` -- drives the local `claude` CLI via tmux.
+/// - `claude-headless` -- drives `claude -p` as a subprocess.
+/// - `claude` -- drives the `claude` CLI through the `claude-agent-sdk` crate
 ///   (stream-json + control protocol); supports in-process MCP tools.
 ///
 /// Providers tagged with other seher-ts-only SDK kinds (`codex`, `copilot`,
@@ -266,7 +266,7 @@ pub enum ScanOutcome {
     AllLimited {
         reset_time: Option<DateTime<Utc>>,
     },
-    /// No candidates were available — either the list was empty, or every probe
+    /// No candidates were available -- either the list was empty, or every probe
     /// errored. `probe_errors` records the latter so callers can surface root cause.
     NoAgents {
         probe_errors: Vec<(String, String)>,
@@ -457,7 +457,7 @@ impl LimitProbe for CodexBarProbe {
                 Ok(limit) => Ok(limit),
                 // A missing codexbar entry (community providers), an absent
                 // binary, or a transient spawn/timeout failure all mean "we
-                // can't prove this provider is limited" — treat it as available
+                // can't prove this provider is limited" -- treat it as available
                 // so resolution proceeds rather than dropping the provider.
                 Err(e) => {
                     tracing::warn!(
@@ -929,7 +929,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn poll_for_agent_returns_canceled_when_signal_preflipped() {
-        // cancel is already true before the first poll iteration → must short-circuit.
+        // cancel is already true before the first poll iteration -> must short-circuit.
         let c = cfg(vec![entry("a", "a", Some(1), &[("build", "x", None)])]);
         let mut probe = MockProbe {
             outcomes: HashMap::new(),

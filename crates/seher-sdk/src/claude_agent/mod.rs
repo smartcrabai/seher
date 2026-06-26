@@ -53,7 +53,7 @@ pub struct ClaudeAgentRunnerConfig {
 /// Each `text` content block in an assistant message is emitted as
 /// [`StreamChunk::Delta`]. Rate-limit errors are translated to
 /// [`StreamChunk::Limit`]. Everything else (`tool_use`, `tool_result`,
-/// `thinking`, etc.) is observed but not forwarded — callers wanting richer
+/// `thinking`, etc.) is observed but not forwarded -- callers wanting richer
 /// surface should use `claude-agent-sdk` directly.
 ///
 /// Rate-limit detection consults both the SDK error message and the trailing
@@ -139,7 +139,7 @@ async fn run_async(
         SubprocessCliTransport::one_shot(opts, prompt)
     };
     if let Err(e) = transport.connect().await {
-        // No stderr yet — fall back to the SDK message alone.
+        // No stderr yet -- fall back to the SDK message alone.
         send_error_with_stderr(tx, &provider_label, &e.to_string(), &[]);
         return;
     }
@@ -147,7 +147,7 @@ async fn run_async(
     // Drain stderr into a small ring buffer so we can inspect it after a
     // transport error or premature stream end. Without this, the CLI's
     // rate-limit messages on stderr are silently dropped. We retain the
-    // JoinHandle to await drain completion after the child exits — see the
+    // JoinHandle to await drain completion after the child exits -- see the
     // `await_stderr_drain` call below for the race-avoidance rationale.
     // Spawned before the streaming-mode write so that a write failure
     // (typically caused by the child dying mid-handshake) still has access to
@@ -223,7 +223,7 @@ async fn run_async(
     }
     // Drop the message stream to release its receiver, then close the
     // transport (waits up to 5s for the child to exit). Only *after* the
-    // child is gone is stderr guaranteed to be at EOF — so we then await the
+    // child is gone is stderr guaranteed to be at EOF -- so we then await the
     // drain task, which exits once its mpsc upstream closes. Without this,
     // snapshotting too early would miss the rate-limit line that arrived in
     // the same scheduling tick as the stdout error.
@@ -328,9 +328,9 @@ fn build_options(config: &ClaudeAgentRunnerConfig) -> ClaudeAgentOptions {
 
 /// Wrap a [`SeherTool`] (sync handler) as an [`AgentTool`].
 ///
-/// `SeherTool::handler` and `AgentTool::handler` are *the same type* — both
+/// `SeherTool::handler` and `AgentTool::handler` are *the same type* -- both
 /// are the type alias `Arc<dyn Fn(Value) -> Result<String, String> + Send +
-/// Sync>` — so the handler can be `Arc::clone`'d straight through with no
+/// Sync>` -- so the handler can be `Arc::clone`'d straight through with no
 /// wrapping closure.
 fn seher_tool_to_agent_tool(t: &SeherTool) -> AgentTool {
     AgentTool::new(

@@ -89,7 +89,7 @@
         },
         "sdk": {
           "type": "string",
-          "description": "Execution engine. Defaults to \"pi\". Executable in this build: `pi` (in-process pi_agent_rust), `claude` (drives the local `claude` CLI through `claude-agent-sdk` — stream-json + in-process MCP tools), `claude-terminal` (drives the local `claude` CLI via tmux), and `claude-headless` (runs `claude -p` as a subprocess). The seher-ts-only kinds (`codex`, `copilot`, `cursor`, `kimi`, `opencode`) are accepted for cross-implementation portability but silently filtered out of the candidate list at startup. `pi` and `claude` support custom tools; the two CLI-only backends do not",
+          "description": "Execution engine. Defaults to \"pi\". Executable in this build: `pi` (in-process pi_agent_rust), `claude` (drives the local `claude` CLI through `claude-agent-sdk` -- stream-json + in-process MCP tools), `claude-terminal` (drives the local `claude` CLI via tmux), and `claude-headless` (runs `claude -p` as a subprocess). The seher-ts-only kinds (`codex`, `copilot`, `cursor`, `kimi`, `opencode`) are accepted for cross-implementation portability but silently filtered out of the candidate list at startup. `pi` and `claude` support custom tools; the two CLI-only backends do not",
           "default": "pi",
           "examples": [
             "pi",

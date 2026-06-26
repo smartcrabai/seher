@@ -232,7 +232,7 @@ mod tests {
     #[test]
     fn cwd_is_canonicalized() {
         let a = parse(&["--cwd", "/tmp", "build", "x"]).expect("ok");
-        // macOS: /tmp is a symlink to /private/tmp — canonicalize resolves it.
+        // macOS: /tmp is a symlink to /private/tmp -- canonicalize resolves it.
         let expected = std::fs::canonicalize("/tmp")
             .expect("canonicalize /tmp")
             .to_string_lossy()

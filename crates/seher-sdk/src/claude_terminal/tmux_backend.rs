@@ -79,7 +79,7 @@ impl TerminalBackend for TmuxBackend {
             &["load-buffer", "-b", &buffer_name, "-"],
             Some(text),
         )?;
-        // paste-buffer: bracketed paste event to the TUI — no Enter sent
+        // paste-buffer: bracketed paste event to the TUI -- no Enter sent
         let paste_result = self.run_tmux(
             "paste-buffer",
             &["paste-buffer", "-b", &buffer_name, "-t", &session.id],

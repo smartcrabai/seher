@@ -81,7 +81,7 @@ pub(crate) enum BackendChoice {
     ClaudeTerminal {
         model: Option<String>,
     },
-    /// Unknown sdk kind — will emit a [`StreamChunk::Error`] on the channel.
+    /// Unknown sdk kind -- will emit a [`StreamChunk::Error`] on the channel.
     Unsupported {
         message: String,
     },
@@ -609,7 +609,7 @@ mod tests {
 
     #[test]
     fn fold_stream_accumulates_deltas_and_returns_on_done() {
-        // Given: a channel with Session → Delta → Delta → Done(empty)
+        // Given: a channel with Session -> Delta -> Delta -> Done(empty)
         // When: fold_stream consumes the channel
         // Then: RunOutput has the concatenated text and the session id
         let (tx, rx) = channel();
@@ -646,7 +646,7 @@ mod tests {
 
     #[test]
     fn fold_stream_limit_returns_err_with_partial_text() {
-        // Given: a channel with Delta("partial") → Limit
+        // Given: a channel with Delta("partial") -> Limit
         // When: fold_stream consumes the channel
         // Then: Err(RunError::Limit { partial: "partial", .. })
         let (tx, rx) = channel();

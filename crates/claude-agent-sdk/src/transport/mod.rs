@@ -15,7 +15,7 @@ use crate::errors::Result;
 ///
 /// - [`connect`](Transport::connect) spawns / opens the channel.
 /// - [`write`](Transport::write) sends a single JSON line (no trailing
-///   newline — the impl adds one).
+///   newline -- the impl adds one).
 /// - [`take_message_stream`](Transport::take_message_stream) hands out the
 ///   stream of incoming JSON frames **once**. Subsequent calls return an
 ///   immediately-errored stream. The returned stream is `'static`, so it can

@@ -76,7 +76,7 @@ pub enum StreamChunk {
     Session(String),
     /// pi returned an error that looked like a rate/usage limit.
     Limit(LimitError),
-    /// Any other error (provider error, transport error, …) — stringified.
+    /// Any other error (provider error, transport error, ...) -- stringified.
     Error(String),
 }
 
@@ -157,7 +157,7 @@ pub fn pi_session_path(working_directory: Option<&Path>, id: &str) -> PathBuf {
         Path::to_path_buf,
     );
     // Canonicalize so symlinked/relative forms of the same directory encode identically
-    // (mirrors claude_terminal::encode_project_dir) — otherwise a session written from a
+    // (mirrors claude_terminal::encode_project_dir) -- otherwise a session written from a
     // non-canonical cwd could not be found when probed with the canonical one.
     let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
     let base = dirs::data_dir()
@@ -317,10 +317,10 @@ fn validate_tool_names(tools: &[SeherTool]) -> Result<(), String> {
 /// `(model, thinking)`.
 ///
 /// The suffix is recognized **only** when it parses as a pi thinking level
-/// (`off`, `minimal`, `low`, `medium`, `high`, `xhigh` and their aliases —
+/// (`off`, `minimal`, `low`, `medium`, `high`, `xhigh` and their aliases --
 /// see [`pi::model::ThinkingLevel`]'s `FromStr`). Anything else stays part of
-/// the model name, so model ids with a legitimate `:` — e.g. `OpenRouter`
-/// variants like `meta-llama/llama-3.1-8b-instruct:free` — pass through
+/// the model name, so model ids with a legitimate `:` -- e.g. `OpenRouter`
+/// variants like `meta-llama/llama-3.1-8b-instruct:free` -- pass through
 /// untouched.
 #[must_use]
 pub fn split_thinking_suffix(model: &str) -> (&str, Option<&str>) {
@@ -392,7 +392,7 @@ fn run_on_thread(
     let session_id = resume.map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_string);
     let session_path = pi_session_path(opts.working_directory.as_deref(), &session_id);
 
-    // A fresh conversation must seed the session file before create_agent_session —
+    // A fresh conversation must seed the session file before create_agent_session --
     // pi only opens existing files at `session_path` (a resumed one already exists).
     if resume.is_none() {
         let created = session_path

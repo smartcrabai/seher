@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use seher::sdk::{CancelToken, StreamChunk};
 
-/// Result of [`drain_to_stdout`]. `Limit` carries no payload — the caller already
+/// Result of [`drain_to_stdout`]. `Limit` carries no payload -- the caller already
 /// has the [`crate::run_mode`] `ResolvedAgent` whose `provider` is what gets
 /// added to the exclude list.
 pub enum Outcome {
@@ -15,9 +15,19 @@ pub enum Outcome {
     Cancelled,
 }
 
-/// Drain a `Receiver<StreamChunk>` to stdout, writing each delta as it arrives.
+/// Where the stream drain should emit output.
+#[derive(Clone, Copy)]
+pub enum StreamOutput {
+    /// Forward deltas and the final newline to the supplied writer (stdout in production).
+    Forward,
+    /// Suppress all output to the writer; only collect the concatenated text.
+    CaptureOnly,
+}
+
+/// Drain a `Receiver<StreamChunk>` according to `output`, writing each delta as
+/// it arrives only when [`StreamOutput::Forward`] is selected.
 ///
-/// `timeout_ms` is the total deadline (in ms) from "now" — it does NOT abort the
+/// `timeout_ms` is the total deadline (in ms) from "now" -- it does NOT abort the
 /// in-flight worker thread; on timeout, the receiver is dropped and the worker
 /// is left to finish in the background. Returns `Outcome::Done` with the
 /// concatenated text on success.
@@ -25,16 +35,16 @@ pub enum Outcome {
     clippy::needless_pass_by_value,
     reason = "takes ownership of the receiver so it is dropped on return, signaling the worker the consumer is gone"
 )]
-pub fn drain_to_stdout(
+pub fn drain_stream<W: Write>(
     rx: Receiver<StreamChunk>,
     timeout_ms: Option<u64>,
     cancel: &CancelToken,
+    output: StreamOutput,
+    writer: &mut W,
 ) -> Outcome {
-    // Short poll interval used when there is no deadline — lets cancel checks
+    // Short poll interval used when there is no deadline -- lets cancel checks
     // fire even while blocked on recv, instead of waiting for the next chunk.
     const CANCEL_POLL: Duration = Duration::from_millis(50);
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
     let mut full = String::new();
     let deadline = timeout_ms.map(|t| Instant::now() + Duration::from_millis(t));
 
@@ -80,24 +90,39 @@ pub fn drain_to_stdout(
         };
         match chunk {
             StreamChunk::Delta(d) => {
-                let _ = out.write_all(d.as_bytes());
-                let _ = out.flush();
                 full.push_str(&d);
+                if matches!(output, StreamOutput::Forward)
+                    && let Err(e) = writer.write_all(d.as_bytes()).and_then(|()| writer.flush())
+                {
+                    // Piping into `head` and similar tools closes the read end
+                    // once they have enough data. Treat that as a successful
+                    // run rather than a fatal error.
+                    if e.kind() == std::io::ErrorKind::BrokenPipe {
+                        return Outcome::Done(full);
+                    }
+                    return Outcome::Error(format!("failed to write stream output: {e}"));
+                }
             }
-            // Session id is metadata — keep stdout clean for piping and surface it on
+            // Session id is metadata -- keep stdout clean for piping and surface it on
             // stderr so a follow-up turn can resume with `--resume <id>`.
             StreamChunk::Session(id) => {
                 eprintln!("session: {id}");
             }
             StreamChunk::Done(t) => {
-                let _ = out.write_all(b"\n");
-                let _ = out.flush();
+                if matches!(output, StreamOutput::Forward)
+                    && let Err(e) = writer.write_all(b"\n").and_then(|()| writer.flush())
+                {
+                    if e.kind() == std::io::ErrorKind::BrokenPipe {
+                        return Outcome::Done(if t.is_empty() { full } else { t });
+                    }
+                    return Outcome::Error(format!("failed to write stream output: {e}"));
+                }
                 return Outcome::Done(if t.is_empty() { full } else { t });
             }
             StreamChunk::Limit(_) => return Outcome::Limit,
             StreamChunk::Error(m) => {
                 // If cancellation is active, the error was most likely caused
-                // by the runner aborting due to the cancel signal — report it
+                // by the runner aborting due to the cancel signal -- report it
                 // as Cancelled rather than a generic error.
                 if cancel.is_cancelled() {
                     return Outcome::Cancelled;
@@ -106,6 +131,37 @@ pub fn drain_to_stdout(
             }
         }
     }
+}
+
+/// Drain a `Receiver<StreamChunk>` to stdout, writing each delta as it arrives.
+///
+/// See [`drain_stream`] for details.
+pub fn drain_to_stdout(
+    rx: Receiver<StreamChunk>,
+    timeout_ms: Option<u64>,
+    cancel: &CancelToken,
+) -> Outcome {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    drain_stream(rx, timeout_ms, cancel, StreamOutput::Forward, &mut out)
+}
+
+/// Drain a `Receiver<StreamChunk>` without writing to stdout, returning the
+/// concatenated text on success.
+///
+/// See [`drain_stream`] for details.
+pub fn drain_to_capture(
+    rx: Receiver<StreamChunk>,
+    timeout_ms: Option<u64>,
+    cancel: &CancelToken,
+) -> Outcome {
+    drain_stream(
+        rx,
+        timeout_ms,
+        cancel,
+        StreamOutput::CaptureOnly,
+        &mut std::io::sink(),
+    )
 }
 
 #[cfg(test)]
@@ -185,7 +241,7 @@ mod tests {
 
     #[test]
     fn disconnected_without_terminal_returns_error() {
-        // tx is dropped before sending Done/Limit/Error — must NOT be reported as success.
+        // tx is dropped before sending Done/Limit/Error -- must NOT be reported as success.
         let (tx, rx) = channel::<StreamChunk>();
         drop(tx);
         match drain_to_stdout(rx, None, &no_cancel()) {
@@ -199,7 +255,7 @@ mod tests {
 
     #[test]
     fn disconnected_with_timeout_set_returns_error() {
-        // Same as above but with a timeout configured — the disconnect path
+        // Same as above but with a timeout configured -- the disconnect path
         // through recv_timeout must also classify as Error, not Timeout.
         let (tx, rx) = channel::<StreamChunk>();
         drop(tx);
@@ -255,6 +311,178 @@ mod tests {
         // When: drain_to_stdout is called
         // Then: returns Cancelled (not Done) because the token was cancelled
         match drain_to_stdout(rx, Some(5_000), &cancel) {
+            Outcome::Cancelled => {}
+            other => panic!(
+                "expected Cancelled, got: {other:?}",
+                other = OutcomeDebug(&other)
+            ),
+        }
+        drop(tx);
+    }
+
+    // -----------------------------------------------------------------------
+    // Capture-only output policy
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn capture_only_returns_concatenated_deltas() {
+        let (tx, rx) = channel();
+        tx.send(StreamChunk::Delta("ab".to_string())).unwrap();
+        tx.send(StreamChunk::Delta("cd".to_string())).unwrap();
+        tx.send(StreamChunk::Done(String::new())).unwrap();
+        drop(tx);
+        match drain_to_capture(rx, None, &no_cancel()) {
+            Outcome::Done(s) => assert_eq!(s, "abcd"),
+            other => panic!(
+                "unexpected outcome: {other:?}",
+                other = OutcomeDebug(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn capture_only_writes_nothing_to_writer() {
+        let (tx, rx) = channel();
+        tx.send(StreamChunk::Delta("must not appear".to_string()))
+            .unwrap();
+        tx.send(StreamChunk::Done(String::new())).unwrap();
+        drop(tx);
+        let mut buf: Vec<u8> = Vec::new();
+        let outcome = drain_stream(rx, None, &no_cancel(), StreamOutput::CaptureOnly, &mut buf);
+        assert!(matches!(outcome, Outcome::Done(_)), "expected Done");
+        assert!(
+            buf.is_empty(),
+            "CaptureOnly must not write deltas or final newline"
+        );
+    }
+
+    #[test]
+    fn forward_policy_writes_deltas_and_final_newline() {
+        let (tx, rx) = channel();
+        tx.send(StreamChunk::Delta("hello".to_string())).unwrap();
+        tx.send(StreamChunk::Done(String::new())).unwrap();
+        drop(tx);
+        let mut buf: Vec<u8> = Vec::new();
+        let outcome = drain_stream(rx, None, &no_cancel(), StreamOutput::Forward, &mut buf);
+        assert!(matches!(outcome, Outcome::Done(_)), "expected Done");
+        assert_eq!(String::from_utf8(buf).unwrap(), "hello\n");
+    }
+
+    #[test]
+    fn forward_writer_error_surfaces_as_outcome_error() {
+        struct FailingWriter;
+        impl std::io::Write for FailingWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "simulated write failure",
+                ))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "simulated flush failure",
+                ))
+            }
+        }
+
+        let (tx, rx) = channel();
+        tx.send(StreamChunk::Delta("hello".to_string())).unwrap();
+        tx.send(StreamChunk::Done(String::new())).unwrap();
+        drop(tx);
+        let mut writer = FailingWriter;
+        let outcome = drain_stream(rx, None, &no_cancel(), StreamOutput::Forward, &mut writer);
+        assert!(
+            matches!(outcome, Outcome::Error(ref m) if m.contains("simulated")),
+            "expected Error from the writer, got {outcome:?}",
+            outcome = OutcomeDebug(&outcome)
+        );
+    }
+
+    #[test]
+    fn broken_pipe_during_forward_is_treated_as_done() {
+        struct BrokenPipeWriter;
+        impl std::io::Write for BrokenPipeWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "simulated broken pipe",
+                ))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "simulated broken pipe",
+                ))
+            }
+        }
+
+        let (tx, rx) = channel();
+        tx.send(StreamChunk::Delta("hello".to_string())).unwrap();
+        tx.send(StreamChunk::Done(String::new())).unwrap();
+        drop(tx);
+        let mut writer = BrokenPipeWriter;
+        let outcome = drain_stream(rx, None, &no_cancel(), StreamOutput::Forward, &mut writer);
+        assert!(
+            matches!(outcome, Outcome::Done(ref s) if s == "hello"),
+            "expected Done after BrokenPipe, got {outcome:?}",
+            outcome = OutcomeDebug(&outcome)
+        );
+    }
+
+    #[test]
+    fn capture_only_limit_returns_limit_outcome() {
+        use seher::sdk::LimitError;
+        let (tx, rx) = channel();
+        tx.send(StreamChunk::Delta("partial".to_string())).unwrap();
+        tx.send(StreamChunk::Limit(LimitError {
+            provider: "anthropic".to_string(),
+            reset_at: None,
+        }))
+        .unwrap();
+        drop(tx);
+        match drain_to_capture(rx, None, &no_cancel()) {
+            Outcome::Limit => {}
+            other => panic!(
+                "unexpected outcome: {other:?}",
+                other = OutcomeDebug(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn capture_only_error_chunk_returns_error_outcome() {
+        let (tx, rx) = channel();
+        tx.send(StreamChunk::Error("boom".to_string())).unwrap();
+        drop(tx);
+        match drain_to_capture(rx, None, &no_cancel()) {
+            Outcome::Error(m) => assert_eq!(m, "boom"),
+            other => panic!(
+                "unexpected outcome: {other:?}",
+                other = OutcomeDebug(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn capture_only_timeout_returns_timeout_outcome() {
+        let (tx, rx) = channel::<StreamChunk>();
+        match drain_to_capture(rx, Some(50), &no_cancel()) {
+            Outcome::Timeout => {}
+            other => panic!(
+                "unexpected outcome: {other:?}",
+                other = OutcomeDebug(&other)
+            ),
+        }
+        drop(tx);
+    }
+
+    #[test]
+    fn capture_only_cancelled_token_returns_cancelled_outcome() {
+        let (tx, rx) = channel::<StreamChunk>();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        match drain_to_capture(rx, Some(5_000), &cancel) {
             Outcome::Cancelled => {}
             other => panic!(
                 "expected Cancelled, got: {other:?}",

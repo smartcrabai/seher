@@ -15,9 +15,9 @@ use seher::sdk::{
 
 use crate::args::Args;
 use crate::logger::Logger;
-use crate::stream::{Outcome, drain_to_stdout};
+use crate::stream::{Outcome, StreamOutput, drain_to_capture, drain_to_stdout};
 
-/// Run the full "resolve → stream" loop, returning the concatenated assistant
+/// Run the full "resolve -> stream" loop, returning the concatenated assistant
 /// text on success.
 ///
 /// # Errors
@@ -30,6 +30,7 @@ pub fn resolve_and_stream(
     mode_key: &str,
     system_prompt: Option<&str>,
     logger: &Logger,
+    output: StreamOutput,
 ) -> Result<String, String> {
     // Load config + detect browser session once; reuse across retry attempts.
     let config: Config = load_config(args.config.as_deref()).map_err(|e| e.to_string())?;
@@ -44,7 +45,7 @@ pub fn resolve_and_stream(
         ));
     }
 
-    // Shared cancel token — signalled by the SIGINT handler below so that
+    // Shared cancel token -- signalled by the SIGINT handler below so that
     // all streaming paths (drain_to_stdout, headless runner) can observe it.
     let cancel = CancelToken::new();
     let cancel_for_signal = cancel.clone();
@@ -65,7 +66,7 @@ pub fn resolve_and_stream(
         });
     });
 
-    // Resuming pins to the backend that owns the session — the retry-on-limit provider
+    // Resuming pins to the backend that owns the session -- the retry-on-limit provider
     // switch is disabled, since a session id is meaningless to a different backend.
     if let Some(resume_id) = args.resume.clone() {
         return resume_and_stream(
@@ -78,6 +79,7 @@ pub fn resolve_and_stream(
             &config,
             &resume_id,
             &cancel,
+            output,
         );
     }
 
@@ -85,7 +87,16 @@ pub fn resolve_and_stream(
         resolve_once(rt, args, mode_key, excluded, &config)
     };
     let stream_runner = |resolved: &ResolvedAgent| -> Outcome {
-        stream_with_http_retry(resolved, prompt, system_prompt, args, None, &cancel, logger)
+        stream_with_http_retry(
+            resolved,
+            prompt,
+            system_prompt,
+            args,
+            None,
+            &cancel,
+            logger,
+            output,
+        )
     };
     stream_with_retry(args.timeout, logger, resolver, stream_runner)
 }
@@ -151,6 +162,7 @@ fn resume_and_stream(
     config: &Config,
     resume_id: &str,
     cancel: &CancelToken,
+    output: StreamOutput,
 ) -> Result<String, String> {
     let cwd = effective_cwd(args);
     let pinned = probe_session_backend(&cwd, resume_id).ok_or_else(|| {
@@ -160,7 +172,7 @@ fn resume_and_stream(
     let resolved = resolve_once(rt, args, mode_key, &[], config)?;
     if !sdk_backends_compatible(&resolved.sdk, pinned) {
         return Err(format!(
-            "resumed session '{resume_id}' belongs to backend '{pinned}', but the resolver selected '{}' (provider '{}') — it may be rate-limited or lower priority; pass --provider to force the matching one",
+            "resumed session '{resume_id}' belongs to backend '{pinned}', but the resolver selected '{}' (provider '{}') -- it may be rate-limited or lower priority; pass --provider to force the matching one",
             resolved.sdk, resolved.provider
         ));
     }
@@ -177,6 +189,7 @@ fn resume_and_stream(
         Some(resume_id),
         cancel,
         logger,
+        output,
     ) {
         Outcome::Done(t) => Ok(t),
         Outcome::Limit => Err(format!(
@@ -271,6 +284,10 @@ fn sleep_with_cancel(duration: Duration, cancel: &CancelToken) {
 /// blocking [`seher::sdk::run_for_resolved`] path already has. Rate/usage
 /// limits still surface as [`Outcome::Limit`] so the caller can switch
 /// providers; timeouts and cancellations are not retried.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal retry wrapper that mirrors run_for_resolved options"
+)]
 fn stream_with_http_retry(
     resolved: &ResolvedAgent,
     prompt: &str,
@@ -279,11 +296,16 @@ fn stream_with_http_retry(
     resume: Option<&str>,
     cancel: &CancelToken,
     logger: &Logger,
+    output: StreamOutput,
 ) -> Outcome {
     let mut attempt: u32 = 1;
     loop {
         let rx = dispatch_stream(resolved, prompt, system_prompt, args, resume, cancel);
-        match drain_to_stdout(rx, args.timeout, cancel) {
+        let outcome = match output {
+            StreamOutput::Forward => drain_to_stdout(rx, args.timeout, cancel),
+            StreamOutput::CaptureOnly => drain_to_capture(rx, args.timeout, cancel),
+        };
+        match outcome {
             Outcome::Error(ref message)
                 if resolved.retry.enabled
                     && attempt < resolved.retry.effective_max_attempts()
@@ -443,7 +465,7 @@ mod tests {
             if n >= 2 {
                 return Err("no more candidates".to_string());
             }
-            // Pretend resolver returns "a" regardless of excluded — checks dedup.
+            // Pretend resolver returns "a" regardless of excluded -- checks dedup.
             let _ = excluded;
             Ok(make_resolved("a", "anthropic/x"))
         };
@@ -523,7 +545,7 @@ mod tests {
         assert_eq!(
             *call_count.borrow(),
             1,
-            "resolver must be called exactly once — no retry on Cancelled"
+            "resolver must be called exactly once -- no retry on Cancelled"
         );
     }
 }

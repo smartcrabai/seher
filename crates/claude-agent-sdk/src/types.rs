@@ -1,4 +1,4 @@
-//! Message, content-block, and option types — the public data model.
+//! Message, content-block, and option types -- the public data model.
 //!
 //! Mirrors `claude_agent_sdk.types` with a Rust-flavored API. Only the fields
 //! we actually consume or forward are modeled strictly; everything else is
@@ -91,7 +91,7 @@ impl McpServerConfig {
 #[derive(Debug, Clone, Default)]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "1:1 mapping with CLI boolean flags — bundling them into an enum hurts ergonomics"
+    reason = "1:1 mapping with CLI boolean flags -- bundling them into an enum hurts ergonomics"
 )]
 pub struct ClaudeAgentOptions {
     pub system_prompt: Option<SystemPrompt>,
