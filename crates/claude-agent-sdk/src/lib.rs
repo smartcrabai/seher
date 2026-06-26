@@ -5,8 +5,8 @@
 //!
 //! Two entrypoints, matching the Python SDK:
 //!
-//! * [`query`] — one-shot, fire-and-forget. Yields messages until the CLI exits.
-//! * [`ClaudeSDKClient`] — stateful client with `connect` / `query` /
+//! * [`query`] -- one-shot, fire-and-forget. Yields messages until the CLI exits.
+//! * [`ClaudeSDKClient`] -- stateful client with `connect` / `query` /
 //!   `receive_messages` / `end_input` / `disconnect`.
 //!
 //! Python-SDK control commands such as `interrupt`, `set_model`, and the

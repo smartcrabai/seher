@@ -46,7 +46,7 @@ impl ClaudeSDKClient {
         }
     }
 
-    /// Inject a custom transport (e.g. for tests). Must not be connected yet —
+    /// Inject a custom transport (e.g. for tests). Must not be connected yet --
     /// [`Self::connect`] will connect it.
     #[must_use]
     pub fn with_transport(mut self, transport: Box<dyn Transport>) -> Self {

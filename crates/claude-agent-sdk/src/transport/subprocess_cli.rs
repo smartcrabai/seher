@@ -29,16 +29,16 @@ const SDK_ENTRYPOINT: &str = "sdk-rust";
 /// CLI's stdout as a stream of JSON values.
 ///
 /// `prompt` controls input:
-/// - `Some(text)` → string mode: `--print "<text>"` (no stdin streaming).
-/// - `None` → streaming mode: callers push JSON frames via
+/// - `Some(text)` -> string mode: `--print "<text>"` (no stdin streaming).
+/// - `None` -> streaming mode: callers push JSON frames via
 ///   [`Transport::write`].
 pub struct SubprocessCliTransport {
     options: ClaudeAgentOptions,
     prompt: Option<String>,
     cli_path: Option<PathBuf>,
     child: Option<Child>,
-    /// Writer task channel. All stdin writes — both caller-initiated
-    /// (`write()`) and `control_response`s emitted by the demux loop — go
+    /// Writer task channel. All stdin writes -- both caller-initiated
+    /// (`write()`) and `control_response`s emitted by the demux loop -- go
     /// through here so we never have two writers racing on the same pipe.
     write_tx: Option<mpsc::Sender<String>>,
     stdout_rx: Option<mpsc::Receiver<Result<serde_json::Value>>>,
@@ -93,8 +93,8 @@ impl SubprocessCliTransport {
     ///
     /// **Overrides** any handler that was auto-registered from
     /// `options.sdk_mcp_server`. If you want both an in-process toolbox
-    /// *and* extra handling (hooks, `can_use_tool`, …), build your own
-    /// composite handler and register it here — do not rely on stacking.
+    /// *and* extra handling (hooks, `can_use_tool`, ...), build your own
+    /// composite handler and register it here -- do not rely on stacking.
     #[must_use]
     pub fn with_control_handler(mut self, handler: Arc<dyn ControlHandler>) -> Self {
         self.control_handler = Some(handler);
@@ -130,14 +130,14 @@ impl SubprocessCliTransport {
     #[must_use]
     #[expect(
         clippy::too_many_lines,
-        reason = "one branch per CLI flag — splitting hurts readability more than it helps"
+        reason = "one branch per CLI flag -- splitting hurts readability more than it helps"
     )]
     pub fn build_args(&self) -> Vec<String> {
         let mut args: Vec<String> = vec!["--output-format".into(), "stream-json".into()];
         args.extend(["--verbose".into()]);
 
         if self.prompt.is_some() {
-            // string mode — caller passes `--print "<prompt>"`
+            // string mode -- caller passes `--print "<prompt>"`
         } else {
             args.extend(["--input-format".into(), "stream-json".into()]);
         }
@@ -224,7 +224,7 @@ impl SubprocessCliTransport {
             .collect();
         if let Some(tb) = &self.options.sdk_mcp_server {
             // Mirrors the Python SDK: in-process toolboxes are advertised as
-            // `{"type": "sdk", "name": "<name>"}` — the actual handler runs
+            // `{"type": "sdk", "name": "<name>"}` -- the actual handler runs
             // here, not in the CLI.
             mcp_map.insert(
                 tb.name.clone(),
@@ -327,13 +327,13 @@ impl Transport for SubprocessCliTransport {
         // How it holds the stdin writer depends on whether a control handler
         // is registered:
         //
-        // * No handler → a *weak* sender. There is no control_response to
+        // * No handler -> a *weak* sender. There is no control_response to
         //   write, so dropping the caller's `write_tx` (e.g. from
         //   `end_input`) should close the writer channel and shut down stdin
         //   immediately. A strong clone would keep the writer alive until the
         //   reader exits, defeating `end_input`.
         //
-        // * Handler present (e.g. an `sdk_mcp_server` toolbox) → a *strong*
+        // * Handler present (e.g. an `sdk_mcp_server` toolbox) -> a *strong*
         //   sender. The CLI sends its `mcp_message: initialize` handshake
         //   *after* the caller has typically already called `end_input()`,
         //   which drops the transport's strong `write_tx`. With only a weak
@@ -528,7 +528,7 @@ async fn read_stdout_loop(
 /// pass (stdout EOF) an incomplete tail is reported as a JSON decode error so
 /// the caller sees *something*.
 ///
-/// Returns `false` when the public message channel is closed — the caller
+/// Returns `false` when the public message channel is closed -- the caller
 /// should stop reading.
 async fn drain_accum(
     accum: &mut String,
@@ -563,8 +563,8 @@ async fn drain_accum(
                 return true;
             }
             Some(Err(e)) => {
-                // Drop one line — likely a [SandboxDebug] or other
-                // non-JSON line — and try again.
+                // Drop one line -- likely a [SandboxDebug] or other
+                // non-JSON line -- and try again.
                 let snippet_for_err = accum.clone();
                 if let Some(nl) = accum.find('\n') {
                     accum.drain(..=nl);
@@ -827,7 +827,7 @@ mod tests {
             "request": {"subtype": "mcp_message"}
         });
         assert!(dispatch_frame(frame, &msg_tx, None, &weak).await);
-        // Nothing to verify on write_rx — receiver was dropped too. The
+        // Nothing to verify on write_rx -- receiver was dropped too. The
         // success criterion is that the call returned without blocking.
     }
 

@@ -17,7 +17,7 @@ use crate::args::Args;
 use crate::logger::Logger;
 use crate::stream::{Outcome, StreamOutput, drain_to_capture, drain_to_stdout};
 
-/// Run the full "resolve → stream" loop, returning the concatenated assistant
+/// Run the full "resolve -> stream" loop, returning the concatenated assistant
 /// text on success.
 ///
 /// # Errors
@@ -45,7 +45,7 @@ pub fn resolve_and_stream(
         ));
     }
 
-    // Shared cancel token — signalled by the SIGINT handler below so that
+    // Shared cancel token -- signalled by the SIGINT handler below so that
     // all streaming paths (drain_to_stdout, headless runner) can observe it.
     let cancel = CancelToken::new();
     let cancel_for_signal = cancel.clone();
@@ -66,7 +66,7 @@ pub fn resolve_and_stream(
         });
     });
 
-    // Resuming pins to the backend that owns the session — the retry-on-limit provider
+    // Resuming pins to the backend that owns the session -- the retry-on-limit provider
     // switch is disabled, since a session id is meaningless to a different backend.
     if let Some(resume_id) = args.resume.clone() {
         return resume_and_stream(
@@ -172,7 +172,7 @@ fn resume_and_stream(
     let resolved = resolve_once(rt, args, mode_key, &[], config)?;
     if !sdk_backends_compatible(&resolved.sdk, pinned) {
         return Err(format!(
-            "resumed session '{resume_id}' belongs to backend '{pinned}', but the resolver selected '{}' (provider '{}') — it may be rate-limited or lower priority; pass --provider to force the matching one",
+            "resumed session '{resume_id}' belongs to backend '{pinned}', but the resolver selected '{}' (provider '{}') -- it may be rate-limited or lower priority; pass --provider to force the matching one",
             resolved.sdk, resolved.provider
         ));
     }
@@ -465,7 +465,7 @@ mod tests {
             if n >= 2 {
                 return Err("no more candidates".to_string());
             }
-            // Pretend resolver returns "a" regardless of excluded — checks dedup.
+            // Pretend resolver returns "a" regardless of excluded -- checks dedup.
             let _ = excluded;
             Ok(make_resolved("a", "anthropic/x"))
         };
@@ -545,7 +545,7 @@ mod tests {
         assert_eq!(
             *call_count.borrow(),
             1,
-            "resolver must be called exactly once — no retry on Cancelled"
+            "resolver must be called exactly once -- no retry on Cancelled"
         );
     }
 }

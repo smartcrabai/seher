@@ -2,7 +2,7 @@
 
 Seher picks the highest-priority coding agent that is **not** currently rate-limited, then runs a `plan` / `build` prompt through it. If every configured agent is at its limit, seher waits until the earliest reset and tries again.
 
-Prompts are executed in-process by the [`pi`](https://github.com/Dicklesworthstone/pi_agent_rust) agent engine, or via the local `claude` CLI. There are three CLI backends: `claude-terminal` (drives `claude` via tmux), `claude-headless` (runs `claude -p` as a subprocess), and `claude` (drives the CLI through the in-tree [`claude-agent-sdk`](crates/claude-agent-sdk) crate — a Rust port of [`anthropics/claude-agent-sdk-python`](https://github.com/anthropics/claude-agent-sdk-python) — which adds stream-json output, the control protocol, and in-process MCP tools). Rate-limit detection is delegated to the external [`codexbar`](https://codexbar.app/) binary, which seher invokes per provider.
+Prompts are executed in-process by the [`pi`](https://github.com/Dicklesworthstone/pi_agent_rust) agent engine, or via the local `claude` CLI. There are three CLI backends: `claude-terminal` (drives `claude` via tmux), `claude-headless` (runs `claude -p` as a subprocess), and `claude` (drives the CLI through the in-tree [`claude-agent-sdk`](crates/claude-agent-sdk) crate -- a Rust port of [`anthropics/claude-agent-sdk-python`](https://github.com/anthropics/claude-agent-sdk-python) -- which adds stream-json output, the control protocol, and in-process MCP tools). Rate-limit detection is delegated to the external [`codexbar`](https://codexbar.app/) binary, which seher invokes per provider.
 
 The repository is a Cargo workspace with three crates:
 
@@ -28,7 +28,7 @@ codexbar must be installed and on `PATH` (or pointed to via `SEHER_CODEXBAR_BIN`
 
 ## Installation
 
-### Homebrew (macOS / Linux) — recommended
+### Homebrew (macOS / Linux) -- recommended
 
 ```sh
 brew install smartcrabai/tap/seher
@@ -52,14 +52,15 @@ cargo install --git https://github.com/smartcrabai/seher seher-cli
 ## Usage
 
 ```sh
-# Build mode (default) — resolve a build-mode provider and run the prompt
+# Build mode (default) -- resolve a build-mode provider and run the prompt
 seher "fix bugs"
 seher build "fix bugs"
 
-# Plan mode — generate a plan, open it in $EDITOR for review, then execute it
+# Plan mode -- generate a plan (captured, not printed), open it in $EDITOR for review, then execute it
+# Requires a foreground terminal so the editor can be opened safely.
 seher plan "add OAuth login"
 
-# No prompt → input via stdin or $EDITOR (defaults to vim)
+# No prompt -> input via stdin or $EDITOR (defaults to vim)
 seher
 echo "fix bugs" | seher
 
@@ -110,7 +111,7 @@ When no prompt is given on the command line, seher resolves it in this order:
 ### Modes
 
 - **`build`** (default): resolves the highest-priority non-limited provider for the `build` mode key and streams the prompt through it.
-- **`plan`**: first resolves the `plan` mode key and streams a Markdown implementation plan (the model is instructed to output *only* the plan and touch no files). The plan opens in `$EDITOR` for review/editing; the edited plan is then wrapped and executed under the `build` mode key. Leaving the editor empty cancels the run.
+- **`plan`**: first resolves the `plan` mode key and generates a Markdown implementation plan (the model is instructed to output *only* the plan and touch no files). The generated plan is captured internally instead of streamed to stdout, then opened in `$EDITOR` for review/editing. The edited plan is wrapped and executed under the `build` mode key, whose output is streamed to stdout as usual. Leaving the editor empty cancels the run. Because `plan` must launch an editor, it requires a foreground terminal; running without one exits with an explicit error instead of being suspended.
 
 The first trailing token (`plan` or `build`) selects the mode; anything else is treated as the start of the prompt and defaults to build mode. `-m/--model` overrides both the plan and build keys used during resolution.
 
@@ -146,7 +147,7 @@ installed on the host (or pointed to via `SEHER_CODEXBAR_BIN`).
 
 The library exposes two layers.
 
-### Low level — run a prompt through pi
+### Low level -- run a prompt through pi
 
 `PiRunner` streams a prompt through the `pi` engine. `stream` returns a channel of
 `StreamChunk` values (`Delta`, `Done`, `Session`, `Limit`, `Error`) and runs pi on
@@ -191,7 +192,7 @@ loop {
 also binds where multi-turn session files live. Both `stream` and the blocking
 `run` convenience take a `resume` argument: `None` starts a fresh session (a new
 id is generated and emitted as the first chunk via `StreamChunk::Session`), and
-`Some(id)` continues a prior turn — pass the same `working_directory` the session
+`Some(id)` continues a prior turn -- pass the same `working_directory` the session
 was created with:
 
 ```rust
@@ -205,10 +206,10 @@ let runner = PiRunner::new(PiRunnerOptions {
     ..PiRunnerOptions::default()
 });
 
-// Turn 1 — fresh session. `run` returns the full text plus the session id.
+// Turn 1 -- fresh session. `run` returns the full text plus the session id.
 let first = runner.run("implement the feature".to_string(), None)?;
 
-// Turn 2 — same runner options, resumed by id.
+// Turn 2 -- same runner options, resumed by id.
 let second = runner.run("now add tests".to_string(), Some(first.session_id))?;
 ```
 
@@ -223,7 +224,7 @@ contract via `claude --resume <id>`.
 prompt runs. A `SeherTool` pairs a name/description and a JSON Schema
 (`type: object` with `properties`) with a synchronous handler. The handler
 receives the raw JSON input the model produced; `Ok(text)` becomes the tool
-result, and `Err(message)` is fed back to the model with `is_error: true` —
+result, and `Err(message)` is fed back to the model with `is_error: true` --
 standard function-calling behavior, so the model can recover or retry without
 aborting the turn:
 
@@ -262,8 +263,8 @@ created.
 
 Tool-capable SDKs:
 
-- **`pi`** — tools are injected directly into the in-process agent session.
-- **`claude`** — tools are served through the SDK MCP control channel of
+- **`pi`** -- tools are injected directly into the in-process agent session.
+- **`claude`** -- tools are served through the SDK MCP control channel of
   `claude-agent-sdk` (in-process JSON-RPC, no external server needed). Pass
   the same `Vec<SeherTool>` via `ClaudeAgentRunnerConfig.tools` in
   `seher::claude_agent::stream_agent`. The toolbox is auto-registered under
@@ -278,7 +279,7 @@ on `ResolveOptions`/`PollOptions` so resolution drops non-tool-capable
 candidates instead of silently ignoring the tools; if every candidate is
 dropped, resolution fails with a `NoMatching` error explaining why.
 
-### High level — resolve a non-limited provider, then run
+### High level -- resolve a non-limited provider, then run
 
 `resolve_agent` applies the same priority + rate-limit logic as the CLI and returns
 the winning `ResolvedAgent`. It is async; pair it with `CodexBarProbe` (which queries
@@ -310,7 +311,7 @@ println!("selected {} (pi/{})", resolved.provider, resolved.model_id);
 
 See `crates/seher-sdk/examples/pi_mvp.rs` for a runnable example, and
 `crates/seher-cli/src/run_mode.rs` for the full
-resolve → stream → retry-on-limit loop.
+resolve -> stream -> retry-on-limit loop.
 
 ### Driving the `claude` CLI directly
 
@@ -367,7 +368,7 @@ let opts = ClaudeAgentOptions {
 let mut stream = query("Summarize the README.", Some(opts), None).await?;
 while let Some(msg) = stream.next().await {
     if let Message::Assistant(a) = msg? {
-        // …
+        // ...
     }
 }
 ```
@@ -462,7 +463,7 @@ When a provider uses the in-process `pi` SDK (the default), Seher automatically 
 |-------|------|-------------|
 | *(map key)* | string | Provider label and default provider name |
 | `provider` | string | Explicit provider name; defaults to the map key |
-| `sdk` | string | Execution engine. Defaults to `"pi"`. Executable engines in this build: `pi` (in-process), `claude` (drives the local `claude` CLI through `claude-agent-sdk` — stream-json + in-process MCP tools), `claude-terminal` (via tmux), and `claude-headless` (runs `claude -p` as a subprocess); other kinds are filtered out (see *Cross-implementation portability*). `pi` and `claude` support custom tools; the two CLI-only backends do not |
+| `sdk` | string | Execution engine. Defaults to `"pi"`. Executable engines in this build: `pi` (in-process), `claude` (drives the local `claude` CLI through `claude-agent-sdk` -- stream-json + in-process MCP tools), `claude-terminal` (via tmux), and `claude-headless` (runs `claude -p` as a subprocess); other kinds are filtered out (see *Cross-implementation portability*). `pi` and `claude` support custom tools; the two CLI-only backends do not |
 | `priority` | integer (`i32`) | Provider-level priority. Used when a model entry omits its own `priority` |
 | `api.key` | string | API key (for API-key-based limit checks and pi execution) |
 | `api.endpoint` | string | API endpoint override |
@@ -488,7 +489,7 @@ models:
 
 The **model id** uses a `provider/model` shape. The segment before the first `/` is passed to pi as the provider (e.g. `anthropic`, `openai`); the rest is the model name. A model id without a `/` is passed through as the model with no explicit provider.
 
-A trailing `:` suffix on the model name selects pi's **thinking level**: `model:thinking` (e.g. `anthropic/claude-opus-4-5:high`, `opus-4.7:medium`). Recognized levels are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh` (plus the aliases pi accepts: `none`/`0`, `min`, `1`, `med`/`2`, `3`, `4`). A suffix that is not a recognized level stays part of the model name, so OpenRouter-style variants like `openrouter/meta-llama/llama-3.1-8b-instruct:free` keep working. The level only applies to pi execution — with the `claude`, `claude-terminal`, and `claude-headless` SDKs a recognized suffix is stripped and ignored. Without a suffix, pi's default (no extended thinking) is used.
+A trailing `:` suffix on the model name selects pi's **thinking level**: `model:thinking` (e.g. `anthropic/claude-opus-4-5:high`, `opus-4.7:medium`). Recognized levels are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh` (plus the aliases pi accepts: `none`/`0`, `min`, `1`, `med`/`2`, `3`, `4`). A suffix that is not a recognized level stays part of the model name, so OpenRouter-style variants like `openrouter/meta-llama/llama-3.1-8b-instruct:free` keep working. The level only applies to pi execution -- with the `claude`, `claude-terminal`, and `claude-headless` SDKs a recognized suffix is stripped and ignored. Without a suffix, pi's default (no extended thinking) is used.
 
 For pi execution, the API key comes from `api.key`, falling back to `ANTHROPIC_API_KEY` (when the model provider is `anthropic`) or `OPENAI_API_KEY` (when it is `openai`).
 
@@ -525,7 +526,7 @@ providers:
 
 ## Cross-implementation portability
 
-Seher has a TypeScript counterpart (`seher-ts`) that supports additional `sdk` engines (`codex`, `copilot`, `cursor`, `kimi`, `opencode`, …). To keep a single `config.yaml` portable between both implementations, this Rust build **accepts** providers tagged with those SDK kinds but silently filters them out of the candidate list (executable engines here are `pi`, `claude`, `claude-terminal`, and `claude-headless`). A one-time warning is printed at startup for each skipped provider.
+Seher has a TypeScript counterpart (`seher-ts`) that supports additional `sdk` engines (`codex`, `copilot`, `cursor`, `kimi`, `opencode`, ...). To keep a single `config.yaml` portable between both implementations, this Rust build **accepts** providers tagged with those SDK kinds but silently filters them out of the candidate list (executable engines here are `pi`, `claude`, `claude-terminal`, and `claude-headless`). A one-time warning is printed at startup for each skipped provider.
 
 
 ## License

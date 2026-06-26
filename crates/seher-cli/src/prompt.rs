@@ -1,8 +1,8 @@
 use std::io::{IsTerminal, Read, Write};
 
 /// Resolve the prompt text following TS [`resolvePrompt`] semantics:
-///   1. trailing positional args → join with space
-///   2. stdin (when not a TTY) → use trimmed content
+///   1. trailing positional args -> join with space
+///   2. stdin (when not a TTY) -> use trimmed content
 ///   3. else, open `$EDITOR` to type
 ///
 /// Returns `None` if the resolved prompt is empty.
@@ -31,7 +31,7 @@ pub fn resolve(trailing: &[String]) -> Option<String> {
         };
     }
 
-    // TTY → editor
+    // TTY -> editor
     edit_with_seed("")
         .ok()
         .filter(|s| !s.trim().is_empty())
@@ -156,15 +156,39 @@ mod tests {
         let _ = ensure_editor_available();
     }
 
+    /// Restores an environment variable to its previous value when dropped,
+    /// even if the test panics.
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            unsafe { std::env::set_var(key, value) };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(v) => unsafe { std::env::set_var(self.key, v) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
+
     #[test]
-    fn edit_with_seed_returns_error_in_unsafe_tty_environment() {
-        // In a non-foreground or non-TTY environment the editor must not be
-        // launched; we must get an actionable error instead of suspension.
-        // In a foreground TTY with EDITOR=false this also returns an error.
+    fn edit_with_seed_returns_error_when_editor_exits_nonzero() {
+        // EDITOR=false always exits with a non-zero status, so edit_with_seed
+        // must return an error regardless of the test environment.
+        let _guard = EnvVarGuard::set("EDITOR", "false");
         let result = edit_with_seed("seed");
         assert!(
             result.is_err(),
-            "edit_with_seed must fail when the editor cannot be safely launched"
+            "edit_with_seed must fail when the editor exits with a non-zero status"
         );
     }
 }

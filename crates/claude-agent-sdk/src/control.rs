@@ -3,9 +3,9 @@
 //! The CLI multiplexes two kinds of frames on stdout:
 //!
 //! - Regular messages (`type` in `"user" | "assistant" | "system" | "result" |
-//!   "stream_event"`) — surfaced as a [`Message`](crate::types::Message) to
+//!   "stream_event"`) -- surfaced as a [`Message`](crate::types::Message) to
 //!   the caller.
-//! - **Control requests** (`type == "control_request"`) — requests for the SDK
+//! - **Control requests** (`type == "control_request"`) -- requests for the SDK
 //!   to do something *before* the next user turn proceeds: dispatch an MCP
 //!   tool call, ask the user whether a tool may run, fire a hook, etc.
 //!
@@ -65,7 +65,7 @@ impl ControlResponse {
 /// The transport already pulled out `request_id`; the handler only needs to
 /// look at `request` (which carries `subtype` plus the payload) and return a
 /// [`ControlResponse`]. Returning [`ControlResponse::Error`] tells the CLI
-/// the request failed — it then aborts the in-flight tool call (or whatever
+/// the request failed -- it then aborts the in-flight tool call (or whatever
 /// triggered the request) and yields a normal error to the user.
 #[async_trait]
 pub trait ControlHandler: Send + Sync + 'static {

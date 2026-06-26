@@ -2,7 +2,7 @@
 //!
 //! A [`SeherTool`] pairs a JSON Schema with a synchronous handler. Before a prompt
 //! runs, [`crate::sdk::PiRunner`] converts each one into a `pi::tools::Tool`
-//! ([`PiToolAdapter`]) and injects it into the live agent session — pi's
+//! ([`PiToolAdapter`]) and injects it into the live agent session -- pi's
 //! `SessionOptions` has no custom-tool field, so injection happens post-creation
 //! via `AgentSessionHandle::session_mut()`.
 //!

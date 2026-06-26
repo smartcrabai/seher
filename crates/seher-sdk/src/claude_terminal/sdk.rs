@@ -16,6 +16,7 @@ const DEFAULT_POLL_INTERVAL_MS: u64 = 500;
 const DEFAULT_READY_TIMEOUT_MS: u64 = 30 * 1000;
 const DEFAULT_PASTE_VISIBLE_TIMEOUT_MS: u64 = 90 * 1000;
 const DEFAULT_READY_POLL_INTERVAL_MS: u64 = 100;
+// sakoku-ignore-next-line
 const DEFAULT_READY_INDICATOR: &str = "❯";
 const DEFAULT_PERMISSION_MODE: &str = "bypassPermissions";
 const CAPTURE_FAILURE_LIMIT: usize = 3;
@@ -198,7 +199,7 @@ impl ClaudeTerminalSdk {
         self.wait_for_paste_visible(session, prompt, paste_visible_ms, ready_poll_ms)?;
         self.backend().submit(session)?;
 
-        // Resume appends to the existing `<id>.jsonl`, so there is no new file to find —
+        // Resume appends to the existing `<id>.jsonl`, so there is no new file to find --
         // the transcript path is derived directly from the id + cwd. A fresh session
         // instead waits for a brand-new transcript to appear.
         let session_ref = match resume {
@@ -327,13 +328,13 @@ impl ClaudeTerminalSdk {
 
     fn backend(&self) -> &dyn TerminalBackend {
         self.config.backend.as_deref().unwrap_or_else(|| {
-            panic!("ClaudeTerminalSdk: no backend set — use new_sdk_with_defaults()")
+            panic!("ClaudeTerminalSdk: no backend set -- use new_sdk_with_defaults()")
         })
     }
 
     fn reader(&self) -> &dyn ClaudeTranscriptReader {
         self.config.reader.as_deref().unwrap_or_else(|| {
-            panic!("ClaudeTerminalSdk: no reader set — use new_sdk_with_defaults()")
+            panic!("ClaudeTerminalSdk: no reader set -- use new_sdk_with_defaults()")
         })
     }
 }
@@ -376,7 +377,7 @@ pub fn new_sdk_with_defaults(
 /// emitting `StreamChunk`s compatible with seher-cli's `drain_to_stdout`.
 ///
 /// `resume` continues a prior Claude session id; `None` starts a fresh one. The
-/// resulting session id is emitted via [`StreamChunk::Session`] before the text chunk —
+/// resulting session id is emitted via [`StreamChunk::Session`] before the text chunk --
 /// though, since Claude assigns the id mid-run, nothing is emitted until the run
 /// completes (the whole response arrives as a single `Delta`).
 #[must_use]

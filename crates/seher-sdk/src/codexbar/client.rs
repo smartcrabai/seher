@@ -219,7 +219,7 @@ fn parse_response(
     let value: serde_json::Value =
         serde_json::from_str(stdout).map_err(|e| CodexBarError::Parse(e.to_string()))?;
     // codexbar emits a JSON array (one entry per provider) even when --provider
-    // selects a single one — unwrap to the matching entry.
+    // selects a single one -- unwrap to the matching entry.
     let entries = value
         .as_array()
         .ok_or_else(|| CodexBarError::NonArray(provider.to_string()))?;

@@ -50,7 +50,7 @@ pub fn resolve_config_path(override_path: Option<&Path>) -> Result<Option<PathBu
 }
 
 /// Load and normalize the YAML config from the resolved path. If no file is found,
-/// returns the default (empty) config — same as TS `loadConfig` returning the
+/// returns the default (empty) config -- same as TS `loadConfig` returning the
 /// default empty config.
 ///
 /// # Errors

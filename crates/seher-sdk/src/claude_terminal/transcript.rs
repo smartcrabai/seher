@@ -55,7 +55,7 @@ fn ts_to_ms(ts: &str) -> Option<u64> {
 }
 
 /// Whether a transcript message belongs to the current turn (timestamp at or after the
-/// `after_ms` cutoff). Untimestamped lines are conservatively kept — in real Claude
+/// `after_ms` cutoff). Untimestamped lines are conservatively kept -- in real Claude
 /// transcripts the scanned line types (`assistant`/`user`/`system`) always carry one.
 fn msg_in_window(m: &TranscriptMessage, after_ms: u64) -> bool {
     match m.timestamp.as_deref().and_then(ts_to_ms) {
@@ -85,7 +85,7 @@ fn project_dir(root: &str, cwd: &str) -> PathBuf {
     PathBuf::from(root).join(encode_project_dir(cwd))
 }
 
-// ── FileSystemTranscriptReader ───────────────────────────────────────────────
+// -- FileSystemTranscriptReader -----------------------------------------------
 
 #[derive(Default)]
 pub struct FileSystemTranscriptReader;
@@ -323,7 +323,7 @@ not-json
 {"type":"system","subtype":"turn_duration","timestamp":"2026-06-01T00:00:01.000Z"}
 {"type":"assistant","message":{"content":"new"},"timestamp":"2026-06-01T12:00:00.000Z"}"#;
         let msgs = parse_jsonl(raw);
-        // Cutoff at 2026-06-01T06:00:00Z (epoch ms) — only the "new" assistant message qualifies.
+        // Cutoff at 2026-06-01T06:00:00Z (epoch ms) -- only the "new" assistant message qualifies.
         let cutoff = ts_to_ms("2026-06-01T06:00:00.000Z").unwrap();
         let scan = scan_transcript(&msgs, cutoff);
         assert_eq!(

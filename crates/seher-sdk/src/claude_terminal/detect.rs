@@ -11,7 +11,7 @@ fn make_regex(pattern: &str) -> Regex {
     Regex::new(pattern).unwrap_or_else(|e| panic!("invalid static regex: {e}"))
 }
 
-// ── ANSI escape stripping ────────────────────────────────────────────────────
+// -- ANSI escape stripping ----------------------------------------------------
 
 static ANSI_ESCAPE: LazyLock<Regex> = LazyLock::new(|| make_regex(r"\x1b\[[\d;?]*[A-Za-z]"));
 
@@ -19,7 +19,7 @@ fn strip_ansi(s: &str) -> String {
     ANSI_ESCAPE.replace_all(s, "").into_owned()
 }
 
-// ── Session-limit detection ──────────────────────────────────────────────────
+// -- Session-limit detection --------------------------------------------------
 
 static SESSION_LIMIT_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     make_regex(
@@ -55,9 +55,9 @@ pub fn detect_session_limit(screen: &str) -> Option<Option<String>> {
     Some(reset_info)
 }
 
-// ── Paste-visible detection ──────────────────────────────────────────────────
+// -- Paste-visible detection --------------------------------------------------
 
-// Collapsed paste patterns — Claude TUI collapses long pastes into a citation.
+// Collapsed paste patterns -- Claude TUI collapses long pastes into a citation.
 static COLLAPSED_PASTE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     vec![
         make_regex(r"\[Pasted\s+text\s+#\d+\s+\+\d+\s+lines\]"),
@@ -130,7 +130,7 @@ fn prefix_needle(prompt: &str) -> String {
 }
 
 /// Cell width of a single Unicode scalar value.
-/// Zero-width chars (combining marks, ZWJ, BOM, variation selectors) → 0.
+/// Zero-width chars (combining marks, ZWJ, BOM, variation selectors) -> 0.
 /// Others use `unicode-width` which covers CJK wide chars (2 cells).
 fn char_cell_width(c: char) -> usize {
     // Zero-width ranges from the TS implementation
@@ -189,7 +189,7 @@ fn take_prefix_by_cell_width(s: &str, max_cells: usize) -> String {
     chars[begin..end].iter().collect()
 }
 
-/// Normalize text for fuzzy matching: strip ANSI → NFC → remove all whitespace.
+/// Normalize text for fuzzy matching: strip ANSI -> NFC -> remove all whitespace.
 #[must_use]
 pub fn normalize_for_match(s: &str) -> String {
     let no_ansi = strip_ansi(s);
@@ -280,7 +280,7 @@ mod tests {
 
     #[test]
     fn detect_session_limit_absent() {
-        assert!(detect_session_limit("Normal Claude prompt ❯").is_none());
+        assert!(detect_session_limit("Normal Claude prompt >").is_none());
     }
 
     #[test]

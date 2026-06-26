@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use seher::sdk::{CancelToken, StreamChunk};
 
-/// Result of [`drain_to_stdout`]. `Limit` carries no payload — the caller already
+/// Result of [`drain_to_stdout`]. `Limit` carries no payload -- the caller already
 /// has the [`crate::run_mode`] `ResolvedAgent` whose `provider` is what gets
 /// added to the exclude list.
 pub enum Outcome {
@@ -27,7 +27,7 @@ pub enum StreamOutput {
 /// Drain a `Receiver<StreamChunk>` according to `output`, writing each delta as
 /// it arrives only when [`StreamOutput::Stdout`] is selected.
 ///
-/// `timeout_ms` is the total deadline (in ms) from "now" — it does NOT abort the
+/// `timeout_ms` is the total deadline (in ms) from "now" -- it does NOT abort the
 /// in-flight worker thread; on timeout, the receiver is dropped and the worker
 /// is left to finish in the background. Returns `Outcome::Done` with the
 /// concatenated text on success.
@@ -42,7 +42,7 @@ pub fn drain_stream<W: Write>(
     output: StreamOutput,
     writer: &mut W,
 ) -> Outcome {
-    // Short poll interval used when there is no deadline — lets cancel checks
+    // Short poll interval used when there is no deadline -- lets cancel checks
     // fire even while blocked on recv, instead of waiting for the next chunk.
     const CANCEL_POLL: Duration = Duration::from_millis(50);
     let mut full = String::new();
@@ -96,7 +96,7 @@ pub fn drain_stream<W: Write>(
                 }
                 full.push_str(&d);
             }
-            // Session id is metadata — keep stdout clean for piping and surface it on
+            // Session id is metadata -- keep stdout clean for piping and surface it on
             // stderr so a follow-up turn can resume with `--resume <id>`.
             StreamChunk::Session(id) => {
                 eprintln!("session: {id}");
@@ -111,7 +111,7 @@ pub fn drain_stream<W: Write>(
             StreamChunk::Limit(_) => return Outcome::Limit,
             StreamChunk::Error(m) => {
                 // If cancellation is active, the error was most likely caused
-                // by the runner aborting due to the cancel signal — report it
+                // by the runner aborting due to the cancel signal -- report it
                 // as Cancelled rather than a generic error.
                 if cancel.is_cancelled() {
                     return Outcome::Cancelled;
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn disconnected_without_terminal_returns_error() {
-        // tx is dropped before sending Done/Limit/Error — must NOT be reported as success.
+        // tx is dropped before sending Done/Limit/Error -- must NOT be reported as success.
         let (tx, rx) = channel::<StreamChunk>();
         drop(tx);
         match drain_to_stdout(rx, None, &no_cancel()) {
@@ -244,7 +244,7 @@ mod tests {
 
     #[test]
     fn disconnected_with_timeout_set_returns_error() {
-        // Same as above but with a timeout configured — the disconnect path
+        // Same as above but with a timeout configured -- the disconnect path
         // through recv_timeout must also classify as Error, not Timeout.
         let (tx, rx) = channel::<StreamChunk>();
         drop(tx);
