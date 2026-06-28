@@ -3851,7 +3851,7 @@ dependencies = [
 
 [[package]]
 name = "seher-claude-agent-sdk"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "async-trait",
  "futures",
@@ -3863,7 +3863,7 @@ dependencies = [
 
 [[package]]
 name = "seher-cli"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "chrono",
  "clap",
@@ -3877,7 +3877,7 @@ dependencies = [
 
 [[package]]
 name = "seher-sdk"
-version = "0.0.48"
+version = "0.0.49"
 dependencies = [
  "async-trait",
  "chrono",
