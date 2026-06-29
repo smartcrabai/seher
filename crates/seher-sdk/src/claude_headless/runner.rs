@@ -23,6 +23,7 @@ pub struct ClaudeHeadlessRunnerConfig {
     pub cwd: Option<String>,
     pub resume_session_id: Option<String>,
     pub cancel: CancelToken,
+    pub env: indexmap::IndexMap<String, String>,
 }
 
 pub struct ClaudeHeadlessRunner {
@@ -85,6 +86,10 @@ impl ClaudeHeadlessRunner {
 
         if let Some(cwd) = &self.config.cwd {
             cmd.current_dir(cwd);
+        }
+
+        for (k, v) in &self.config.env {
+            cmd.env(k, v);
         }
 
         if self.config.cancel.is_cancelled() {

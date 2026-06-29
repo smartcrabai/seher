@@ -193,6 +193,8 @@ pub(crate) struct ProviderEntryRaw {
     pub skills: Option<SkillsConfig>,
     #[serde(default)]
     pub retry: Option<RetryConfig>,
+    #[serde(default)]
+    pub env: Option<IndexMap<String, String>>,
     pub models: IndexMap<String, ModelEntryRaw>,
 }
 
@@ -216,6 +218,8 @@ pub struct ProviderEntry {
     pub skills: Option<SkillsConfig>,
     /// Provider-level retry policy override.
     pub retry: Option<RetryConfig>,
+    /// Additional environment variables injected when this provider executes.
+    pub env: Option<IndexMap<String, String>>,
     /// Mode -> model entry. Keys include `plan`, `build`, plus user-defined keys.
     pub models: IndexMap<String, ModelEntry>,
 }
@@ -229,6 +233,8 @@ pub(crate) struct ConfigRaw {
     pub skills: Option<SkillsConfig>,
     #[serde(default)]
     pub retry: Option<RetryConfig>,
+    #[serde(default)]
+    pub env: Option<IndexMap<String, String>>,
 }
 
 /// Normalized config root.
@@ -237,6 +243,7 @@ pub struct Config {
     pub providers: Vec<ProviderEntry>,
     pub skills: Option<SkillsConfig>,
     pub retry: Option<RetryConfig>,
+    pub env: Option<IndexMap<String, String>>,
 }
 
 impl Config {
@@ -264,6 +271,22 @@ impl Config {
             (None, None) => RetryConfig::default(),
         }
     }
+
+    /// Resolve effective env vars for a provider entry.
+    ///
+    /// Root-level env vars are applied first; provider-level vars override on a
+    /// per-key basis (not a wholesale replacement). Returns an empty map when
+    /// neither the root nor the provider specifies env vars.
+    #[must_use]
+    pub fn resolve_env(&self, entry: &ProviderEntry) -> IndexMap<String, String> {
+        let mut merged = self.env.clone().unwrap_or_default();
+        if let Some(provider_env) = &entry.env {
+            for (k, v) in provider_env {
+                merged.insert(k.clone(), v.clone());
+            }
+        }
+        merged
+    }
 }
 
 impl From<ConfigRaw> for Config {
@@ -286,6 +309,7 @@ impl From<ConfigRaw> for Config {
                     api: p.api,
                     skills: p.skills,
                     retry: p.retry,
+                    env: p.env,
                     models,
                 }
             })
@@ -294,6 +318,7 @@ impl From<ConfigRaw> for Config {
             providers,
             skills: raw.skills,
             retry: raw.retry,
+            env: raw.env,
         }
     }
 }
@@ -315,6 +340,8 @@ pub struct ResolvedAgent {
     pub skills: ResolvedSkillsConfig,
     /// Retry policy resolved from per-provider > root > defaults.
     pub retry: RetryConfig,
+    /// Resolved extra environment variables (root merged with provider; provider wins per-key).
+    pub env: IndexMap<String, String>,
 }
 
 #[cfg(test)]
@@ -415,6 +442,7 @@ providers:
             api: None,
             skills: None,
             retry: None,
+            env: None,
             models: IndexMap::new(),
         };
         assert!(cfg.resolve_skills(&entry).include_claude);
@@ -428,6 +456,7 @@ providers:
                 include_claude: Some(false),
             }),
             retry: None,
+            env: None,
         };
         let entry = ProviderEntry {
             key: "x".into(),
@@ -440,6 +469,7 @@ providers:
                 include_claude: Some(true),
             }),
             retry: None,
+            env: None,
             models: IndexMap::new(),
         };
         assert!(cfg.resolve_skills(&entry).include_claude);
@@ -500,6 +530,7 @@ retryClientErrors: true
             api: None,
             skills: None,
             retry: None,
+            env: None,
             models: IndexMap::new(),
         };
         let resolved = cfg.resolve_retry(&entry);
@@ -517,6 +548,7 @@ retryClientErrors: true
                 enabled: false,
                 ..RetryConfig::default()
             }),
+            env: None,
         };
         let entry = ProviderEntry {
             key: "x".into(),
@@ -527,6 +559,7 @@ retryClientErrors: true
             api: None,
             skills: None,
             retry: None,
+            env: None,
             models: IndexMap::new(),
         };
         assert!(!cfg.resolve_retry(&entry).enabled);
@@ -541,6 +574,7 @@ retryClientErrors: true
                 enabled: false,
                 ..RetryConfig::default()
             }),
+            env: None,
         };
         let entry = ProviderEntry {
             key: "x".into(),
@@ -555,6 +589,7 @@ retryClientErrors: true
                 retry_client_errors: true,
                 ..RetryConfig::default()
             }),
+            env: None,
             models: IndexMap::new(),
         };
         let resolved = cfg.resolve_retry(&entry);
@@ -573,6 +608,7 @@ retryClientErrors: true
                 max_attempts: 3,
                 ..RetryConfig::default()
             }),
+            env: None,
         };
         let entry = ProviderEntry {
             key: "x".into(),
@@ -586,6 +622,7 @@ retryClientErrors: true
                 enabled: false,
                 ..RetryConfig::default()
             }),
+            env: None,
             models: IndexMap::new(),
         };
         let resolved = cfg.resolve_retry(&entry);
@@ -631,5 +668,128 @@ retryClientErrors: true
         assert_eq!(cfg.delay_for_attempt(1).as_secs(), 2);
         assert_eq!(cfg.delay_for_attempt(2).as_secs(), 2);
         assert_eq!(cfg.delay_for_attempt(3).as_secs(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // env parsing and resolution
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn provider_env_parses_from_yaml() {
+        let yaml = "
+providers:
+  foo:
+    env:
+      FOO: bar
+      BAZ: qux
+    models:
+      build: some-model
+";
+        let raw: ConfigRaw = serde_yaml::from_str(yaml).expect("parse");
+        let cfg: Config = raw.into();
+        let entry = &cfg.providers[0];
+        let env = entry.env.as_ref().expect("env present");
+        assert_eq!(env.get("FOO").map(String::as_str), Some("bar"));
+        assert_eq!(env.get("BAZ").map(String::as_str), Some("qux"));
+    }
+
+    #[test]
+    fn root_env_parses_from_yaml() {
+        let yaml = "
+env:
+  ROOT_VAR: root_val
+providers:
+  foo:
+    models:
+      build: some-model
+";
+        let raw: ConfigRaw = serde_yaml::from_str(yaml).expect("parse");
+        let cfg: Config = raw.into();
+        let root_env = cfg.env.as_ref().expect("root env present");
+        assert_eq!(
+            root_env.get("ROOT_VAR").map(String::as_str),
+            Some("root_val")
+        );
+    }
+
+    #[test]
+    fn resolve_env_empty_when_neither_set() {
+        let cfg = Config::default();
+        let entry = ProviderEntry {
+            key: "x".into(),
+            order: 0,
+            provider: "x".into(),
+            sdk: "pi".into(),
+            priority: None,
+            api: None,
+            skills: None,
+            retry: None,
+            env: None,
+            models: IndexMap::new(),
+        };
+        assert!(cfg.resolve_env(&entry).is_empty());
+    }
+
+    #[test]
+    fn resolve_env_merges_root_and_provider() {
+        let mut root_env = IndexMap::new();
+        root_env.insert("A".to_string(), "r".to_string());
+        root_env.insert("B".to_string(), "r".to_string());
+        let cfg = Config {
+            providers: vec![],
+            skills: None,
+            retry: None,
+            env: Some(root_env),
+        };
+        let mut provider_env = IndexMap::new();
+        provider_env.insert("B".to_string(), "p".to_string());
+        provider_env.insert("C".to_string(), "p".to_string());
+        let entry = ProviderEntry {
+            key: "x".into(),
+            order: 0,
+            provider: "x".into(),
+            sdk: "pi".into(),
+            priority: None,
+            api: None,
+            skills: None,
+            retry: None,
+            env: Some(provider_env),
+            models: IndexMap::new(),
+        };
+        let resolved = cfg.resolve_env(&entry);
+        assert_eq!(resolved.get("A").map(String::as_str), Some("r"));
+        assert_eq!(
+            resolved.get("B").map(String::as_str),
+            Some("p"),
+            "provider wins"
+        );
+        assert_eq!(resolved.get("C").map(String::as_str), Some("p"));
+        assert_eq!(resolved.len(), 3);
+    }
+
+    #[test]
+    fn resolve_env_root_only_when_provider_has_none() {
+        let mut root_env = IndexMap::new();
+        root_env.insert("X".to_string(), "root".to_string());
+        let cfg = Config {
+            providers: vec![],
+            skills: None,
+            retry: None,
+            env: Some(root_env),
+        };
+        let entry = ProviderEntry {
+            key: "x".into(),
+            order: 0,
+            provider: "x".into(),
+            sdk: "pi".into(),
+            priority: None,
+            api: None,
+            skills: None,
+            retry: None,
+            env: None,
+            models: IndexMap::new(),
+        };
+        let resolved = cfg.resolve_env(&entry);
+        assert_eq!(resolved.get("X").map(String::as_str), Some("root"));
     }
 }

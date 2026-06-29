@@ -237,6 +237,7 @@ pub fn build_candidates(
             let priority = model.priority.or(entry.priority).unwrap_or(0);
             let skills = cfg.resolve_skills(entry);
             let retry = cfg.resolve_retry(entry);
+            let env = cfg.resolve_env(entry);
             let resolved = ResolvedAgent {
                 provider: entry.provider.clone(),
                 model_id: model.model.clone(),
@@ -245,6 +246,7 @@ pub fn build_candidates(
                 api: entry.api.clone(),
                 skills,
                 retry,
+                env,
             };
             Some(Candidate {
                 priority,
@@ -518,6 +520,7 @@ mod tests {
             api: None,
             skills: None,
             retry: None,
+            env: None,
             models: m,
         }
     }
@@ -535,6 +538,7 @@ mod tests {
             providers,
             skills: None,
             retry: None,
+            env: None,
         }
     }
 
@@ -639,6 +643,7 @@ mod tests {
                 retry_client_errors: true,
                 ..RetryConfig::default()
             }),
+            env: None,
         };
         let candidates = build_candidates(&c, "build", None, &[]);
         assert!(candidates[0].resolved.retry.retry_client_errors);
@@ -658,6 +663,7 @@ mod tests {
                 enabled: true,
                 ..RetryConfig::default()
             }),
+            env: None,
         };
         let candidates = build_candidates(&c, "build", None, &[]);
         assert!(!candidates[0].resolved.retry.enabled);

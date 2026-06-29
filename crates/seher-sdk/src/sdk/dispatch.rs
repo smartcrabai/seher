@@ -231,6 +231,7 @@ pub fn stream_for_resolved(
                 api_key,
                 system_prompt: opts.system_prompt,
                 working_directory: opts.working_dir,
+                env: resolved.env.clone(),
                 tools: opts.tools,
             };
             PiRunner::new(pi_opts).stream(prompt, opts.resume)
@@ -245,6 +246,11 @@ pub fn stream_for_resolved(
                     .map(|p| p.to_string_lossy().into_owned()),
                 resume_session_id: opts.resume,
                 tools: opts.tools,
+                env: resolved
+                    .env
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
                 ..Default::default()
             };
             stream_agent(config, prompt, resolved.provider.clone())
@@ -260,6 +266,7 @@ pub fn stream_for_resolved(
                 resume_session_id: opts.resume,
                 timeout_ms: opts.timeout_ms,
                 cancel: opts.cancel.clone(),
+                env: resolved.env.clone(),
                 ..Default::default()
             };
             stream_headless(
@@ -278,6 +285,11 @@ pub fn stream_for_resolved(
                 opts.working_dir
                     .as_ref()
                     .map(|p| p.to_string_lossy().into_owned()),
+                resolved
+                    .env
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<std::collections::HashMap<_, _>>(),
             );
             stream_via_thread(sdk, prompt, resolved.provider.clone(), opts.resume)
         }
@@ -413,6 +425,7 @@ mod tests {
             api: None,
             skills: ResolvedSkillsConfig::default(),
             retry: RetryConfig::default(),
+            env: indexmap::IndexMap::new(),
         }
     }
 
