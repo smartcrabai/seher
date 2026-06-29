@@ -32,7 +32,9 @@ struct PiEnvGuard {
 impl PiEnvGuard {
     fn acquire(env: &indexmap::IndexMap<String, String>) -> Self {
         // PI_ENV_MUTEX is 'static, so the guard carries 'static lifetime.
-        let lock: MutexGuard<'static, ()> = PI_ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+        let lock: MutexGuard<'static, ()> = PI_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let saved: Vec<(String, Option<String>)> = env
             .keys()
             .map(|k| (k.clone(), std::env::var(k).ok()))

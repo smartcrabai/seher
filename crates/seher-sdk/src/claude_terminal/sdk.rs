@@ -357,14 +357,14 @@ pub fn encode_transcript_path(root: &str, cwd: &str, session_id: &str) -> String
 
 /// Convenience builder that wires up real `TmuxBackend` + `FileSystemTranscriptReader`.
 #[must_use]
-pub fn new_sdk_with_defaults(
+pub fn new_sdk_with_defaults<S: std::hash::BuildHasher>(
     claude_bin: Option<String>,
     tmux_bin: Option<String>,
     model: Option<String>,
     system_prompt: Option<String>,
     timeout_ms: Option<u64>,
     cwd: Option<String>,
-    env: std::collections::HashMap<String, String>,
+    env: std::collections::HashMap<String, String, S>,
 ) -> ClaudeTerminalSdk {
     use super::tmux_backend::TmuxBackend;
     ClaudeTerminalSdk::new(ClaudeTerminalSdkConfig {
@@ -373,7 +373,7 @@ pub fn new_sdk_with_defaults(
         system_prompt,
         timeout_ms,
         cwd,
-        env,
+        env: env.into_iter().collect(),
         backend: Some(Box::new(TmuxBackend::new(tmux_bin))),
         reader: Some(Box::new(FileSystemTranscriptReader::new())),
         ..Default::default()

@@ -289,7 +289,7 @@ pub fn stream_for_resolved(
                     .env
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect(),
+                    .collect::<std::collections::HashMap<_, _>>(),
             );
             stream_via_thread(sdk, prompt, resolved.provider.clone(), opts.resume)
         }

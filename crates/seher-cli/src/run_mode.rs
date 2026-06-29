@@ -411,7 +411,7 @@ mod tests {
             api: None,
             skills: ResolvedSkillsConfig::default(),
             retry: seher::sdk::RetryConfig::default(),
-            env: Default::default(),
+            env: indexmap::IndexMap::default(),
         }
     }
 

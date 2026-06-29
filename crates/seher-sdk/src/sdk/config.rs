@@ -279,7 +279,7 @@ impl Config {
     /// neither the root nor the provider specifies env vars.
     #[must_use]
     pub fn resolve_env(&self, entry: &ProviderEntry) -> IndexMap<String, String> {
-        let mut merged = self.env.as_ref().cloned().unwrap_or_default();
+        let mut merged = self.env.clone().unwrap_or_default();
         if let Some(provider_env) = &entry.env {
             for (k, v) in provider_env {
                 merged.insert(k.clone(), v.clone());
