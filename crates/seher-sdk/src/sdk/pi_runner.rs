@@ -6,11 +6,56 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Mutex, MutexGuard};
 use std::thread;
 
 use crate::sdk::errors::{LimitError, RunError};
 use crate::sdk::tool::{PiToolAdapter, SeherTool};
 use crate::sdk::util::encode_session_id;
+
+/// Serialises all `set_var`/`remove_var` mutations made by pi runs.
+/// pi is in-process; mutations to `environ` on one thread race with `getenv`
+/// calls on TLS or HTTP-client threads. The mutex prevents concurrent callers
+/// from interleaving their mutations.
+static PI_ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+/// RAII guard: locks [`PI_ENV_MUTEX`], applies `env` overrides to the process
+/// environment, then restores every key to its original value on drop.
+///
+/// The guard holds [`PI_ENV_MUTEX`] for its entire lifetime, serialising
+/// concurrent pi runs so their `environ` mutations never interleave.
+struct PiEnvGuard {
+    _lock: MutexGuard<'static, ()>,
+    saved: Vec<(String, Option<String>)>,
+}
+
+impl PiEnvGuard {
+    fn acquire(env: &indexmap::IndexMap<String, String>) -> Self {
+        // PI_ENV_MUTEX is 'static, so the guard carries 'static lifetime.
+        let lock: MutexGuard<'static, ()> = PI_ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+        let saved: Vec<(String, Option<String>)> = env
+            .keys()
+            .map(|k| (k.clone(), std::env::var(k).ok()))
+            .collect();
+        for (k, v) in env {
+            // SAFETY: PI_ENV_MUTEX is held; no other thread mutates environ concurrently.
+            unsafe { std::env::set_var(k, v) };
+        }
+        Self { _lock: lock, saved }
+    }
+}
+
+impl Drop for PiEnvGuard {
+    fn drop(&mut self) {
+        for (k, old_val) in &self.saved {
+            match old_val {
+                // SAFETY: PI_ENV_MUTEX is still held during drop.
+                Some(v) => unsafe { std::env::set_var(k, v) },
+                None => unsafe { std::env::remove_var(k) },
+            }
+        }
+    }
+}
 
 /// Hard-coded skills directory shared by agent environments on this machine.
 const SKILLS_DIR: &str = ".agents/skills";
@@ -93,6 +138,12 @@ pub struct PiRunnerOptions {
     /// Working directory the agent operates in. Also binds where multi-turn session
     /// files live (see [`pi_session_path`]).
     pub working_directory: Option<PathBuf>,
+    /// Extra environment variables injected before pi runs.
+    ///
+    /// Because pi is in-process, these are applied via [`std::env::set_var`] and
+    /// affect the entire process. Concurrent provider calls may race on the same
+    /// key; in practice seher runs one provider at a time so this is safe.
+    pub env: indexmap::IndexMap<String, String>,
     /// Custom tools (function calling) injected into the agent session before the
     /// prompt runs. Empty = no custom tools (pi's built-in tools still apply).
     ///
@@ -112,6 +163,7 @@ impl std::fmt::Debug for PiRunnerOptions {
             .field("thinking", &self.thinking)
             .field("system_prompt", &self.system_prompt)
             .field("working_directory", &self.working_directory)
+            .field("env", &self.env.keys().collect::<Vec<_>>())
             .field(
                 "tools",
                 &self
@@ -386,6 +438,17 @@ fn run_on_thread(
         }
     };
 
+    // Validate env key names before touching the process environment.
+    // std::env::set_var panics on Unix when a key contains '=' or a NUL byte.
+    for k in opts.env.keys() {
+        if k.contains('=') || k.contains('\0') {
+            let _ = tx.send(StreamChunk::Error(format!(
+                "invalid env key '{k}': must not contain '=' or NUL"
+            )));
+            return;
+        }
+    }
+
     // Multi-turn: seher owns the session id. `resume` continues a prior turn; otherwise
     // a fresh v4 uuid is generated. The id maps to a deterministic on-disk session file
     // bound to the working directory, so the next turn can resume by passing it back.
@@ -429,6 +492,11 @@ fn run_on_thread(
     let skills_appendix = load_hardcoded_skills(opts.working_directory.as_deref());
 
     let provider_label = opts.provider.clone().unwrap_or_else(|| "pi".to_string());
+
+    // Acquire env guard here — after all fast-fail guards, before the pi run.
+    // Holds PI_ENV_MUTEX for the entire duration of block_on; dropped when this
+    // function returns, restoring the original values of every modified key.
+    let _env_guard = (!opts.env.is_empty()).then(|| PiEnvGuard::acquire(&opts.env));
 
     let outcome: Result<(), CloseOutcome> = futures::executor::block_on(async {
         let session_opts = SessionOptions {

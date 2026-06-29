@@ -40,6 +40,7 @@ pub struct ClaudeTerminalSdkConfig {
     pub backend: Option<Box<dyn TerminalBackend>>,
     /// Required. Use [`new_sdk_with_defaults`] to get a pre-wired instance.
     pub reader: Option<Box<dyn ClaudeTranscriptReader>>,
+    pub env: std::collections::HashMap<String, String>,
 }
 
 pub struct ClaudeTerminalSdk {
@@ -148,7 +149,11 @@ impl ClaudeTerminalSdk {
         let session = self.backend().start(TerminalStartOptions {
             cwd: cwd.clone(),
             command,
-            env: None,
+            env: if self.config.env.is_empty() {
+                None
+            } else {
+                Some(self.config.env.clone())
+            },
         })?;
 
         let result = self.run_session(
@@ -359,6 +364,7 @@ pub fn new_sdk_with_defaults(
     system_prompt: Option<String>,
     timeout_ms: Option<u64>,
     cwd: Option<String>,
+    env: std::collections::HashMap<String, String>,
 ) -> ClaudeTerminalSdk {
     use super::tmux_backend::TmuxBackend;
     ClaudeTerminalSdk::new(ClaudeTerminalSdkConfig {
@@ -367,6 +373,7 @@ pub fn new_sdk_with_defaults(
         system_prompt,
         timeout_ms,
         cwd,
+        env,
         backend: Some(Box::new(TmuxBackend::new(tmux_bin))),
         reader: Some(Box::new(FileSystemTranscriptReader::new())),
         ..Default::default()

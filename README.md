@@ -404,6 +404,9 @@ retry:
   maxDelaySecs: 60
   multiplier: 2.0
 
+env:                         # root-level env vars applied to every provider (optional)
+  HTTP_PROXY: http://corp-proxy:8080
+
 providers:
   # Map key doubles as the provider label and the default provider name.
   claude:
@@ -421,6 +424,8 @@ providers:
   claude-headless:
     sdk: claude-headless     # runs `claude -p` as a subprocess (no tmux needed)
     priority: 50
+    env:
+      ANTHROPIC_BASE_URL: https://internal-anthropic.example.com
     models:
       plan: claude-opus-4-7
       build: claude-sonnet-4-6
@@ -474,6 +479,7 @@ When a provider uses the in-process `pi` SDK (the default), Seher automatically 
 | `retry.maxDelaySecs` | integer | Maximum delay between retries, in seconds. Default: `60`. Also accepted at the top level |
 | `retry.multiplier` | number | Backoff multiplier applied after each retry. Default: `2.0`. Also accepted at the top level |
 | `retry.retryClientErrors` | boolean | Opt-in flag to also retry HTTP 401/404 errors that some providers return during transient outages. Default: `false`. Also accepted at the top level |
+| `env` | map (`string → string`) | Extra environment variables injected when this provider executes. Also accepted at the top level; root-level vars are applied first, then provider-level vars override on a per-key basis. For `pi` (in-process), applied via `std::env::set_var` and affect the entire process |
 | `models` | map | **Required.** Maps a mode key (`plan`, `build`, or any custom key passed via `-m`) to a model |
 
 ### Model entries

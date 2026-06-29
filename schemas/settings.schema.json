@@ -17,6 +17,13 @@
       "$ref": "#/$defs/retryConfig",
       "description": "Top-level retry policy defaults. Each provider may override this via its own `retry` block."
     },
+    "env": {
+      "type": "object",
+      "description": "Top-level extra environment variables injected for every provider. Provider-level `env` keys override these on a per-key basis.",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
     "providers": {
       "type": "object",
       "description": "Map of provider entries. The map key doubles as the provider label and the default provider name.",
@@ -120,6 +127,13 @@
         "retry": {
           "$ref": "#/$defs/retryConfig",
           "description": "Per-provider override of the top-level retry policy. This replaces the root retry block entirely rather than merging individual fields."
+        },
+        "env": {
+          "type": "object",
+          "description": "Extra environment variables injected when this provider executes. Keys override root-level `env` entries on a per-key basis. For `pi` (in-process), applied via std::env::set_var and affect the whole process.",
+          "additionalProperties": {
+            "type": "string"
+          }
         },
         "models": {
           "type": "object",

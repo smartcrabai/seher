@@ -45,6 +45,7 @@ pub struct ClaudeAgentRunnerConfig {
     /// adapted to a [`AgentTool`] and registered on a single SDK MCP toolbox
     /// (server name `"seher"`).
     pub tools: Vec<SeherTool>,
+    pub env: std::collections::HashMap<String, String>,
 }
 
 /// Run a prompt through `claude-agent-sdk` and surface output as
@@ -323,6 +324,7 @@ fn build_options(config: &ClaudeAgentRunnerConfig) -> ClaudeAgentOptions {
             config.tools.iter().map(seher_tool_to_agent_tool).collect();
         opts.sdk_mcp_server = Some(AgentToolbox::new(SEHER_TOOLBOX_NAME).with_tools(agent_tools));
     }
+    opts.env.clone_from(&config.env);
     opts
 }
 
