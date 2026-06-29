@@ -37,16 +37,3 @@ jobs:
       - name: Check formatting
         run: cargo fmt -- --check
 
-  automerge:
-    runs-on: ubuntu-latest
-    needs: test
-    if: github.event.pull_request.user.login == 'renovate[bot]'
-    permissions:
-      contents: write
-      pull-requests: write
-    steps:
-      - name: automerge
-        uses: pascalgn/automerge-action@7961b8b5eec56cc088c140b56d864285eabd3f67 # v0.16.4
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MERGE_LABELS: "automerge"
