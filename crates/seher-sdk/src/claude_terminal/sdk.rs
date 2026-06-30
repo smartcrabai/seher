@@ -9,6 +9,7 @@ use super::types::{
     ClaudeTranscriptReader, FindClaudeSessionOptions, TerminalBackend, TerminalSession,
     TerminalStartOptions, WaitForAssistantResponseOptions,
 };
+use crate::sdk::EffortLevel;
 use crate::sdk::util::encode_session_id;
 
 const DEFAULT_TIMEOUT_MS: u64 = 15 * 60 * 1000;
@@ -33,6 +34,7 @@ pub struct ClaudeTerminalSdkConfig {
     pub transcript_root: Option<String>,
     pub permission_mode: Option<String>,
     pub model: Option<String>,
+    pub effort: Option<EffortLevel>,
     pub system_prompt: Option<String>,
     pub keep_session: bool,
     pub ready_indicator: Option<String>,
@@ -130,6 +132,7 @@ impl ClaudeTerminalSdk {
                 .clone()
                 .unwrap_or_else(|| DEFAULT_PERMISSION_MODE.to_string()),
             model: self.config.model.clone(),
+            effort: self.config.effort,
             // On resume the system prompt is already part of the persisted session;
             // re-passing `--append-system-prompt` would duplicate it. Apply it only when
             // starting a fresh session.
@@ -357,11 +360,16 @@ pub fn encode_transcript_path(root: &str, cwd: &str, session_id: &str) -> String
 
 /// Convenience builder that wires up real `TmuxBackend` + `FileSystemTranscriptReader`.
 #[must_use]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "thin positional wrapper around ClaudeTerminalSdkConfig"
+)]
 pub fn new_sdk_with_defaults<S: std::hash::BuildHasher>(
     claude_bin: Option<String>,
     tmux_bin: Option<String>,
     model: Option<String>,
     system_prompt: Option<String>,
+    effort: Option<EffortLevel>,
     timeout_ms: Option<u64>,
     cwd: Option<String>,
     env: std::collections::HashMap<String, String, S>,
@@ -370,6 +378,7 @@ pub fn new_sdk_with_defaults<S: std::hash::BuildHasher>(
     ClaudeTerminalSdk::new(ClaudeTerminalSdkConfig {
         claude_bin,
         model,
+        effort,
         system_prompt,
         timeout_ms,
         cwd,

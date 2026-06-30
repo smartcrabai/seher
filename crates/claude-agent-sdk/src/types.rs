@@ -108,6 +108,9 @@ pub struct ClaudeAgentOptions {
     pub max_turns: Option<u32>,
     pub max_budget_usd: Option<f64>,
     pub model: Option<String>,
+    /// Reasoning effort level (`--effort <level>`): `low`, `medium`, `high`,
+    /// `xhigh`, or `max`.
+    pub effort: Option<String>,
     pub fallback_model: Option<String>,
     pub betas: Vec<String>,
     pub cwd: Option<PathBuf>,

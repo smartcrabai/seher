@@ -11,8 +11,8 @@ pub mod util;
 
 pub use cancel::CancelToken;
 pub use config::{
-    Config, ModelEntry, ProviderApi, ProviderEntry, ResolvedAgent, ResolvedSkillsConfig,
-    RetryConfig, SkillsConfig,
+    Config, EffortLevel, ModelEntry, ProviderApi, ProviderEntry, ResolvedAgent,
+    ResolvedSkillsConfig, RetryConfig, SkillsConfig,
 };
 pub use config_loader::{ConfigError, load_config, resolve_config_path};
 pub use dispatch::{RunAgentOptions, RunOutput, run_for_resolved, stream_for_resolved};

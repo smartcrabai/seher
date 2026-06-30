@@ -1,4 +1,5 @@
 use super::types::ClaudeTerminalError;
+use crate::sdk::EffortLevel;
 
 /// Allowed values for `--permission-mode` passed to the `claude` CLI.
 const ALLOWED_PERMISSION_MODES: &[&str] = &[
@@ -12,6 +13,7 @@ pub struct BuildClaudeCommandOptions {
     pub claude_bin: String,
     pub permission_mode: String,
     pub model: Option<String>,
+    pub effort: Option<EffortLevel>,
     pub system_prompt: Option<String>,
     /// When set, resume the given Claude session id (`claude --resume <id>`) so the
     /// conversation continues in the same transcript instead of starting fresh.
@@ -42,6 +44,10 @@ pub fn build_claude_command(
         args.push("--model".to_string());
         args.push(m.clone());
     }
+    if let Some(e) = opts.effort {
+        args.push("--effort".to_string());
+        args.push(e.as_str().to_string());
+    }
     if let Some(s) = &opts.system_prompt {
         args.push("--append-system-prompt".to_string());
         args.push(s.clone());
@@ -66,6 +72,7 @@ mod tests {
             claude_bin: "claude".to_string(),
             permission_mode: "bypassPermissions".to_string(),
             model: None,
+            effort: None,
             system_prompt: None,
             resume_session_id: None,
         });
@@ -78,6 +85,7 @@ mod tests {
             claude_bin: "claude".to_string(),
             permission_mode: "bypassPermissions".to_string(),
             model: Some("claude-opus-4-7".to_string()),
+            effort: None,
             system_prompt: None,
             resume_session_id: None,
         });
@@ -99,6 +107,7 @@ mod tests {
             claude_bin: "claude".to_string(),
             permission_mode: "bypassPermissions".to_string(),
             model: None,
+            effort: None,
             system_prompt: Some("Be concise.".to_string()),
             resume_session_id: None,
         });
@@ -120,6 +129,7 @@ mod tests {
             claude_bin: "/usr/local/bin/claude".to_string(),
             permission_mode: "bypassPermissions".to_string(),
             model: Some("claude-sonnet-4-6".to_string()),
+            effort: None,
             system_prompt: Some("sys".to_string()),
             resume_session_id: None,
         });
@@ -138,11 +148,34 @@ mod tests {
     }
 
     #[test]
+    fn with_effort() {
+        let args = cmd(&BuildClaudeCommandOptions {
+            claude_bin: "claude".to_string(),
+            permission_mode: "bypassPermissions".to_string(),
+            model: None,
+            effort: Some(EffortLevel::High),
+            system_prompt: None,
+            resume_session_id: None,
+        });
+        assert_eq!(
+            args,
+            [
+                "claude",
+                "--effort",
+                "high",
+                "--permission-mode",
+                "bypassPermissions"
+            ]
+        );
+    }
+
+    #[test]
     fn rejects_invalid_permission_mode() {
         let result = build_claude_command(&BuildClaudeCommandOptions {
             claude_bin: "claude".to_string(),
             permission_mode: "dangerousMode".to_string(),
             model: None,
+            effort: None,
             system_prompt: None,
             resume_session_id: None,
         });
@@ -155,6 +188,7 @@ mod tests {
             claude_bin: "claude".to_string(),
             permission_mode: "bypassPermissions".to_string(),
             model: None,
+            effort: None,
             system_prompt: None,
             resume_session_id: Some("abc-123".to_string()),
         });

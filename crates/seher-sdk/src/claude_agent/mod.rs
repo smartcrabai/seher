@@ -21,7 +21,7 @@ use claude_agent_sdk::transport::{SubprocessCliTransport, Transport};
 use claude_agent_sdk::{ClaudeAgentOptions, ContentBlock, Message, PermissionMode};
 use futures::StreamExt as _;
 
-use crate::sdk::{LimitError, SeherTool, StreamChunk, is_claude_rate_limit_message};
+use crate::sdk::{EffortLevel, LimitError, SeherTool, StreamChunk, is_claude_rate_limit_message};
 
 const SEHER_TOOLBOX_NAME: &str = "seher";
 
@@ -35,6 +35,7 @@ const STDERR_TAIL_LINES: usize = 64;
 pub struct ClaudeAgentRunnerConfig {
     pub claude_bin: Option<String>,
     pub model: Option<String>,
+    pub effort: Option<EffortLevel>,
     pub system_prompt: Option<String>,
     pub permission_mode: Option<String>,
     pub cwd: Option<String>,
@@ -303,6 +304,7 @@ fn build_options(config: &ClaudeAgentRunnerConfig) -> ClaudeAgentOptions {
     let mut opts = ClaudeAgentOptions::new();
     opts.cli_path = config.claude_bin.as_ref().map(std::path::PathBuf::from);
     opts.model.clone_from(&config.model);
+    opts.effort = config.effort.map(EffortLevel::as_str).map(String::from);
     opts.cwd = config.cwd.as_ref().map(std::path::PathBuf::from);
     opts.resume.clone_from(&config.resume_session_id);
     opts.allowed_tools.clone_from(&config.allowed_tools);
@@ -409,6 +411,23 @@ mod tests {
         assert_eq!(opts.model.as_deref(), Some("claude-sonnet-4-6"));
         assert_eq!(opts.cwd.as_deref(), Some(std::path::Path::new("/tmp")));
         assert_eq!(opts.allowed_tools, vec!["Read".to_string()]);
+    }
+
+    #[test]
+    fn build_options_carries_effort() {
+        let cfg = ClaudeAgentRunnerConfig {
+            effort: Some(EffortLevel::XHigh),
+            ..Default::default()
+        };
+        let opts = build_options(&cfg);
+        assert_eq!(opts.effort.as_deref(), Some("xhigh"));
+    }
+
+    #[test]
+    fn build_options_effort_none_when_unset() {
+        let cfg = ClaudeAgentRunnerConfig::default();
+        let opts = build_options(&cfg);
+        assert_eq!(opts.effort, None);
     }
 
     // -- send_error_with_stderr classification -------------------------------

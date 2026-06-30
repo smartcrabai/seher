@@ -7,7 +7,7 @@
 use std::io::Read as _;
 use std::process::{Command, Stdio};
 
-use crate::sdk::{CancelToken, LimitError, StreamChunk, is_claude_rate_limit_message};
+use crate::sdk::{CancelToken, EffortLevel, LimitError, StreamChunk, is_claude_rate_limit_message};
 
 const DEFAULT_TIMEOUT_MS: u64 = 15 * 60 * 1000;
 const DEFAULT_PERMISSION_MODE: &str = "bypassPermissions";
@@ -17,6 +17,7 @@ const DEFAULT_PERMISSION_MODE: &str = "bypassPermissions";
 pub struct ClaudeHeadlessRunnerConfig {
     pub claude_bin: Option<String>,
     pub model: Option<String>,
+    pub effort: Option<EffortLevel>,
     pub system_prompt: Option<String>,
     pub permission_mode: Option<String>,
     pub timeout_ms: Option<u64>,
@@ -51,6 +52,11 @@ impl ClaudeHeadlessRunner {
         if let Some(m) = &self.config.model {
             args.push("--model".to_string());
             args.push(m.clone());
+        }
+
+        if let Some(e) = self.config.effort {
+            args.push("--effort".to_string());
+            args.push(e.as_str().to_string());
         }
 
         if let Some(s) = &self.config.system_prompt {
@@ -241,6 +247,26 @@ mod tests {
                 "claude-sonnet-4-6",
                 "--append-system-prompt",
                 "Be concise.",
+                "--permission-mode",
+                "bypassPermissions"
+            ]
+        );
+    }
+
+    #[test]
+    fn build_args_with_effort() {
+        let runner = ClaudeHeadlessRunner::new(ClaudeHeadlessRunnerConfig {
+            effort: Some(EffortLevel::XHigh),
+            ..Default::default()
+        });
+        let args = runner.build_args("hello");
+        assert_eq!(
+            args,
+            [
+                "-p",
+                "hello",
+                "--effort",
+                "xhigh",
                 "--permission-mode",
                 "bypassPermissions"
             ]

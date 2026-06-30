@@ -178,6 +178,10 @@ impl SubprocessCliTransport {
             args.push("--model".into());
             args.push(m.clone());
         }
+        if let Some(e) = &self.options.effort {
+            args.push("--effort".into());
+            args.push(e.clone());
+        }
         if let Some(m) = &self.options.fallback_model {
             args.push("--fallback-model".into());
             args.push(m.clone());
@@ -684,6 +688,16 @@ mod tests {
         assert!(args.contains(&"--allowedTools".into()));
         assert!(args.contains(&"Read,Bash".to_string()));
         assert!(args.contains(&"--continue".into()));
+    }
+
+    #[test]
+    fn build_args_with_effort() {
+        let mut opts = ClaudeAgentOptions::new();
+        opts.effort = Some("high".into());
+        let t = SubprocessCliTransport::one_shot(opts, "hi".into());
+        let args = t.build_args();
+        let idx = args.iter().position(|a| a == "--effort").expect("flag");
+        assert_eq!(args[idx + 1], "high");
     }
 
     #[test]

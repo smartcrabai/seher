@@ -370,16 +370,23 @@ fn validate_tool_names(tools: &[SeherTool]) -> Result<(), String> {
 /// Splits a trailing `:level` thinking suffix off a model name, returning
 /// `(model, thinking)`.
 ///
-/// The suffix is recognized **only** when it parses as a pi thinking level
-/// (`off`, `minimal`, `low`, `medium`, `high`, `xhigh` and their aliases --
-/// see [`pi::model::ThinkingLevel`]'s `FromStr`). Anything else stays part of
-/// the model name, so model ids with a legitimate `:` -- e.g. `OpenRouter`
+/// The suffix is recognized when it parses as a pi thinking level (`off`,
+/// `minimal`, `low`, `medium`, `high`, `xhigh` and their aliases -- see
+/// [`pi::model::ThinkingLevel`]'s `FromStr`), or when it is `max` -- a valid
+/// [`crate::sdk::EffortLevel`] tier that `pi::model::ThinkingLevel` has no
+/// equivalent for, so it would otherwise be left stuck on the model id
+/// instead of being recognized as a suffix at all. Anything else stays part
+/// of the model name, so model ids with a legitimate `:` -- e.g. `OpenRouter`
 /// variants like `meta-llama/llama-3.1-8b-instruct:free` -- pass through
 /// untouched.
 #[must_use]
 pub fn split_thinking_suffix(model: &str) -> (&str, Option<&str>) {
     match model.rsplit_once(':') {
-        Some((m, t)) if t.parse::<pi::model::ThinkingLevel>().is_ok() => (m, Some(t)),
+        Some((m, t))
+            if t.parse::<pi::model::ThinkingLevel>().is_ok() || t.eq_ignore_ascii_case("max") =>
+        {
+            (m, Some(t))
+        }
         _ => (model, None),
     }
 }
@@ -392,8 +399,8 @@ pub fn split_thinking_suffix(model: &str) -> (&str, Option<&str>) {
 /// - The model is everything between the first `/` and the last `:level` suffix
 ///   (so `openrouter/meta-llama/llama-3-8b` keeps the extra `/` in the model).
 /// - The thinking level is recognized only when the last `:suffix` parses as a
-///   [`pi::model::ThinkingLevel`]; any other `:` suffix (e.g. `:free`) stays in
-///   the model name.
+///   [`pi::model::ThinkingLevel`] or is `max` (see [`split_thinking_suffix`]);
+///   any other `:` suffix (e.g. `:free`) stays in the model name.
 #[must_use]
 pub fn split_model_ref(
     fallback_provider: &str,

@@ -77,6 +77,9 @@ seher --config ./my-config.yaml "fix bugs"
 # Per-run timeout (milliseconds) and quiet output
 seher --timeout 600000 --quiet "fix bugs"
 
+# Override reasoning effort for the session (low, medium, high, xhigh, max)
+seher --effort high "fix bugs"
+
 # Show which provider/model/SDK would be selected (dry run)
 seher --show-resolution
 seher --show-resolution -m plan
@@ -96,7 +99,8 @@ seher --cwd /path/to/project -r <uuid> "now add tests"
 | `--config <path>` | `-c` | Path to a YAML config file |
 | `--timeout <ms>` | `-t` | Per-run timeout in milliseconds |
 | `--quiet` | `-q` | Suppress informational output |
-| `--show-resolution` | | Show which provider/model/SDK would be selected and exit (no prompt required). Candidates are listed on stderr; the winner is printed as JSON on stdout |
+| `--effort <level>` | | Reasoning effort for the session: `low`, `medium`, `high`, `xhigh`, or `max`. Overrides any `effort` resolved from `config.yaml`; falls back to it when omitted |
+| `--show-resolution` | | Show which provider/model/SDK would be selected and exit (no prompt required). Candidates are listed on stderr; the winner (including resolved `effort`) is printed as JSON on stdout |
 | `--cwd <dir>` | | Working directory for the agent. Canonicalized on receipt; must exist. Multi-turn sessions are bound to it |
 | `--resume <id>` | `-r` | Resume a prior session by id (printed as `session: <id>` on a previous run). Pass the same `--cwd` used to create it |
 
@@ -480,22 +484,24 @@ When a provider uses the in-process `pi` SDK (the default), Seher automatically 
 | `retry.multiplier` | number | Backoff multiplier applied after each retry. Default: `2.0`. Also accepted at the top level |
 | `retry.retryClientErrors` | boolean | Opt-in flag to also retry HTTP 401/404 errors that some providers return during transient outages. Default: `false`. Also accepted at the top level |
 | `env` | map (`string → string`) | Extra environment variables injected when this provider executes. Also accepted at the top level; root-level vars are applied first, then provider-level vars override on a per-key basis. For `pi` (in-process), applied via `std::env::set_var` and affect the entire process |
+| `effort` | string | Provider-level reasoning effort default: `low`, `medium`, `high`, `xhigh`, or `max`. Overridden by a model entry's own `effort`. Also accepted at the top level as the final fallback (see *Model entries*) |
 | `models` | map | **Required.** Maps a mode key (`plan`, `build`, or any custom key passed via `-m`) to a model |
 
 ### Model entries
 
-A `models` value is either a bare model-id string or an object `{ model, priority }`:
+A `models` value is either a bare model-id string or an object `{ model, priority, effort }`:
 
 ```yaml
 models:
   build: anthropic/claude-sonnet-4-5          # bare string
   plan: { model: anthropic/claude-opus-4-5, priority: 10 }   # full form
-  high: anthropic/claude-opus-4-5:high        # with a thinking level
+  high: { model: anthropic/claude-opus-4-5, effort: xhigh }  # with effort
+  fast: anthropic/claude-opus-4-5:high        # with a thinking-suffix effort
 ```
 
 The **model id** uses a `provider/model` shape. The segment before the first `/` is passed to pi as the provider (e.g. `anthropic`, `openai`); the rest is the model name. A model id without a `/` is passed through as the model with no explicit provider.
 
-A trailing `:` suffix on the model name selects pi's **thinking level**: `model:thinking` (e.g. `anthropic/claude-opus-4-5:high`, `opus-4.7:medium`). Recognized levels are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh` (plus the aliases pi accepts: `none`/`0`, `min`, `1`, `med`/`2`, `3`, `4`). A suffix that is not a recognized level stays part of the model name, so OpenRouter-style variants like `openrouter/meta-llama/llama-3.1-8b-instruct:free` keep working. The level only applies to pi execution -- with the `claude`, `claude-terminal`, and `claude-headless` SDKs a recognized suffix is stripped and ignored. Without a suffix, pi's default (no extended thinking) is used.
+**Reasoning effort** can be set three ways, in precedence order: the model entry's own `effort` field, then the provider-level `effort`, then a root-level `effort` (all `low`/`medium`/`high`/`xhigh`/`max`), then a trailing `:level` suffix on the model id (e.g. `anthropic/claude-opus-4-5:high`, `opus-4.7:medium`) -- recognized for every `sdk` (`pi`, `claude`, `claude-terminal`, `claude-headless`), not just `pi`. The suffix accepts pi's broader thinking-level vocabulary (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, plus aliases `none`/`0`, `min`/`1`, `med`/`2`, `3`, `4`); for the `claude`-family SDKs, only the values with a direct effort equivalent take effect (`off`/`none`/`0` has none, since the `claude` CLI's `--effort` flag has no "off" tier, so no override is applied and the SDK's own default is used). A suffix that is not a recognized level stays part of the model name, so OpenRouter-style variants like `openrouter/meta-llama/llama-3.1-8b-instruct:free` keep working.
 
 For pi execution, the API key comes from `api.key`, falling back to `ANTHROPIC_API_KEY` (when the model provider is `anthropic`) or `OPENAI_API_KEY` (when it is `openai`).
 

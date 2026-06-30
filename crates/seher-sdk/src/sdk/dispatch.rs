@@ -16,8 +16,8 @@ use crate::claude_agent::{ClaudeAgentRunnerConfig, stream_agent};
 use crate::claude_headless::{ClaudeHeadlessRunner, ClaudeHeadlessRunnerConfig, stream_headless};
 use crate::claude_terminal::{new_sdk_with_defaults, stream_via_thread};
 use crate::sdk::{
-    CancelToken, PiRunner, PiRunnerOptions, ResolvedAgent, RetryConfig, RunError, SeherTool,
-    StreamChunk, sdk_supports_tools, split_model_ref, split_thinking_suffix,
+    CancelToken, EffortLevel, PiRunner, PiRunnerOptions, ResolvedAgent, RetryConfig, RunError,
+    SeherTool, StreamChunk, sdk_supports_tools, split_model_ref, split_thinking_suffix,
 };
 
 /// Options forwarded to the chosen runner backend.
@@ -53,6 +53,11 @@ pub struct RunAgentOptions {
     /// number and a short human-readable summary of the error that triggered
     /// the retry (without the partial-output length suffix).
     pub on_retry: Option<Arc<dyn Fn(u32, &str) + Send + Sync>>,
+    /// Reasoning effort level forwarded to the backend. When set, takes
+    /// precedence over any effort resolved from `config.yaml` (`resolved.effort`)
+    /// or a `:level` suffix on the model id (all four backends honor the
+    /// suffix as a final fallback).
+    pub effort: Option<EffortLevel>,
 }
 
 /// Output of a completed [`run_for_resolved`] call.
@@ -74,17 +79,72 @@ pub(crate) enum BackendChoice {
     },
     ClaudeAgent {
         model: Option<String>,
+        effort: Option<EffortLevel>,
     },
     ClaudeHeadless {
         model: Option<String>,
+        effort: Option<EffortLevel>,
     },
     ClaudeTerminal {
         model: Option<String>,
+        effort: Option<EffortLevel>,
     },
     /// Unknown sdk kind -- will emit a [`StreamChunk::Error`] on the channel.
-    Unsupported {
-        message: String,
-    },
+    Unsupported { message: String },
+}
+
+/// Map an [`EffortLevel`] to the `pi` backend's thinking-level string.
+///
+/// `pi::model::ThinkingLevel` has no `max` variant, so `EffortLevel::Max` maps
+/// to pi's highest tier, `"xhigh"`. Every other variant has an identically
+/// named pi thinking level.
+fn effort_to_thinking(effort: EffortLevel) -> &'static str {
+    match effort {
+        EffortLevel::Low => "low",
+        EffortLevel::Medium => "medium",
+        EffortLevel::High => "high",
+        EffortLevel::XHigh | EffortLevel::Max => "xhigh",
+    }
+}
+
+/// Map a recognized model-suffix thinking level to the closest [`EffortLevel`],
+/// for backends (`claude`, `claude-headless`, `claude-terminal`) whose
+/// `--effort` flag has no "off" tier.
+///
+/// Mirrors `pi::model::ThinkingLevel`'s alias vocabulary (case-insensitive,
+/// including numeric aliases) so the same `:level` suffix means the same
+/// thing regardless of backend. `off`/`none`/`0` have no `EffortLevel`
+/// equivalent and intentionally resolve to `None` so no `--effort` flag is
+/// sent, rather than guessing a tier.
+fn effort_from_suffix(suffix: &str) -> Option<EffortLevel> {
+    match suffix.trim().to_lowercase().as_str() {
+        "minimal" | "min" | "low" | "1" => Some(EffortLevel::Low),
+        "medium" | "med" | "2" => Some(EffortLevel::Medium),
+        "high" | "3" => Some(EffortLevel::High),
+        "xhigh" | "4" => Some(EffortLevel::XHigh),
+        "max" => Some(EffortLevel::Max),
+        // "off" / "none" / "0" have no EffortLevel equivalent, same as any
+        // other unrecognized string.
+        _ => None,
+    }
+}
+
+/// Resolve the model name and effective effort for a `claude`-family backend
+/// (`claude`, `claude-headless`, `claude-terminal`), which all share the same
+/// logic: strip a recognized `:level` suffix from the model id, and use it as
+/// the effort fallback when no explicit/resolved `effort` was set.
+fn claude_family_model_and_effort(
+    resolved: &ResolvedAgent,
+    effort: Option<EffortLevel>,
+) -> (Option<String>, Option<EffortLevel>) {
+    let (model_name, suffix_thinking) = split_thinking_suffix(&resolved.model_id);
+    let effort = effort.or_else(|| suffix_thinking.and_then(effort_from_suffix));
+    let model = if model_name.is_empty() {
+        None
+    } else {
+        Some(model_name.to_string())
+    };
+    (model, effort)
 }
 
 /// Error returned by [`choose_backend`] before any channel is opened.
@@ -110,10 +170,17 @@ pub(crate) fn choose_backend(
         });
     }
 
+    // The explicit `effort` field (programmatic or config-resolved) takes
+    // precedence over a `:level` suffix on the model id.
+    let effort = opts.effort.or(resolved.effort);
+
     Ok(match sdk {
         "pi" => {
-            let (provider, model, thinking) =
+            let (provider, model, suffix_thinking) =
                 split_model_ref(&resolved.provider, &resolved.model_id);
+            let thinking = effort
+                .map(|e| effort_to_thinking(e).to_string())
+                .or(suffix_thinking);
             BackendChoice::Pi {
                 provider,
                 model,
@@ -121,34 +188,16 @@ pub(crate) fn choose_backend(
             }
         }
         "claude" => {
-            let (model_name, _) = split_thinking_suffix(&resolved.model_id);
-            BackendChoice::ClaudeAgent {
-                model: if model_name.is_empty() {
-                    None
-                } else {
-                    Some(model_name.to_string())
-                },
-            }
+            let (model, effort) = claude_family_model_and_effort(resolved, effort);
+            BackendChoice::ClaudeAgent { model, effort }
         }
         "claude-headless" => {
-            let (model_name, _) = split_thinking_suffix(&resolved.model_id);
-            BackendChoice::ClaudeHeadless {
-                model: if model_name.is_empty() {
-                    None
-                } else {
-                    Some(model_name.to_string())
-                },
-            }
+            let (model, effort) = claude_family_model_and_effort(resolved, effort);
+            BackendChoice::ClaudeHeadless { model, effort }
         }
         "claude-terminal" => {
-            let (model_name, _) = split_thinking_suffix(&resolved.model_id);
-            BackendChoice::ClaudeTerminal {
-                model: if model_name.is_empty() {
-                    None
-                } else {
-                    Some(model_name.to_string())
-                },
-            }
+            let (model, effort) = claude_family_model_and_effort(resolved, effort);
+            BackendChoice::ClaudeTerminal { model, effort }
         }
         other => BackendChoice::Unsupported {
             message: format!("unsupported sdk kind: {other}"),
@@ -236,9 +285,10 @@ pub fn stream_for_resolved(
             };
             PiRunner::new(pi_opts).stream(prompt, opts.resume)
         }
-        Ok(BackendChoice::ClaudeAgent { model }) => {
+        Ok(BackendChoice::ClaudeAgent { model, effort }) => {
             let config = ClaudeAgentRunnerConfig {
                 model,
+                effort,
                 system_prompt: opts.system_prompt,
                 cwd: opts
                     .working_dir
@@ -255,9 +305,10 @@ pub fn stream_for_resolved(
             };
             stream_agent(config, prompt, resolved.provider.clone())
         }
-        Ok(BackendChoice::ClaudeHeadless { model }) => {
+        Ok(BackendChoice::ClaudeHeadless { model, effort }) => {
             let config = ClaudeHeadlessRunnerConfig {
                 model,
+                effort,
                 system_prompt: opts.system_prompt,
                 cwd: opts
                     .working_dir
@@ -275,12 +326,13 @@ pub fn stream_for_resolved(
                 resolved.provider.clone(),
             )
         }
-        Ok(BackendChoice::ClaudeTerminal { model }) => {
+        Ok(BackendChoice::ClaudeTerminal { model, effort }) => {
             let sdk = new_sdk_with_defaults(
                 None,
                 None,
                 model,
                 opts.system_prompt,
+                effort,
                 opts.timeout_ms,
                 opts.working_dir
                     .as_ref()
@@ -426,6 +478,7 @@ mod tests {
             skills: ResolvedSkillsConfig::default(),
             retry: RetryConfig::default(),
             env: indexmap::IndexMap::new(),
+            effort: None,
         }
     }
 
@@ -485,7 +538,7 @@ mod tests {
         let choice =
             choose_backend(&resolved, &no_tools_opts()).expect("claude backend is always valid");
         match choice {
-            BackendChoice::ClaudeAgent { model } => {
+            BackendChoice::ClaudeAgent { model, effort: _ } => {
                 assert_eq!(model, Some("sonnet".to_string()));
             }
             other => panic!("expected ClaudeAgent, got {other:?}"),
@@ -496,15 +549,211 @@ mod tests {
     fn choose_backend_claude_strips_thinking_suffix_from_model() {
         // Given: sdk=claude with a model that has a thinking-level suffix like :high
         // When: choose_backend is called
-        // Then: ClaudeAgent gets the model WITHOUT the :high suffix
+        // Then: ClaudeAgent gets the model WITHOUT the :high suffix, and the
+        // suffix is used as the effort fallback since no explicit/resolved
+        // effort was set
         let resolved = make_resolved("claude", "claude", "sonnet:high");
         let choice = choose_backend(&resolved, &no_tools_opts())
             .expect("claude with thinking suffix is valid");
         match choice {
-            BackendChoice::ClaudeAgent { model } => {
+            BackendChoice::ClaudeAgent { model, effort } => {
                 assert_eq!(model, Some("sonnet".to_string()));
+                assert_eq!(effort, Some(EffortLevel::High));
             }
             other => panic!("expected ClaudeAgent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn choose_backend_claude_explicit_effort_overrides_suffix_thinking() {
+        // Given: sdk=claude with a model suffix ":low" but opts.effort=Max
+        // When: choose_backend is called
+        // Then: the explicit effort wins over the suffix-derived value
+        let resolved = make_resolved("claude", "claude", "sonnet:low");
+        let opts = RunAgentOptions {
+            effort: Some(EffortLevel::Max),
+            ..Default::default()
+        };
+        let choice = choose_backend(&resolved, &opts).expect("claude with effort is valid");
+        match choice {
+            BackendChoice::ClaudeAgent { effort, .. } => {
+                assert_eq!(effort, Some(EffortLevel::Max));
+            }
+            other => panic!("expected ClaudeAgent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn choose_backend_claude_off_suffix_has_no_effort_equivalent() {
+        // Given: sdk=claude with a suffix recognized by pi's ThinkingLevel
+        // (":off" means "no extra thinking") but the claude CLI's --effort
+        // flag has no "off" tier
+        // When: choose_backend is called
+        // Then: the model suffix is still stripped, but effort stays None
+        // rather than erroring or guessing a tier
+        let resolved = make_resolved("claude", "claude", "sonnet:off");
+        let choice = choose_backend(&resolved, &no_tools_opts())
+            .expect("claude with off suffix is still valid");
+        match choice {
+            BackendChoice::ClaudeAgent { model, effort } => {
+                assert_eq!(model, Some("sonnet".to_string()));
+                assert_eq!(effort, None);
+            }
+            other => panic!("expected ClaudeAgent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn choose_backend_claude_med_alias_maps_to_effort_medium() {
+        // Given: sdk=claude with pi's "med" alias suffix (not the literal
+        // EffortLevel string "medium")
+        // When: choose_backend is called
+        // Then: it still resolves to EffortLevel::Medium via the alias-aware
+        // suffix mapping, not silently dropped
+        let resolved = make_resolved("claude", "claude", "sonnet:med");
+        let choice =
+            choose_backend(&resolved, &no_tools_opts()).expect("claude with med alias is valid");
+        match choice {
+            BackendChoice::ClaudeAgent { model, effort } => {
+                assert_eq!(model, Some("sonnet".to_string()));
+                assert_eq!(effort, Some(EffortLevel::Medium));
+            }
+            other => panic!("expected ClaudeAgent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn choose_backend_claude_max_suffix_maps_to_effort_max() {
+        // Given: sdk=claude with a ":max" suffix -- not a pi::ThinkingLevel
+        // at all, but a valid EffortLevel
+        // When: choose_backend is called
+        // Then: the suffix is recognized, stripped from the model name, and
+        // mapped to EffortLevel::Max (regression test for the model-id
+        // corruption bug where ":max" was previously left attached)
+        let resolved = make_resolved("claude", "claude", "sonnet:max");
+        let choice =
+            choose_backend(&resolved, &no_tools_opts()).expect("claude with max suffix is valid");
+        match choice {
+            BackendChoice::ClaudeAgent { model, effort } => {
+                assert_eq!(model, Some("sonnet".to_string()));
+                assert_eq!(effort, Some(EffortLevel::Max));
+            }
+            other => panic!("expected ClaudeAgent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn choose_backend_claude_headless_uses_suffix_thinking_as_effort() {
+        // Given: sdk=claude-headless with a model suffix ":xhigh"
+        // When: choose_backend is called
+        // Then: ClaudeHeadless gets the suffix-derived effort
+        let resolved = make_resolved("claude-headless", "claude", "sonnet:xhigh");
+        let choice = choose_backend(&resolved, &no_tools_opts())
+            .expect("claude-headless with thinking suffix is valid");
+        match choice {
+            BackendChoice::ClaudeHeadless { effort, .. } => {
+                assert_eq!(effort, Some(EffortLevel::XHigh));
+            }
+            other => panic!("expected ClaudeHeadless, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn choose_backend_claude_terminal_uses_suffix_thinking_as_effort() {
+        // Given: sdk=claude-terminal with a model suffix ":medium"
+        // When: choose_backend is called
+        // Then: ClaudeTerminal gets the suffix-derived effort
+        let resolved = make_resolved("claude-terminal", "claude", "sonnet:medium");
+        let choice = choose_backend(&resolved, &no_tools_opts())
+            .expect("claude-terminal with thinking suffix is valid");
+        match choice {
+            BackendChoice::ClaudeTerminal { effort, .. } => {
+                assert_eq!(effort, Some(EffortLevel::Medium));
+            }
+            other => panic!("expected ClaudeTerminal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn choose_backend_claude_agent_carries_resolved_effort() {
+        // Given: sdk=claude with no opts.effort set, but resolved.effort from config
+        // When: choose_backend is called
+        // Then: ClaudeAgent gets the config-resolved effort level
+        let mut resolved = make_resolved("claude", "claude", "sonnet");
+        resolved.effort = Some(EffortLevel::High);
+        let choice = choose_backend(&resolved, &no_tools_opts())
+            .expect("claude with resolved effort is valid");
+        match choice {
+            BackendChoice::ClaudeAgent { effort, .. } => {
+                assert_eq!(effort, Some(EffortLevel::High));
+            }
+            other => panic!("expected ClaudeAgent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn choose_backend_explicit_effort_overrides_resolved_effort() {
+        // Given: sdk=claude with both opts.effort and resolved.effort set
+        // When: choose_backend is called
+        // Then: the explicit opts.effort wins
+        let mut resolved = make_resolved("claude", "claude", "sonnet");
+        resolved.effort = Some(EffortLevel::Low);
+        let opts = RunAgentOptions {
+            effort: Some(EffortLevel::Max),
+            ..Default::default()
+        };
+        let choice = choose_backend(&resolved, &opts).expect("claude with effort is valid");
+        match choice {
+            BackendChoice::ClaudeAgent { effort, .. } => {
+                assert_eq!(effort, Some(EffortLevel::Max));
+            }
+            other => panic!("expected ClaudeAgent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn choose_backend_pi_explicit_effort_overrides_suffix_thinking() {
+        // Given: sdk=pi with a model suffix ":low" but opts.effort=Max
+        // When: choose_backend is called
+        // Then: the explicit effort wins and maps to pi's "xhigh" thinking level
+        let resolved = make_resolved("pi", "codex", "openai-codex/gpt-5.5:low");
+        let opts = RunAgentOptions {
+            effort: Some(EffortLevel::Max),
+            ..Default::default()
+        };
+        let choice = choose_backend(&resolved, &opts).expect("pi backend is always valid");
+        match choice {
+            BackendChoice::Pi { thinking, .. } => {
+                assert_eq!(thinking, Some("xhigh".to_string()));
+            }
+            other => panic!("expected Pi, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn choose_backend_pi_recognizes_max_suffix_but_pi_has_no_max_tier() {
+        // Given: sdk=pi with a ":max" model suffix -- recognized as a suffix
+        // (so the model name is correctly stripped) even though pi's own
+        // ThinkingLevel has no "max" tier
+        // When: choose_backend is called
+        // Then: the model id is NOT corrupted with a literal ":max" left
+        // attached; the raw "max" string is passed through as `thinking` and
+        // will surface a clear runtime error from pi_runner's own validation
+        // (parse_thinking) rather than reaching pi with a broken model id
+        let resolved = make_resolved("pi", "codex", "openai-codex/gpt-5.5:max");
+        let choice =
+            choose_backend(&resolved, &no_tools_opts()).expect("pi backend is always valid");
+        match choice {
+            BackendChoice::Pi {
+                provider,
+                model,
+                thinking,
+            } => {
+                assert_eq!(provider, "openai-codex");
+                assert_eq!(model, "gpt-5.5");
+                assert_eq!(thinking, Some("max".to_string()));
+            }
+            other => panic!("expected Pi, got {other:?}"),
         }
     }
 
