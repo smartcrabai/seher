@@ -80,8 +80,8 @@ fn run() -> i32 {
 
 fn show_resolution(args: &Args) -> Result<(), String> {
     use seher::sdk::{
-        CodexBarProbe, ResolveOptions, build_candidates, codexbar_provider_name, load_config,
-        resolve_agent, unsupported_sdk_providers,
+        CodexBarProbe, EffortLevel, ResolveOptions, build_candidates, codexbar_provider_name,
+        load_config, resolve_agent, unsupported_sdk_providers,
     };
 
     let config = load_config(args.config.as_deref()).map_err(|e| e.to_string())?;
@@ -119,8 +119,12 @@ fn show_resolution(args: &Args) -> Result<(), String> {
                 Ok(seher::AgentLimit::NotLimited) => String::new(),
                 Err(_) => " [probe error]".to_string(),
             };
+            let effort_tag = c
+                .resolved
+                .effort
+                .map_or_else(String::new, |e| format!(", effort={}", e.as_str()));
             eprintln!(
-                "  {i}. {} (sdk={}, model={}, priority={}){limit_tag}",
+                "  {i}. {} (sdk={}, model={}, priority={}{effort_tag}){limit_tag}",
                 c.resolved.provider, c.resolved.sdk, c.resolved.model_id, c.priority
             );
         }
@@ -144,6 +148,9 @@ fn show_resolution(args: &Args) -> Result<(), String> {
     let mut probe = CodexBarProbe;
     match rt.block_on(resolve_agent(opts, &mut probe)) {
         Ok(agent) => {
+            // The CLI flag, if set, wins over the config-resolved effort --
+            // mirrors the precedence `choose_backend` applies for a real run.
+            let effort = args.effort.or(agent.effort);
             println!(
                 "{}",
                 serde_json::json!({
@@ -151,6 +158,7 @@ fn show_resolution(args: &Args) -> Result<(), String> {
                     "model": agent.model_id,
                     "sdk": agent.sdk,
                     "mode": agent.mode_key,
+                    "effort": effort.map(EffortLevel::as_str),
                 })
             );
             Ok(())

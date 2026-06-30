@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
+use seher::sdk::EffortLevel;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -49,6 +50,10 @@ pub struct RawArgs {
     #[arg(short = 'r', long)]
     pub resume: Option<String>,
 
+    /// Effort level for the current session (low, medium, high, xhigh, max)
+    #[arg(long, value_parser = clap::value_parser!(EffortLevel))]
+    pub effort: Option<EffortLevel>,
+
     /// Optional `plan`/`build` followed by prompt text
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub trailing: Vec<String>,
@@ -67,6 +72,7 @@ pub struct Args {
     pub cwd: Option<String>,
     /// Session id to resume, if any.
     pub resume: Option<String>,
+    pub effort: Option<EffortLevel>,
     pub prompt_tokens: Vec<String>,
 }
 
@@ -127,6 +133,7 @@ pub fn normalize(raw: RawArgs) -> Result<Args, String> {
         show_resolution: raw.show_resolution,
         cwd,
         resume: raw.resume,
+        effort: raw.effort,
         prompt_tokens,
     })
 }
@@ -203,6 +210,24 @@ mod tests {
     fn quiet_flag_sets_quiet() {
         let a = parse(&["-q", "build", "x"]).expect("ok");
         assert!(a.quiet);
+    }
+
+    #[test]
+    fn effort_flag_propagates() {
+        let a = parse(&["--effort", "high", "build", "x"]).expect("ok");
+        assert_eq!(a.effort, Some(EffortLevel::High));
+    }
+
+    #[test]
+    fn effort_defaults_to_none() {
+        let a = parse(&["build", "x"]).expect("ok");
+        assert_eq!(a.effort, None);
+    }
+
+    #[test]
+    fn effort_rejects_invalid_value() {
+        let err = parse(&["--effort", "nonsense", "build", "x"]).expect_err("should reject");
+        assert!(err.contains("effort"), "got: {err}");
     }
 
     #[test]

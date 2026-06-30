@@ -382,6 +382,7 @@ fn dispatch_stream(
             timeout_ms: args.timeout,
             cancel: cancel.clone(),
             on_retry: None,
+            effort: args.effort,
         },
     )
 }
@@ -412,6 +413,7 @@ mod tests {
             skills: ResolvedSkillsConfig::default(),
             retry: seher::sdk::RetryConfig::default(),
             env: indexmap::IndexMap::default(),
+            effort: None,
         }
     }
 

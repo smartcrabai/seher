@@ -9,6 +9,50 @@ use serde::{Deserialize, Serialize};
 
 use crate::sdk::{is_client_error_retryable, is_transient_http_error};
 
+/// Reasoning effort level forwarded to backends that support it.
+///
+/// Mirrors the `claude` CLI's `--effort <level>` flag values exactly
+/// (`low`, `medium`, `high`, `xhigh`, `max`).
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum EffortLevel {
+    Low,
+    Medium,
+    High,
+    XHigh,
+    Max,
+}
+
+impl EffortLevel {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+}
+
+impl std::str::FromStr for EffortLevel {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            "xhigh" => Ok(Self::XHigh),
+            "max" => Ok(Self::Max),
+            _ => Err(format!(
+                "invalid effort level '{s}': expected one of low, medium, high, xhigh, max"
+            )),
+        }
+    }
+}
+
 /// Per-provider API config forwarded to the underlying SDK constructor.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ProviderApi {
@@ -156,6 +200,8 @@ pub struct ModelEntry {
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<EffortLevel>,
 }
 
 /// Raw model entry: either a bare string (model id) or a full struct.
@@ -172,6 +218,7 @@ impl From<ModelEntryRaw> for ModelEntry {
             ModelEntryRaw::Bare(model) => Self {
                 model,
                 priority: None,
+                effort: None,
             },
             ModelEntryRaw::Full(m) => m,
         }
@@ -195,6 +242,8 @@ pub(crate) struct ProviderEntryRaw {
     pub retry: Option<RetryConfig>,
     #[serde(default)]
     pub env: Option<IndexMap<String, String>>,
+    #[serde(default)]
+    pub effort: Option<EffortLevel>,
     pub models: IndexMap<String, ModelEntryRaw>,
 }
 
@@ -220,6 +269,9 @@ pub struct ProviderEntry {
     pub retry: Option<RetryConfig>,
     /// Additional environment variables injected when this provider executes.
     pub env: Option<IndexMap<String, String>>,
+    /// Provider-level reasoning effort default. Overridden by a model entry's
+    /// own `effort` when present (see [`Config::resolve_effort`]).
+    pub effort: Option<EffortLevel>,
     /// Mode -> model entry. Keys include `plan`, `build`, plus user-defined keys.
     pub models: IndexMap<String, ModelEntry>,
 }
@@ -235,6 +287,8 @@ pub(crate) struct ConfigRaw {
     pub retry: Option<RetryConfig>,
     #[serde(default)]
     pub env: Option<IndexMap<String, String>>,
+    #[serde(default)]
+    pub effort: Option<EffortLevel>,
 }
 
 /// Normalized config root.
@@ -244,6 +298,9 @@ pub struct Config {
     pub skills: Option<SkillsConfig>,
     pub retry: Option<RetryConfig>,
     pub env: Option<IndexMap<String, String>>,
+    /// Root-level reasoning effort default, applied when neither the provider
+    /// nor the model entry specifies one (see [`Config::resolve_effort`]).
+    pub effort: Option<EffortLevel>,
 }
 
 impl Config {
@@ -287,6 +344,14 @@ impl Config {
         }
         merged
     }
+
+    /// Resolve the effective reasoning effort for a model entry: the model's
+    /// own `effort` wins when set, then the provider-level default, then the
+    /// root-level default. `None` when none of the three specify one.
+    #[must_use]
+    pub fn resolve_effort(&self, entry: &ProviderEntry, model: &ModelEntry) -> Option<EffortLevel> {
+        model.effort.or(entry.effort).or(self.effort)
+    }
 }
 
 impl From<ConfigRaw> for Config {
@@ -310,6 +375,7 @@ impl From<ConfigRaw> for Config {
                     skills: p.skills,
                     retry: p.retry,
                     env: p.env,
+                    effort: p.effort,
                     models,
                 }
             })
@@ -319,6 +385,7 @@ impl From<ConfigRaw> for Config {
             skills: raw.skills,
             retry: raw.retry,
             env: raw.env,
+            effort: raw.effort,
         }
     }
 }
@@ -342,6 +409,10 @@ pub struct ResolvedAgent {
     pub retry: RetryConfig,
     /// Resolved extra environment variables (root merged with provider; provider wins per-key).
     pub env: IndexMap<String, String>,
+    /// Reasoning effort level resolved from the model entry, falling back to
+    /// the provider-level default, then the root-level default. `None` when
+    /// none of the three specify one.
+    pub effort: Option<EffortLevel>,
 }
 
 #[cfg(test)]
@@ -364,6 +435,77 @@ mod tests {
         let entry: ModelEntry = raw.into();
         assert_eq!(entry.model, "opus-4.7");
         assert_eq!(entry.priority, Some(5));
+    }
+
+    #[test]
+    fn model_entry_parses_effort() {
+        let raw: ModelEntryRaw =
+            serde_yaml::from_str("{ model: opus-4.7, effort: xhigh }").expect("parse");
+        let entry: ModelEntry = raw.into();
+        assert_eq!(entry.model, "opus-4.7");
+        assert_eq!(entry.effort, Some(EffortLevel::XHigh));
+    }
+
+    #[test]
+    fn model_effort_overrides_provider_effort() {
+        let yaml = "
+providers:
+  claude:
+    effort: low
+    models:
+      build: { model: opus-4.7, effort: high }
+      plan: opus-4.7
+";
+        let raw: ConfigRaw = serde_yaml::from_str(yaml).expect("parse");
+        let cfg: Config = raw.into();
+        let entry = &cfg.providers[0];
+        assert_eq!(entry.effort, Some(EffortLevel::Low));
+        assert_eq!(
+            cfg.resolve_effort(entry, &entry.models["build"]),
+            Some(EffortLevel::High)
+        );
+        assert_eq!(
+            cfg.resolve_effort(entry, &entry.models["plan"]),
+            Some(EffortLevel::Low)
+        );
+    }
+
+    #[test]
+    fn root_effort_applies_when_provider_and_model_unset() {
+        let yaml = "
+effort: medium
+providers:
+  claude:
+    models:
+      build: opus-4.7
+";
+        let raw: ConfigRaw = serde_yaml::from_str(yaml).expect("parse");
+        let cfg: Config = raw.into();
+        let entry = &cfg.providers[0];
+        assert_eq!(entry.effort, None);
+        assert_eq!(
+            cfg.resolve_effort(entry, &entry.models["build"]),
+            Some(EffortLevel::Medium)
+        );
+    }
+
+    #[test]
+    fn provider_effort_overrides_root_effort() {
+        let yaml = "
+effort: low
+providers:
+  claude:
+    effort: high
+    models:
+      build: opus-4.7
+";
+        let raw: ConfigRaw = serde_yaml::from_str(yaml).expect("parse");
+        let cfg: Config = raw.into();
+        let entry = &cfg.providers[0];
+        assert_eq!(
+            cfg.resolve_effort(entry, &entry.models["build"]),
+            Some(EffortLevel::High)
+        );
     }
 
     #[test]
@@ -443,6 +585,7 @@ providers:
             skills: None,
             retry: None,
             env: None,
+            effort: None,
             models: IndexMap::new(),
         };
         assert!(cfg.resolve_skills(&entry).include_claude);
@@ -457,6 +600,7 @@ providers:
             }),
             retry: None,
             env: None,
+            effort: None,
         };
         let entry = ProviderEntry {
             key: "x".into(),
@@ -470,6 +614,7 @@ providers:
             }),
             retry: None,
             env: None,
+            effort: None,
             models: IndexMap::new(),
         };
         assert!(cfg.resolve_skills(&entry).include_claude);
@@ -531,6 +676,7 @@ retryClientErrors: true
             skills: None,
             retry: None,
             env: None,
+            effort: None,
             models: IndexMap::new(),
         };
         let resolved = cfg.resolve_retry(&entry);
@@ -549,6 +695,7 @@ retryClientErrors: true
                 ..RetryConfig::default()
             }),
             env: None,
+            effort: None,
         };
         let entry = ProviderEntry {
             key: "x".into(),
@@ -560,6 +707,7 @@ retryClientErrors: true
             skills: None,
             retry: None,
             env: None,
+            effort: None,
             models: IndexMap::new(),
         };
         assert!(!cfg.resolve_retry(&entry).enabled);
@@ -575,6 +723,7 @@ retryClientErrors: true
                 ..RetryConfig::default()
             }),
             env: None,
+            effort: None,
         };
         let entry = ProviderEntry {
             key: "x".into(),
@@ -590,6 +739,7 @@ retryClientErrors: true
                 ..RetryConfig::default()
             }),
             env: None,
+            effort: None,
             models: IndexMap::new(),
         };
         let resolved = cfg.resolve_retry(&entry);
@@ -609,6 +759,7 @@ retryClientErrors: true
                 ..RetryConfig::default()
             }),
             env: None,
+            effort: None,
         };
         let entry = ProviderEntry {
             key: "x".into(),
@@ -623,6 +774,7 @@ retryClientErrors: true
                 ..RetryConfig::default()
             }),
             env: None,
+            effort: None,
             models: IndexMap::new(),
         };
         let resolved = cfg.resolve_retry(&entry);
@@ -725,6 +877,7 @@ providers:
             skills: None,
             retry: None,
             env: None,
+            effort: None,
             models: IndexMap::new(),
         };
         assert!(cfg.resolve_env(&entry).is_empty());
@@ -740,6 +893,7 @@ providers:
             skills: None,
             retry: None,
             env: Some(root_env),
+            effort: None,
         };
         let mut provider_env = IndexMap::new();
         provider_env.insert("B".to_string(), "p".to_string());
@@ -754,6 +908,7 @@ providers:
             skills: None,
             retry: None,
             env: Some(provider_env),
+            effort: None,
             models: IndexMap::new(),
         };
         let resolved = cfg.resolve_env(&entry);
@@ -776,6 +931,7 @@ providers:
             skills: None,
             retry: None,
             env: Some(root_env),
+            effort: None,
         };
         let entry = ProviderEntry {
             key: "x".into(),
@@ -787,6 +943,7 @@ providers:
             skills: None,
             retry: None,
             env: None,
+            effort: None,
             models: IndexMap::new(),
         };
         let resolved = cfg.resolve_env(&entry);
