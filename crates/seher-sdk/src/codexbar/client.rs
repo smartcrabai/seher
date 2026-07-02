@@ -7,7 +7,7 @@
 //! killing the child once the deadline passes.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 #[cfg(unix)]
@@ -125,24 +125,68 @@ fn spawn_reader<R: std::io::Read + Send + 'static>(
     })
 }
 
+/// Build the `codexbar` invocation with the platform-appropriate isolation.
+///
+/// On Unix the child is detached into its own session (`setsid`): `CodexBarCLI`
+/// probes agent CLIs through an internal pty and, when it shares the caller's
+/// session, it moves the controlling terminal's foreground process group to
+/// its own group and exits without restoring it. Ctrl-C then signals a dead
+/// group and the host process becomes uninterruptible. A fresh session has no
+/// controlling terminal, so codexbar cannot touch ours. It also implies a new
+/// process group, so terminal-generated signals (e.g. Ctrl-C SIGINT) don't
+/// reach codexbar, and our timeout kill can take down that whole group. A mere
+/// `process_group(0)` is not enough — the child would stay in our session and
+/// could still claim the terminal.
+fn build_command(bin: &Path, args: &[String]) -> Command {
+    let mut cmd = Command::new(bin);
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        // SAFETY: the closure calls setsid(2) and, on failure, builds an
+        // io::Error from errno; both are async-signal-safe and allocation-free,
+        // so it is safe to run between fork and exec.
+        unsafe {
+            cmd.pre_exec(|| {
+                // setsid fails only when the caller already leads a process
+                // group; a freshly forked child never does, but surface the
+                // error instead of silently keeping the parent's session.
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    cmd
+}
+
+/// SIGKILL the child's whole process group, falling back to the child alone.
+///
+/// After [`build_command`]'s setsid the child leads its own process group
+/// (pgid == its pid), so a negative-pid kill(2) also takes down any probe
+/// helpers codexbar spawned into that group. The caller still holds the
+/// unreaped child handle, so the pid cannot have been recycled.
+fn kill_process_group(child: &mut Child) {
+    #[cfg(unix)]
+    if let Ok(pid) = i32::try_from(child.id()) {
+        // SAFETY: kill(2) takes the pgid by value and touches no memory.
+        if unsafe { libc::kill(-pid, libc::SIGKILL) } == 0 {
+            return;
+        }
+    }
+    let _ = child.kill();
+}
+
 fn run_blocking(
     bin: &Path,
     args: &[String],
     timeout: Duration,
     provider: &str,
 ) -> Result<RawOutput, CodexBarError> {
-    let mut cmd = Command::new(bin);
-    cmd.args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    // New process group so terminal-generated signals (e.g. Ctrl-C SIGINT)
-    // don't reach codexbar; our timeout kill targets the child directly.
-    // This is only available on Unix; on other platforms we spawn without it.
-    #[cfg(unix)]
-    {
-        cmd.process_group(0);
-    }
+    let mut cmd = build_command(bin, args);
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
@@ -168,7 +212,7 @@ fn run_blocking(
             Ok(Some(status)) => break status,
             Ok(None) => {
                 if Instant::now() >= deadline {
-                    let _ = child.kill();
+                    kill_process_group(&mut child);
                     let _ = child.wait();
                     // Readers unblock at EOF once the killed child's pipes close.
                     let _ = stdout_reader.join();
@@ -271,5 +315,34 @@ mod tests {
     fn parse_response_non_array_payload() {
         let err = parse_response("{}", "", Some(0), "claude").expect_err("non-array");
         assert!(matches!(err, CodexBarError::NonArray(_)));
+    }
+
+    /// Guards the terminal-safety property of [`build_command`]: the child must
+    /// lead a brand-new session, otherwise codexbar can steal the controlling
+    /// terminal's foreground process group and make the host process
+    /// uninterruptible via Ctrl-C.
+    #[cfg(unix)]
+    #[test]
+    fn build_command_detaches_child_into_own_session() {
+        let mut child = build_command(Path::new("/bin/sleep"), &["5".into()])
+            .spawn()
+            .expect("spawn sleep");
+        // `spawn` reports exec errors through the parent, so by the time it
+        // returns Ok the pre_exec hook (setsid) has already run.
+        let child_pid = i32::try_from(child.id()).expect("pid fits in i32");
+        // SAFETY: getsid takes a pid by value and touches no memory.
+        let session_of_child = unsafe { libc::getsid(child_pid) };
+        // SAFETY: getsid(0) queries the calling process; no memory involved.
+        let session_of_parent = unsafe { libc::getsid(0) };
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(
+            session_of_child, child_pid,
+            "child should lead a fresh session"
+        );
+        assert_ne!(
+            session_of_child, session_of_parent,
+            "child must not share our session"
+        );
     }
 }

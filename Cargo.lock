@@ -3885,6 +3885,7 @@ dependencies = [
  "dirs",
  "futures",
  "indexmap",
+ "libc",
  "pi_agent_rust",
  "regex",
  "seher-claude-agent-sdk",
