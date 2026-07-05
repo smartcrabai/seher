@@ -64,11 +64,9 @@ jobs:
           git commit -m "chore: update agent skills"
           git push origin "$BRANCH"
 
-          gh label create skill-update --color 0366D6 --repo "${{ github.repository }}" || true
           gh pr create \
             --repo "${{ github.repository }}" \
             --base "${{ github.ref_name }}" \
             --head "$BRANCH" \
             --title "chore: update agent skills" \
-            --body "Automated update of agent skills from smartcrabai/agent-skills." \
-            --label skill-update
+            --body "Automated update of agent skills from smartcrabai/agent-skills."
