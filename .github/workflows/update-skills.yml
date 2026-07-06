@@ -1,0 +1,72 @@
+name: Update Agent Skills
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-skills:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Ensure GitHub CLI is available
+        run: |
+          if ! command -v gh >/dev/null 2>&1; then
+            echo "GitHub CLI not found, installing..."
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+            sudo apt-get update
+            sudo apt-get install -y gh
+          fi
+          gh --version
+
+      - name: Check for skill updates
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          OUTPUT=$(gh skill update --dry-run --dir .claude/skills 2>&1 || true)
+          echo "$OUTPUT"
+          if echo "$OUTPUT" | grep -Eq '[0-9]+ update\(s\) available'; then
+            echo "updates_found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "updates_found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Apply skill updates and create pull request
+        if: steps.check.outputs.updates_found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          BRANCH="skill-updates-$(date +%Y%m%d-%H%M%S)"
+          git checkout -b "$BRANCH"
+
+          gh skill update --all --dir .claude/skills
+
+          if git diff --quiet --exit-code; then
+            echo "No file changes after update."
+            exit 0
+          fi
+
+          git add -A
+          git commit -m "chore: update agent skills"
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --repo "${{ github.repository }}" \
+            --base "${{ github.ref_name }}" \
+            --head "$BRANCH" \
+            --title "chore: update agent skills" \
+            --body "Automated update of agent skills from smartcrabai/agent-skills."
