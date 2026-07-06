@@ -539,7 +539,7 @@ fn run_on_thread(
         }
 
         let txd = tx.clone();
-        handle
+        let assistant = handle
             .prompt(&prompt_text, move |ev: AgentEvent| {
                 if let AgentEvent::MessageUpdate {
                     assistant_message_event,
@@ -553,7 +553,7 @@ fn run_on_thread(
             .await
             .map_err(|e| classify_pi_error(&provider_label, &e.to_string()))?;
 
-        Ok(())
+        check_trailing_assistant_error(&provider_label, &assistant)
     });
 
     match outcome {
@@ -572,6 +572,39 @@ fn run_on_thread(
 enum CloseOutcome {
     Limit(LimitError),
     Error(String),
+}
+
+/// Error text of an assistant turn that ended with `StopReason::Error`.
+///
+/// pi mirrors its TS ancestor here: provider failures (e.g. an HTTP 429 usage
+/// limit) do not fail `prompt()` -- the turn resolves Ok with an assistant
+/// message carrying `stop_reason: Error` and `error_message`. Left unchecked
+/// that surfaces as an empty-text success, so the limit/failover machinery
+/// never triggers. Callers must inspect the returned message to tell success
+/// from failure.
+fn trailing_assistant_error(assistant: &pi::model::AssistantMessage) -> Option<String> {
+    if matches!(assistant.stop_reason, pi::model::StopReason::Error) {
+        Some(
+            assistant
+                .error_message
+                .clone()
+                .unwrap_or_else(|| "pi: assistant turn ended with stopReason error".to_string()),
+        )
+    } else {
+        None
+    }
+}
+
+/// [`trailing_assistant_error`] routed through [`classify_pi_error`], shaped
+/// for use as the tail of the prompt future.
+fn check_trailing_assistant_error(
+    provider: &str,
+    assistant: &pi::model::AssistantMessage,
+) -> Result<(), CloseOutcome> {
+    match trailing_assistant_error(assistant) {
+        Some(msg) => Err(classify_pi_error(provider, &msg)),
+        None => Ok(()),
+    }
 }
 
 fn classify_pi_error(provider: &str, msg: &str) -> CloseOutcome {
@@ -602,6 +635,41 @@ mod tests {
     fn rejects_unrelated_messages() {
         assert!(!is_pi_limit("unexpected end of stream"));
         assert!(!is_pi_limit("connection refused"));
+    }
+
+    #[test]
+    fn trailing_assistant_error_with_limit_message_classifies_as_limit() {
+        let assistant = pi::model::AssistantMessage {
+            stop_reason: pi::model::StopReason::Error,
+            error_message: Some("429 Weekly usage limit reached. Resets in 1 day.".to_string()),
+            ..Default::default()
+        };
+        let msg = trailing_assistant_error(&assistant).expect("error stop must be detected");
+        assert!(matches!(
+            classify_pi_error("opencode-go", &msg),
+            CloseOutcome::Limit(_)
+        ));
+    }
+
+    #[test]
+    fn trailing_assistant_error_with_other_message_classifies_as_error() {
+        let assistant = pi::model::AssistantMessage {
+            stop_reason: pi::model::StopReason::Error,
+            error_message: Some("500 internal server error".to_string()),
+            ..Default::default()
+        };
+        let msg = trailing_assistant_error(&assistant).expect("error stop must be detected");
+        assert!(matches!(
+            classify_pi_error("opencode-go", &msg),
+            CloseOutcome::Error(m) if m.contains("500")
+        ));
+    }
+
+    #[test]
+    fn trailing_assistant_error_ignores_normal_stop() {
+        // Default stop_reason is StopReason::Stop.
+        let assistant = pi::model::AssistantMessage::default();
+        assert!(trailing_assistant_error(&assistant).is_none());
     }
 
     #[test]
