@@ -1,0 +1,48 @@
+name: Cruise
+
+on:
+  issue_comment:
+    types: [created]
+  issues:
+    types: [opened]
+
+jobs:
+  cruise:
+    # Coarse pre-filter so unrelated events don't even spin up a runner; the
+    # action re-checks the trigger phrase (word-boundary match) and actor
+    # permissions itself before doing anything. This action has no PR mode,
+    # so comments made on a pull request are excluded here too (the action
+    # also re-checks this itself).
+    if: |
+      (github.event_name == 'issue_comment' && !github.event.issue.pull_request && contains(github.event.comment.body, '@cruise')) ||
+      (github.event_name == 'issues' && (contains(github.event.issue.title, '@cruise') || contains(github.event.issue.body, '@cruise')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Serializes multiple @cruise mentions on the same issue (e.g. a quick
+    # `plan` followed by `fix` followed by `run`) so they don't race each
+    # other's tracking comment/session/git state. Queues rather than
+    # cancels: no `cancel-in-progress`, so an in-flight run always finishes.
+    concurrency:
+      group: cruise-${{ github.event.issue.number || github.run_id }}
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      # Needed to exchange this job's OIDC token for a cruise-agent GitHub
+      # App installation token (see docs/github-actions.md). Safe to remove
+      # if you don't use the App (the action falls back to GITHUB_TOKEN).
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+
+      - uses: smartcrabai/cruise@v1
+        with:
+          # Kimi for Coding (Anthropic-compatible, https://api.kimi.com/coding/)
+          # is a pi built-in provider: pass its key via `env` and select its
+          # model explicitly for both planning and implementation.
+          model: kimi-for-coding/kimi-for-coding
+          plan_model: kimi-for-coding/kimi-for-coding
+          env: |
+            KIMI_API_KEY=${{ secrets.KIMI_API_KEY }}
