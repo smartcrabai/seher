@@ -1,0 +1,179 @@
+sdk: seher
+model: build
+plan_model: plan
+languages:
+  pr: English
+  plan: English
+cleanup_after_pr: true
+groups:
+  review:
+    if:
+      file-changed: test
+    max_retries: 4
+    steps:
+      review-uncommitted:
+        prompt: /review-uncommitted
+      fix-review-result:
+        prompt: 'Based on the review results below, address anything that seems to
+          need attention.
+
+          If you judge something to be a false positive, leave a reason and skip it.
+
+          If there is nothing to report, do nothing.
+
+          ---
+
+          {prev.output}
+
+          '
+steps:
+  mise-trust:
+    command: mise trust || true
+  write-test-first:
+    prompt: "Based on {plan}, create **test code only**.\nThe production code implementation\
+      \ will be done in the next step.\nDo not write any non-test logic in this step.\n\
+      \n**Why write only tests:**\nThe purpose of test-first is to specify \"what\
+      \ to build\" in code before starting implementation.\nIf you write the implementation\
+      \ too, the tests become a rubber-stamp of the implementation rather than a specification,\
+      \ and you lose the chance to notice design flaws.\nTests are expected to fail\
+      \ at this point; write them on the assumption they will pass once implementation\
+      \ is complete.\n\n**Steps:**\n1. Review the plan report and understand the planned\
+      \ behavior and interfaces.\n2. Examine the existing code and tests in the target\
+      \ module to understand the test patterns.\n3. Write unit tests for the planned\
+      \ feature.\n4. Decide whether integration tests are needed, and write them if\
+      \ so:\n   - Is there a data flow spanning three or more modules?\n   - Does\
+      \ a new status/state join an existing workflow?\n   - Does a new option propagate\
+      \ all the way through the call chain?\n   - If any of these apply, write an\
+      \ integration test.\n5. Run the type checker/build and confirm the test code\
+      \ has no syntax errors.\n\n**On creating stubs to make the build pass:**\nOnly\
+      \ when a function or type referenced by a test is undefined and the build fails,\n\
+      place a **minimal stub only** on the implementation side.\nThe stub body must\
+      \ always be an \"unimplemented\" marker:\n- Rust: `todo!()` / `unimplemented!()`\n\
+      - TypeScript / JavaScript: `throw new Error(\"not implemented\")`\n- Go: `panic(\"\
+      not implemented\")`\n- Python: `raise NotImplementedError`\n\nNever write even\
+      \ a single line of real logic inside a stub.\n\"It's easy, so I'll just implement\
+      \ it while I'm at it\" is forbidden. If you feel the urge, that's work for the\
+      \ next step.\n\n**Test-writing policy:**\n- Follow the project's existing test\
+      \ patterns (naming conventions, directory layout, helpers).\n- Write tests using\
+      \ a Given-When-Then structure.\n- One test, one concept. Don't mix multiple\
+      \ concerns into a single test.\n- Cover the happy path, error cases, boundary\
+      \ values, and edge cases.\n"
+    if:
+      no-file-changes:
+        retry: true
+  implement-after-tests:
+    prompt: 'Following the plan in {plan}, implement the code so that the tests pass.
+
+
+      **Important**: The tests have already been written. Implement the code so the
+      existing tests pass.
+
+      - Review the existing test files to understand the expected behavior.
+
+      - Implement the production code so the tests pass.
+
+      - Since tests are already written, you generally don''t need to add more, but
+      you may add tests if necessary.
+
+      - You may modify tests if a fix requires it.
+
+      - Running the build is mandatory. After implementing, run the build (type check)
+      and confirm there are no type errors.
+
+      - Running the tests is mandatory. After the build succeeds, always run the tests
+      and confirm all of them pass.
+
+      - If you introduce a new contract string such as a file name or config key,
+      define it as a constant in a single place.
+
+
+      **Required self-check before completing implementation:**
+
+      Before running the build and tests, confirm the following:
+
+      - If you added a new parameter/field, verified via grep that it is actually
+      passed in from the callers.
+
+      - Where you use `??`, `||`, or `= defaultValue`, verified the fallback is actually
+      necessary.
+
+      - Confirmed that code/exports replaced during refactoring haven''t been left
+      behind.
+
+      - Confirmed you haven''t added functionality that wasn''t requested in the task
+      instructions.
+
+      - Confirmed no if/else branches call the same function differing only by arguments.
+
+      - Confirmed the new code matches existing implementation patterns (API call
+      style, type definition style, etc.).
+
+
+      **Required output (include the headings)**
+
+      ## Summary
+
+      - {Overview of the work performed}
+
+      ## Changes
+
+      - {Overview of the changes}
+
+      ## Build Result
+
+      - {Build execution result}
+
+      ## Test Result
+
+      - {Test command and result}
+
+      '
+    if:
+      no-file-changes:
+        retry: true
+  only-english:
+    prompt: /only-english
+  review-pass:
+    group: review
+after-pr:
+  pr-ready:
+    command: gh pr ready {pr.number}
+  sync-base:
+    command: 'base=$(gh pr view {pr.number} --json baseRefName -q ''.baseRefName'')
+
+      git fetch origin "$base"
+
+      git merge "origin/$base" --no-edit
+
+      '
+  resolve-conflict:
+    skip: prev.success
+    prompt: 'A conflict with the base branch occurred during `git merge`.
+
+      Check the unresolved files with `git status`, resolve all conflict
+
+      markers (<<<<<<<), then run `git add <files>` / `git commit`.
+
+      There is no need to push — the next step handles that.
+
+      '
+  push-after-sync:
+    command: git push
+  wait-ci:
+    command: gh pr checks {pr.number} --watch
+  fix-ci-error:
+    skip: prev.success
+    prompt: 'The GitHub Actions CI for PR #{pr.number} is failing.
+
+      Identify the failing check with `gh pr checks {pr.number}`,
+
+      check the detailed logs with `gh run view <run-id> --log-failed` or similar,
+      and fix the cause.
+
+      After fixing it, update the PR branch with git add / commit / push.
+
+      '
+    if:
+      file-changed: sync-base
+  merge:
+    command: gh pr merge {pr.number} --squash
