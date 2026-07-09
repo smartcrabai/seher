@@ -175,5 +175,8 @@ after-pr:
       '
     if:
       file-changed: sync-base
+    next: wait-ci
   merge:
-    command: gh pr merge {pr.number} --squash
+    command:
+      - test "$(gh pr view {pr.number} --json statusCheckRollup -q '.statusCheckRollup | length')" -eq 0 || gh pr checks {pr.number} --watch
+      - gh pr merge {pr.number} --squash
