@@ -113,19 +113,19 @@ steps:
 
       ## Summary
 
-      - {Overview of the work performed}
+      - Overview of the work performed
 
       ## Changes
 
-      - {Overview of the changes}
+      - Overview of the changes
 
       ## Build Result
 
-      - {Build execution result}
+      - Build execution result
 
       ## Test Result
 
-      - {Test command and result}
+      - Test command and result
 
       '
     if:
