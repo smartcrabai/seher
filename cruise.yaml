@@ -43,21 +43,24 @@ steps:
       \ feature.\n4. Decide whether integration tests are needed, and write them if\
       \ so:\n   - Is there a data flow spanning three or more modules?\n   - Does\
       \ a new status/state join an existing workflow?\n   - Does a new option propagate\
-      \ all the way through the call chain?\n   - If any of these apply, write an\
-      \ integration test.\n5. Run the type checker/build and confirm the test code\
-      \ has no syntax errors.\n\n**On creating stubs to make the build pass:**\nOnly\
-      \ when a function or type referenced by a test is undefined and the build fails,\n\
-      place a **minimal stub only** on the implementation side.\nThe stub body must\
-      \ always be an \"unimplemented\" marker:\n- Rust: `todo!()` / `unimplemented!()`\n\
-      - TypeScript / JavaScript: `throw new Error(\"not implemented\")`\n- Go: `panic(\"\
-      not implemented\")`\n- Python: `raise NotImplementedError`\n\nNever write even\
-      \ a single line of real logic inside a stub.\n\"It's easy, so I'll just implement\
-      \ it while I'm at it\" is forbidden. If you feel the urge, that's work for the\
-      \ next step.\n\n**Test-writing policy:**\n- Follow the project's existing test\
-      \ patterns (naming conventions, directory layout, helpers).\n- Write tests using\
-      \ a Given-When-Then structure.\n- One test, one concept. Don't mix multiple\
-      \ concerns into a single test.\n- Cover the happy path, error cases, boundary\
-      \ values, and edge cases.\n"
+      \ all the way through the call chain?\n   - Is the new feature triggered from\
+      \ an existing entry point (CLI command, API endpoint, UI event, etc.)?\n   -\
+      \ If any of these apply, write an integration test.\n   - When the feature is\
+      \ triggered from an entry point, include at least one test that exercises the\
+      \ behavior through that entry point instead of calling the new function directly.\n\
+      5. Run the type checker/build and confirm the test code has no syntax errors.\n\
+      \n**On creating stubs to make the build pass:**\nOnly when a function or type\
+      \ referenced by a test is undefined and the build fails,\nplace a **minimal\
+      \ stub only** on the implementation side.\nThe stub body must always be an \"\
+      unimplemented\" marker:\n- Rust: `todo!()` / `unimplemented!()`\n- TypeScript\
+      \ / JavaScript: `throw new Error(\"not implemented\")`\n- Go: `panic(\"not implemented\"\
+      )`\n- Python: `raise NotImplementedError`\n\nNever write even a single line\
+      \ of real logic inside a stub.\n\"It's easy, so I'll just implement it while\
+      \ I'm at it\" is forbidden. If you feel the urge, that's work for the next step.\n\
+      \n**Test-writing policy:**\n- Follow the project's existing test patterns (naming\
+      \ conventions, directory layout, helpers).\n- Write tests using a Given-When-Then\
+      \ structure.\n- One test, one concept. Don't mix multiple concerns into a single\
+      \ test.\n- Cover the happy path, error cases, boundary values, and edge cases.\n"
     if:
       no-file-changes:
         retry: true
@@ -71,6 +74,10 @@ steps:
       - Review the existing test files to understand the expected behavior.
 
       - Implement the production code so the tests pass.
+
+      - Defining functions and types is not the end of the implementation. Wire them
+      into the existing execution paths (entry points, routing, command definitions,
+      event handlers, etc.) so the feature is actually invoked.
 
       - Since tests are already written, you generally don''t need to add more, but
       you may add tests if necessary.
@@ -93,6 +100,10 @@ steps:
 
       - If you added a new parameter/field, verified via grep that it is actually
       passed in from the callers.
+
+      - Verified via grep that every newly defined function/class/type/constant is
+      referenced from production code other than tests (i.e. reachable from an entry
+      point). Code referenced only by tests is unwired and therefore incomplete.
 
       - Where you use `??`, `||`, or `= defaultValue`, verified the fallback is actually
       necessary.
@@ -131,6 +142,56 @@ steps:
     if:
       no-file-changes:
         retry: true
+  verify-wiring:
+    prompt: 'Verify that the implemented feature is actually wired into the production
+      execution paths.
+
+
+      **Background**: Even if functions and types are defined and the tests pass,
+      a feature that is unreachable from any entry point is the same as a feature
+      that does not exist. This step exists to prevent work from being marked complete
+      while it is "implemented but never called from the main flow".
+
+
+      **Steps:**
+
+      1. From the changes made in this task (uncommitted changes plus commits since
+      the base branch), list the functions, classes, types, constants, and exports
+      that were added or modified.
+
+      2. For each of them, verify via grep that it is referenced from production code
+      other than test code.
+
+      3. Treat anything referenced only by tests as "unwired": consult {plan} and
+      wire it into a call path from an entry point (main, router, CLI command definition,
+      UI event, DI registration, plugin registration, etc.).
+
+      4. If new config keys, CLI flags, or environment variables were introduced,
+      confirm that both the reading side and the passing side exist and that values
+      actually propagate end to end.
+
+      5. If you added or fixed any wiring, rerun the build and the tests and confirm
+      everything passes.
+
+
+      **Judgment criteria:**
+
+      - If wiring is intentionally unnecessary (e.g. library code whose purpose is
+      to be exported as a public API), you may skip it, but state the reason explicitly
+      in the output.
+
+
+      **Required output (include the headings)**
+
+
+      ## Wiring Verification Result
+
+
+      - For each new symbol, where it is referenced from production code (file:line)
+
+      - If unwired code was fixed, what was done and the rerun build/test results
+
+      - Anything judged as not needing wiring, with the reason'
   only-english:
     prompt: /only-english
   review-pass:
@@ -178,5 +239,6 @@ after-pr:
     next: wait-ci
   merge:
     command:
-      - test "$(gh pr view {pr.number} --json statusCheckRollup -q '.statusCheckRollup | length')" -eq 0 || gh pr checks {pr.number} --watch
-      - gh pr merge {pr.number} --squash
+    - test "$(gh pr view {pr.number} --json statusCheckRollup -q '.statusCheckRollup
+      | length')" -eq 0 || gh pr checks {pr.number} --watch
+    - gh pr merge {pr.number} --squash
