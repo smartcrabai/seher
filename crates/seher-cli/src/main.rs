@@ -103,7 +103,8 @@ fn show_resolution(args: &Args) -> Result<(), String> {
     } else {
         eprintln!("Candidates (mode={mode_key}):");
         for (i, c) in candidates.iter().enumerate() {
-            let codexbar_name = codexbar_provider_name(&c.resolved.sdk, &c.resolved.provider);
+            let codexbar_name =
+                codexbar_provider_name(&c.resolved.sdk, &c.resolved.provider, &c.resolved.env);
             let limit_tag = match rt.block_on(seher::check_limit(&codexbar_name)) {
                 Ok(seher::AgentLimit::Limited { reset_time }) => {
                     let reset = reset_time.map_or_else(
@@ -124,7 +125,7 @@ fn show_resolution(args: &Args) -> Result<(), String> {
                 .effort
                 .map_or_else(String::new, |e| format!(", effort={}", e.as_str()));
             eprintln!(
-                "  {i}. {} (sdk={}, model={}, priority={}{effort_tag}){limit_tag}",
+                "  {i}. {} (sdk={}, model={}, priority={}{effort_tag}, probe={codexbar_name}){limit_tag}",
                 c.resolved.provider, c.resolved.sdk, c.resolved.model_id, c.priority
             );
         }

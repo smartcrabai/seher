@@ -62,7 +62,7 @@ pub fn is_claude_rate_limit_message(msg: &str) -> bool {
 
 /// Returns true when `msg` contains `HTTP {status}` followed by a non-digit
 /// (or end of string), avoiding false positives like `HTTP 5002`.
-fn contains_http_status(msg: &str, status: u16) -> bool {
+pub(crate) fn contains_http_status(msg: &str, status: u16) -> bool {
     let needle = format!("HTTP {status}");
     msg.match_indices(&needle).any(|(idx, _)| {
         msg[idx + needle.len()..]

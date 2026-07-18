@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::{DateTime, Utc};
+use indexmap::IndexMap;
 
 use crate::codexbar::AgentLimit;
 
@@ -428,13 +429,27 @@ pub async fn poll_for_agent(
 
 /// Map a YAML `(sdk, provider)` pair to the provider name codexbar expects.
 ///
-/// Mirrors seher-ts `codexbarProviderName`: the `claude` / `claude-terminal` /
+/// Extends seher-ts `codexbarProviderName`: the `claude` / `claude-terminal` /
 /// `claude-headless` SDKs all drive the Claude CLI which authenticates as the
-/// `claude` account, so they share that account's codexbar quota.
+/// `claude` account, so they normally share that account's codexbar quota.
+/// However, an entry may override `ANTHROPIC_BASE_URL` in its resolved `env`
+/// to point the `claude` CLI at a third-party Anthropic-compatible endpoint
+/// (e.g. kimi, zai); in that case the CLI's `claude` login usage is
+/// irrelevant, so codexbar is queried under the entry's own provider name
+/// instead.
 #[must_use]
-pub fn codexbar_provider_name(sdk: &str, provider: &str) -> String {
+pub fn codexbar_provider_name(sdk: &str, provider: &str, env: &IndexMap<String, String>) -> String {
     match sdk {
-        "claude" | "claude-terminal" | "claude-headless" => "claude".to_string(),
+        "claude" | "claude-terminal" | "claude-headless" => {
+            let has_base_url_override = env
+                .get("ANTHROPIC_BASE_URL")
+                .is_some_and(|v| !v.trim().is_empty());
+            if has_base_url_override {
+                provider.to_string()
+            } else {
+                "claude".to_string()
+            }
+        }
         _ => provider.to_string(),
     }
 }
@@ -456,7 +471,7 @@ impl LimitProbe for CodexBarProbe {
         resolved: &'a ResolvedAgent,
     ) -> ProbeFuture<'a> {
         Box::pin(async move {
-            let provider = codexbar_provider_name(&resolved.sdk, &entry.provider);
+            let provider = codexbar_provider_name(&resolved.sdk, &entry.provider, &resolved.env);
             match crate::codexbar::check_limit(&provider).await {
                 Ok(limit) => Ok(limit),
                 // A missing codexbar entry (community providers), an absent
@@ -742,19 +757,91 @@ mod tests {
     #[test]
     fn codexbar_provider_name_aliases_claude_family() {
         // claude, claude-terminal, and claude-headless all share the `claude`
-        // codexbar account (they drive the same `claude` CLI authentication).
-        assert_eq!(codexbar_provider_name("claude", "claude"), "claude");
+        // codexbar account (they drive the same `claude` CLI authentication)
+        // when there is no ANTHROPIC_BASE_URL override in play.
+        let no_env = IndexMap::new();
         assert_eq!(
-            codexbar_provider_name("claude-terminal", "claude"),
+            codexbar_provider_name("claude", "claude", &no_env),
             "claude"
         );
         assert_eq!(
-            codexbar_provider_name("claude-headless", "claude"),
+            codexbar_provider_name("claude-terminal", "claude", &no_env),
+            "claude"
+        );
+        assert_eq!(
+            codexbar_provider_name("claude-headless", "claude", &no_env),
             "claude"
         );
         // Any other sdk passes the provider name through unchanged.
-        assert_eq!(codexbar_provider_name("pi", "zai"), "zai");
-        assert_eq!(codexbar_provider_name("pi", "codex"), "codex");
+        assert_eq!(codexbar_provider_name("pi", "zai", &no_env), "zai");
+        assert_eq!(codexbar_provider_name("pi", "codex", &no_env), "codex");
+    }
+
+    #[test]
+    fn codexbar_provider_name_uses_own_provider_when_base_url_overridden() {
+        // A claude-family sdk with a non-empty ANTHROPIC_BASE_URL override is
+        // actually talking to a third-party Anthropic-compatible endpoint
+        // (e.g. kimi, zai), so the claude CLI's own account usage is
+        // irrelevant -- codexbar should be queried under the entry's own
+        // provider name instead.
+        let mut env = IndexMap::new();
+        env.insert(
+            "ANTHROPIC_BASE_URL".to_string(),
+            "https://api.kimi.com/coding/".to_string(),
+        );
+        assert_eq!(codexbar_provider_name("claude", "kimi", &env), "kimi");
+        assert_eq!(
+            codexbar_provider_name("claude-terminal", "kimi", &env),
+            "kimi"
+        );
+        assert_eq!(
+            codexbar_provider_name("claude-headless", "kimi", &env),
+            "kimi"
+        );
+    }
+
+    #[test]
+    fn codexbar_provider_name_aliases_claude_when_base_url_is_blank() {
+        // An ANTHROPIC_BASE_URL entry that is empty or whitespace-only is not
+        // a real override, so claude-family sdks still fall back to the
+        // shared `claude` codexbar account.
+        let mut empty_env = IndexMap::new();
+        empty_env.insert("ANTHROPIC_BASE_URL".to_string(), String::new());
+        assert_eq!(
+            codexbar_provider_name("claude", "kimi", &empty_env),
+            "claude"
+        );
+
+        let mut blank_env = IndexMap::new();
+        blank_env.insert("ANTHROPIC_BASE_URL".to_string(), "   ".to_string());
+        assert_eq!(
+            codexbar_provider_name("claude-headless", "kimi", &blank_env),
+            "claude"
+        );
+    }
+
+    #[test]
+    fn codexbar_provider_name_aliases_claude_when_env_has_unrelated_keys() {
+        // Unrelated env vars (no ANTHROPIC_BASE_URL) don't trigger the
+        // override -- claude-family sdks still alias to `claude`.
+        let mut env = IndexMap::new();
+        env.insert("ANTHROPIC_API_KEY".to_string(), "sk-something".to_string());
+        assert_eq!(codexbar_provider_name("claude", "kimi", &env), "claude");
+    }
+
+    #[test]
+    fn codexbar_provider_name_ignores_base_url_for_non_claude_sdks() {
+        // Non-claude-family sdks always pass the provider name through,
+        // regardless of ANTHROPIC_BASE_URL.
+        let mut env = IndexMap::new();
+        env.insert(
+            "ANTHROPIC_BASE_URL".to_string(),
+            "https://api.kimi.com/coding/".to_string(),
+        );
+        assert_eq!(codexbar_provider_name("pi", "kimi", &env), "kimi");
+
+        let no_env = IndexMap::new();
+        assert_eq!(codexbar_provider_name("pi", "kimi", &no_env), "kimi");
     }
 
     // -----------------------------------------------------------------------

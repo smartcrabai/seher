@@ -3,7 +3,10 @@
 //! Mirrors `seher-ts/packages/sdk/src/codexbar/limit.ts`: every rate window
 //! (primary/secondary/tertiary + extra windows) at `usedPercent >= 100` counts
 //! as limited, and the earliest reset is returned so the agent waits the minimum
-//! amount of time.
+//! amount of time. Extension over seher-ts: a window whose `resetsAt` has
+//! already passed is treated as a stale snapshot (the window has presumably
+//! already reset server-side) rather than as evidence of an active limit, so
+//! it is excluded from consideration.
 
 use chrono::{DateTime, Utc};
 
@@ -52,6 +55,12 @@ fn classify(response: &CodexBarUsageResponse, now: DateTime<Utc>) -> AgentLimit 
         .into_iter()
         .filter(|w| is_limited(w))
         .map(|w| parse_resets_at(w.resets_at.as_deref(), now))
+        // A window whose resetsAt has already passed is a stale snapshot (it
+        // has presumably reset server-side already), not an active limit.
+        // Windows with no parseable resetsAt fall back to `now + 5m` (see
+        // `parse_resets_at`), which is always in the future, so this filter
+        // never drops the no-resetsAt fallback case.
+        .filter(|reset| *reset > now)
         .min();
 
     match earliest {
@@ -170,6 +179,46 @@ mod tests {
             AgentLimit::Limited { reset_time } => {
                 let reset = reset_time.expect("reset present");
                 assert_eq!(reset, now + chrono::Duration::seconds(FALLBACK_RESET_SECS));
+            }
+            AgentLimit::NotLimited => panic!("expected limited"),
+        }
+    }
+
+    #[test]
+    fn not_limited_when_resets_at_already_passed() {
+        // A window at 100% whose resetsAt is in the past is a stale snapshot
+        // (it has presumably already reset server-side), not an active limit.
+        let now = DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+            .expect("parse")
+            .with_timezone(&Utc);
+        let resp = response(
+            window(100.0, Some("2025-01-01T00:00:00Z")),
+            window(10.0, None),
+        );
+        assert!(matches!(classify(&resp, now), AgentLimit::NotLimited));
+    }
+
+    #[test]
+    fn ignores_stale_reset_but_limits_on_future_reset() {
+        // One window is 100% with a past resetsAt (stale, ignored) and the
+        // other is 100% with a future resetsAt (still active) -- the result
+        // should be Limited, using the future window's reset time.
+        let now = DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+            .expect("parse")
+            .with_timezone(&Utc);
+        let resp = response(
+            window(100.0, Some("2025-01-01T00:00:00Z")),
+            window(100.0, Some("2099-01-01T00:00:00Z")),
+        );
+        match classify(&resp, now) {
+            AgentLimit::Limited { reset_time } => {
+                let reset = reset_time.expect("reset present");
+                assert_eq!(
+                    reset,
+                    DateTime::parse_from_rfc3339("2099-01-01T00:00:00Z")
+                        .expect("parse")
+                        .with_timezone(&Utc)
+                );
             }
             AgentLimit::NotLimited => panic!("expected limited"),
         }

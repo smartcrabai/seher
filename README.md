@@ -21,7 +21,7 @@ The repository is a Cargo workspace with three crates:
 4. If all candidates are limited, seher sleeps until the earliest reset time and rescans.
 5. The chosen provider streams the prompt via pi. If pi reports a rate/usage limit mid-run, that provider is excluded and seher re-resolves with the next candidate.
 
-Rate-limit detection is delegated to [`codexbar`](https://codexbar.app/): for each candidate, seher runs `codexbar usage --format json --provider <provider>` and treats the provider as limited when any reported usage window is at 100%. The `claude`, `claude-terminal`, and `claude-headless` SDKs all share the `claude` codexbar account. If codexbar is not installed, returns no entry for a provider, or errors transiently, that provider is treated as available so resolution still proceeds.
+Rate-limit detection is delegated to [`codexbar`](https://codexbar.app/): for each candidate, seher runs `codexbar usage --format json --provider <provider>` and treats the provider as limited when any reported usage window is at 100% (a window whose reset time has already passed is ignored as a stale snapshot). The `claude`, `claude-terminal`, and `claude-headless` SDKs all share the `claude` codexbar account, except when an entry overrides `ANTHROPIC_BASE_URL` in its `env` -- that points the `claude` CLI at a third-party Anthropic-compatible endpoint (e.g. kimi, zai), so that entry is checked under its own provider's codexbar quota instead. If codexbar is not installed, returns no entry for a provider, or errors transiently, that provider is treated as available so resolution still proceeds.
 
 codexbar must be installed and on `PATH` (or pointed to via `SEHER_CODEXBAR_BIN`); see [codexbar.app](https://codexbar.app/).
 

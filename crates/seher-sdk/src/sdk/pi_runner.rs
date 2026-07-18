@@ -9,7 +9,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Mutex, MutexGuard};
 use std::thread;
 
-use crate::sdk::errors::{LimitError, RunError};
+use crate::sdk::errors::{LimitError, RunError, contains_http_status};
 use crate::sdk::tool::{PiToolAdapter, SeherTool};
 use crate::sdk::util::encode_session_id;
 
@@ -65,8 +65,13 @@ const SKILLS_DIR: &str = ".agents/skills";
 /// Phrases that indicate the pi error was caused by a rate / usage limit. Matched
 /// against tokenized words (alphanumeric + `-`) so substrings like `"5429 bytes"`
 /// or `"missing 'quota' field"` do **not** trigger a false positive.
+///
+/// A bare `"429"` token is intentionally *not* included here: pi provider errors
+/// are generated as `"{Provider} API error (HTTP {status}): {body}"`, so a real
+/// 429 always appears in the `"HTTP 429"` context checked separately below. A
+/// standalone `429` elsewhere in a message (a request id, a byte count, ...) is
+/// not evidence of a rate limit.
 const PI_LIMIT_TOKENS: &[&str] = &[
-    "429",
     "ratelimit",
     "rate-limit",
     "rate-limited",
@@ -80,6 +85,11 @@ const PI_LIMIT_TOKENS: &[&str] = &[
 const PI_LIMIT_PHRASES: &[&str] = &["rate limit", "usage limit", "too many requests"];
 
 fn is_pi_limit(msg: &str) -> bool {
+    // Checked against the original (non-lowercased) message, matching
+    // `errors::contains_http_status`'s case-sensitive convention.
+    if contains_http_status(msg, 429) {
+        return true;
+    }
     let lower = msg.to_lowercase();
     if PI_LIMIT_PHRASES.iter().any(|p| lower.contains(p)) {
         return true;
@@ -788,8 +798,30 @@ mod tests {
         assert!(!is_pi_limit("Read 5429 bytes before EOF"));
         // "quota" inside another word must not match
         assert!(!is_pi_limit("loaded squotahelper module"));
-        // bare numeric 429 inside HTTP status text still matches (separated by space)
-        assert!(is_pi_limit("status 429 returned"));
+        // A bare "429" with no "HTTP" context is not evidence of a rate limit --
+        // it could be a request id, a count, or any other coincidental number.
+        assert!(!is_pi_limit("status 429 returned"));
+        // Likewise a "429 of N" progress-style message must not match.
+        assert!(!is_pi_limit("request 429 of 1000 completed"));
+    }
+
+    #[test]
+    fn detects_http_429_context() {
+        // Real pi provider errors are formatted as
+        // "{Provider} API error (HTTP {status}): {body}", so "HTTP 429" is a
+        // reliable signal even when the phrase/token list doesn't otherwise match.
+        assert!(is_pi_limit("Kimi API error (HTTP 429): server busy"));
+        // Body text that also happens to mention "rate_limit_error" still matches
+        // (via the HTTP context, not just the phrase list).
+        assert!(is_pi_limit(
+            "Anthropic API error (HTTP 429): {\"error\":{\"type\":\"rate_limit_error\"}}"
+        ));
+    }
+
+    #[test]
+    fn rejects_http_status_with_trailing_digits() {
+        // "HTTP 4290" is a different status code; must not match "HTTP 429".
+        assert!(!is_pi_limit("Kimi API error (HTTP 4290): oversized"));
     }
 
     /// Contract with pi: a fresh session file seeded by [`seed_session_file`] must be
