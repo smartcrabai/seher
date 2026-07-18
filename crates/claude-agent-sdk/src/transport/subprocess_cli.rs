@@ -713,7 +713,7 @@ mod tests {
         let idx = args.iter().position(|a| a == "--mcp-config").expect("flag");
         let json: serde_json::Value =
             serde_json::from_str(&args[idx + 1]).expect("valid mcp-config json");
-        assert!(json["mcpServers"]["fs"]["type"] == "stdio");
+        assert_eq!(json["mcpServers"]["fs"]["type"], "stdio");
         assert!(args.contains(&"--strict-mcp-config".into()));
     }
 
