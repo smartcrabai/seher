@@ -3,6 +3,14 @@
     "config:best-practices"
   ],
   dependencyDashboard: false,
+  // Terraform から配布されるファイルは各リポジトリ側で編集させない
+  // （digest ピン付け等で source of truth と綱引きになるのを防ぐ）。
+  ignorePaths: [
+    ".github/workflows/cruise.yml",
+    ".woodpecker/cruise.yaml",
+    ".woodpecker/cruise-run.sh",
+    "cruise.yaml",
+  ],
   minimumReleaseAge: "3 days",
   lockFileMaintenance: {
     minimumReleaseAge: null,
