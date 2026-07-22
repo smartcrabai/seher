@@ -3,14 +3,19 @@
     "config:best-practices"
   ],
   dependencyDashboard: false,
-  // Terraform から配布されるファイルは各リポジトリ側で編集させない
-  // （digest ピン付け等で source of truth と綱引きになるのを防ぐ）。
-  ignorePaths: [
-    ".github/workflows/cruise.yml",
-    ".woodpecker/cruise.yaml",
-    ".woodpecker/cruise-run.sh",
-    "cruise.yaml",
-  ],
+  // 中央の source ファイルを terraforms リポジトリでのみ Renovate の
+  // スキャン対象にする（additive のためデフォルトパターンは維持される。
+  // このパスは配布先リポジトリには存在しない）。
+  "github-actions": {
+    managerFilePatterns: [
+      "/(^|/)environments/shared/cruise/workflow(-private)?\\.yml$/"
+    ],
+  },
+  woodpecker: {
+    managerFilePatterns: [
+      "/(^|/)environments/shared/cruise/woodpecker-cruise\\.yaml$/"
+    ],
+  },
   minimumReleaseAge: "3 days",
   lockFileMaintenance: {
     minimumReleaseAge: null,
@@ -34,6 +39,18 @@
         "github-actions"
       ],
       minimumReleaseAge: "7 days"
+    },
+    {
+      // Terraform から配布されるファイルは各リポジトリ側で更新させない
+      // （source of truth との綱引きを防ぐ）。ignorePaths は non-mergeable で
+      // プリセットの除外を上書きしてしまうため、packageRules で無効化する。
+      matchFileNames: [
+        ".github/workflows/cruise.yml",
+        ".woodpecker/cruise.yaml",
+        ".woodpecker/cruise-run.sh",
+        "cruise.yaml",
+      ],
+      enabled: false,
     }
   ]
 }
