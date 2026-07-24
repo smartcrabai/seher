@@ -217,6 +217,44 @@ pub struct SystemMessage {
     pub data: serde_json::Value,
 }
 
+/// Per-model token usage and cost breakdown.
+///
+/// Mirrors the Python SDK's `ModelUsage` `TypedDict`. Keys match the
+/// TypeScript SDK's `ModelUsage` shape (camelCase), since the value is
+/// passed through verbatim from the CLI's `modelUsage` field. All fields are
+/// optional and parsing is lenient (unknown/missing fields never fail the
+/// parse) so older or newer CLI versions round-trip without breaking.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelUsage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_search_requests: Option<u64>,
+    #[serde(rename = "costUSD", default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
+    /// Canonical model id used for the pricing lookup (e.g.
+    /// `"claude-opus-4-7"`). May differ from the raw model string this entry
+    /// is keyed by (provider-specific ids, aliases).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_model: Option<String>,
+    /// API provider that served this model (`"firstParty"`, `"bedrock"`,
+    /// `"vertex"`, `"foundry"`, `"anthropicAws"`, `"anthropicGoogleCloud"`,
+    /// `"mantle"`, `"gateway"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ResultMessage {
     pub subtype: String,
@@ -227,7 +265,18 @@ pub struct ResultMessage {
     pub num_turns: Option<u32>,
     pub total_cost_usd: Option<f64>,
     pub usage: Option<serde_json::Value>,
+    /// Per-model usage/cost breakdown, keyed by model name. The CLI JSON key
+    /// is `modelUsage` (camelCase). `None` when the CLI didn't report it or
+    /// when `modelUsage` is not a JSON object; individual entries that fail
+    /// to parse as [`ModelUsage`] are dropped, while valid entries are kept.
+    pub model_usage: Option<HashMap<String, ModelUsage>>,
     pub result: Option<String>,
+    /// Why the query loop terminated (e.g. `"completed"`, `"max_turns"`,
+    /// `"aborted_streaming"`). `"aborted_streaming"` / `"aborted_tools"`
+    /// indicate the turn was cancelled via an interrupt. `None` when the CLI
+    /// did not report a terminal reason (older CLI versions, or a result that
+    /// bypassed the query loop such as a local slash command).
+    pub terminal_reason: Option<String>,
     pub raw: serde_json::Value,
 }
 
@@ -385,8 +434,24 @@ fn parse_result(value: serde_json::Value) -> ResultMessage {
         .get("total_cost_usd")
         .and_then(serde_json::Value::as_f64);
     let usage = value.get("usage").cloned();
+    let model_usage = value
+        .get("modelUsage")
+        .and_then(serde_json::Value::as_object)
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(model, entry)| {
+                    serde_json::from_value::<ModelUsage>(entry.clone())
+                        .ok()
+                        .map(|usage| (model.clone(), usage))
+                })
+                .collect()
+        });
     let result = value
         .get("result")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let terminal_reason = value
+        .get("terminal_reason")
         .and_then(|v| v.as_str())
         .map(String::from);
     ResultMessage {
@@ -398,7 +463,9 @@ fn parse_result(value: serde_json::Value) -> ResultMessage {
         num_turns,
         total_cost_usd,
         usage,
+        model_usage,
         result,
+        terminal_reason,
         raw: value,
     }
 }
@@ -517,6 +584,193 @@ mod tests {
         assert_eq!(r.subtype, "success");
         assert_eq!(r.num_turns, Some(3));
         assert_eq!(r.result.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn parse_result_with_terminal_reason() {
+        let frame = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "session_id": "s1",
+            "is_error": false,
+            "num_turns": 3,
+            "total_cost_usd": 0.01,
+            "result": "done",
+            "terminal_reason": "aborted_tools"
+        });
+        let msg = Message::from_frame(frame).expect("parse");
+        let Message::Result(r) = msg else {
+            panic!("expected result")
+        };
+        assert_eq!(r.terminal_reason, Some("aborted_tools".to_string()));
+    }
+
+    #[test]
+    fn parse_result_missing_terminal_reason_is_none() {
+        let frame = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "session_id": "s1",
+            "is_error": false,
+            "num_turns": 3,
+            "total_cost_usd": 0.01,
+            "result": "done"
+        });
+        let msg = Message::from_frame(frame).expect("parse");
+        let Message::Result(r) = msg else {
+            panic!("expected result")
+        };
+        assert!(r.terminal_reason.is_none());
+    }
+
+    #[test]
+    fn parse_result_with_model_usage() {
+        let frame = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 3000,
+            "duration_api_ms": 2000,
+            "is_error": false,
+            "num_turns": 1,
+            "session_id": "fdf2d90a-fd9e-4736-ae35-806edd13643f",
+            "total_cost_usd": 0.0106,
+            "usage": {"input_tokens": 3, "output_tokens": 24},
+            "result": "Hello",
+            "modelUsage": {
+                "claude-sonnet-4-5-20250929": {
+                    "inputTokens": 3,
+                    "outputTokens": 24,
+                    "cacheReadInputTokens": 20012,
+                    "costUSD": 0.0106,
+                    "contextWindow": 200_000,
+                    "maxOutputTokens": 64000,
+                    "canonicalModel": "claude-sonnet-4-5",
+                    "provider": "firstParty"
+                }
+            }
+        });
+        let msg = Message::from_frame(frame).expect("parse");
+        let Message::Result(r) = msg else {
+            panic!("expected result")
+        };
+        let model_usage = r.model_usage.expect("model_usage");
+        let entry = model_usage
+            .get("claude-sonnet-4-5-20250929")
+            .expect("model entry");
+        assert_eq!(entry.input_tokens, Some(3));
+        assert_eq!(entry.output_tokens, Some(24));
+        assert_eq!(entry.cache_read_input_tokens, Some(20012));
+        assert_eq!(entry.cost_usd, Some(0.0106));
+        assert_eq!(entry.canonical_model.as_deref(), Some("claude-sonnet-4-5"));
+        assert_eq!(entry.provider.as_deref(), Some("firstParty"));
+        assert!(entry.cache_creation_input_tokens.is_none());
+        assert!(entry.web_search_requests.is_none());
+    }
+
+    #[test]
+    fn parse_result_missing_model_usage_is_none() {
+        let frame = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "session_id": "s1",
+            "is_error": false,
+            "num_turns": 3,
+            "total_cost_usd": 0.01,
+            "result": "done"
+        });
+        let msg = Message::from_frame(frame).expect("parse");
+        let Message::Result(r) = msg else {
+            panic!("expected result")
+        };
+        assert!(r.model_usage.is_none());
+    }
+
+    #[test]
+    fn parse_result_malformed_model_usage_is_none() {
+        let frame = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "session_id": "s1",
+            "is_error": false,
+            "num_turns": 3,
+            "total_cost_usd": 0.01,
+            "result": "done",
+            "modelUsage": "not-an-object"
+        });
+        let msg = Message::from_frame(frame).expect("parse");
+        let Message::Result(r) = msg else {
+            panic!("expected result")
+        };
+        assert!(r.model_usage.is_none());
+    }
+
+    #[test]
+    fn parse_result_model_usage_keeps_valid_entries_drops_invalid() {
+        let frame = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "session_id": "s1",
+            "is_error": false,
+            "num_turns": 3,
+            "total_cost_usd": 0.01,
+            "result": "done",
+            "modelUsage": {
+                "claude-a": {"inputTokens": 3},
+                "claude-b": {"inputTokens": "oops"}
+            }
+        });
+        let msg = Message::from_frame(frame).expect("parse");
+        let Message::Result(r) = msg else {
+            panic!("expected result")
+        };
+        let model_usage = r.model_usage.expect("model_usage");
+        assert_eq!(model_usage.len(), 1);
+        let entry = model_usage.get("claude-a").expect("claude-a entry");
+        assert_eq!(entry.input_tokens, Some(3));
+        assert!(!model_usage.contains_key("claude-b"));
+    }
+
+    #[test]
+    fn parse_result_model_usage_ignores_unknown_fields() {
+        let frame = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "session_id": "s1",
+            "is_error": false,
+            "num_turns": 3,
+            "total_cost_usd": 0.01,
+            "result": "done",
+            "modelUsage": {
+                "claude-a": {"inputTokens": 3, "someFutureField": true}
+            }
+        });
+        let msg = Message::from_frame(frame).expect("parse");
+        let Message::Result(r) = msg else {
+            panic!("expected result")
+        };
+        let model_usage = r.model_usage.expect("model_usage");
+        let entry = model_usage.get("claude-a").expect("claude-a entry");
+        assert_eq!(entry.input_tokens, Some(3));
+        assert!(entry.output_tokens.is_none());
+        assert!(entry.cost_usd.is_none());
+    }
+
+    #[test]
+    fn model_usage_serializes_camel_case_and_omits_none() {
+        let usage = ModelUsage {
+            input_tokens: Some(3),
+            output_tokens: None,
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+            web_search_requests: None,
+            cost_usd: Some(0.5),
+            context_window: None,
+            max_output_tokens: None,
+            canonical_model: None,
+            provider: None,
+        };
+        let value = serde_json::to_value(usage).expect("serialize");
+        assert_eq!(value, serde_json::json!({"inputTokens": 3, "costUSD": 0.5}));
     }
 
     #[test]
