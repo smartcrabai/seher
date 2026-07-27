@@ -3281,8 +3281,7 @@ dependencies = [
 [[package]]
 name = "pi_agent_rust"
 version = "0.1.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c70a357bc746054135d963ac0fd7211224c68855dd69ca9c359223b0ff314061"
+source = "git+https://github.com/Dicklesworthstone/pi_agent_rust?rev=b27abd576cc0d2f39e2eef8f87f7897edec53b4f#b27abd576cc0d2f39e2eef8f87f7897edec53b4f"
 dependencies = [
  "anyhow",
  "ast-grep-core",
