@@ -3940,6 +3940,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "swc_common",
  "tempfile",
  "thiserror",
  "tokio",
