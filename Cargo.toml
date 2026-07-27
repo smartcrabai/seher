@@ -85,3 +85,10 @@ strip = true
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+# pi_agent_rust 0.1.22 on crates.io does not compile against asupersync 0.3.9
+# because asupersync::sync::MutexGuard is !Send. The upstream repository has
+# a fix (commit b27abd5) that migrates spawned lock sites to OwnedMutexGuard.
+# Patch to that revision until a new crates.io release is published.
+[patch.crates-io]
+pi_agent_rust = { git = "https://github.com/Dicklesworthstone/pi_agent_rust", rev = "b27abd576cc0d2f39e2eef8f87f7897edec53b4f" }
