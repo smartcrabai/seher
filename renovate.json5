@@ -8,12 +8,7 @@
   // exist in the distribution target repositories).
   "github-actions": {
     managerFilePatterns: [
-      "/(^|/)environments/shared/cruise/workflow(-private)?\\.yml$/"
-    ],
-  },
-  woodpecker: {
-    managerFilePatterns: [
-      "/(^|/)environments/shared/cruise/woodpecker-cruise\\.yaml$/"
+      "/(^|/)environments/shared/cruise/workflow\\.yml$/"
     ],
   },
   minimumReleaseAge: "3 days",
@@ -46,8 +41,6 @@
       // and would override the preset's exclusions, so disable via packageRules instead.
       matchFileNames: [
         ".github/workflows/cruise.yml",
-        ".woodpecker/cruise.yaml",
-        ".woodpecker/cruise-run.sh",
         "cruise.yaml",
       ],
       enabled: false,
