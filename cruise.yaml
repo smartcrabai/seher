@@ -9,7 +9,7 @@ groups:
   review:
     if:
       file-changed: only-english
-    max_retries: 3
+    max_retries: 2
     steps:
       review-uncommitted:
         prompt: |-
