@@ -66,6 +66,15 @@ steps:
       - Write tests using a Given-When-Then structure.
       - One test, one concept. Don't mix multiple concerns into a single test.
       - Cover the happy path, error cases, boundary values, and edge cases.
+
+      **If the plan explicitly states that no tests will be added:**
+      Follow the plan and do not write new test code.
+      Even then, never end your turn with a question to the user.
+      This step runs unattended, so nobody can answer it; the step would finish with no file changes and be retried until the workflow aborts.
+      Instead, declare the intentional no-change with a reason before finishing, in one of two ways:
+      - Call the `skip_step` tool with the reason in `reason`, if that tool is available.
+      - Otherwise, include a line starting at the beginning of a line in your output: `NO_CHANGES_INTENTIONAL: <reason>`.
+      Either one lets the workflow move on to the next step despite the lack of file changes.
     if:
       no-file-changes:
         retry: true
