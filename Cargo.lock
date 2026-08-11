@@ -3985,7 +3985,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "swc_common 24.0.0",
+ "swc_common 25.0.0",
  "tempfile",
  "thiserror",
  "tokio",
@@ -4431,9 +4431,9 @@ dependencies = [
 
 [[package]]
 name = "swc_common"
-version = "24.0.0"
+version = "25.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5d7b9e59d7284543c4e6a2a9e264fee6443cdf33fa9101c113958f078df12e2"
+checksum = "872e3beee92f0d63a7948ac03266c72a91cabf4c54d660ce992d448135ab5aec"
 dependencies = [
  "anyhow",
  "ast_node 6.1.0",
