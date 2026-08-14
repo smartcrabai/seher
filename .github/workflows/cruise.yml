@@ -56,7 +56,32 @@ jobs:
 
       - uses: smartcrabai/cruise@e599274ccea20180da858e87ef2dd497ed009d49 # v1
         with:
-          model: kimi-for-coding/kimi-for-coding
+          providers: |
+            {
+              "opencode-go": {
+                "api": "openai-completions",
+                "base_url": "https://opencode.ai/zen/go/v1",
+                "models": [
+                  {
+                    "id": "deepseek-v4-flash",
+                    "name": "DeepSeek V4 Flash",
+                    "reasoning": true,
+                    "input": ["text"],
+                    "context_window": 1000000,
+                    "max_tokens": 384000,
+                    "compat": {
+                      "supports_store": false,
+                      "supports_developer_role": false,
+                      "supports_reasoning_effort": true,
+                      "thinking_format": "deepseek"
+                    }
+                  }
+                ]
+              }
+            }
+          provider_api_keys: |
+            opencode-go=${{ secrets.OPENCODE_API_KEY }}
+          model: opencode-go/deepseek-v4-flash
           plan_model: kimi-for-coding/kimi-for-coding
           env: |
             KIMI_API_KEY=${{ secrets.KIMI_API_KEY }}
