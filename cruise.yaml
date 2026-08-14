@@ -8,7 +8,7 @@ cleanup_after_pr: true
 groups:
   review:
     if:
-      file-changed: only-english
+      file-changed: verify-wiring
     max_retries: 2
     steps:
       review-uncommitted:
