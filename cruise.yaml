@@ -140,6 +140,67 @@ steps:
   only-english:
     prompt: |-
       /only-english
+  simplify-pass:
+    prompt: |-
+      Review the changes made in this task (uncommitted changes plus commits since the base branch)
+      as a lazy senior developer would, and cut the over-engineering.
+      Lazy means efficient, not careless. The best code is the code never written.
+
+      **Prerequisite: never be lazy about understanding**
+      Before deciding anything, read every file the change touches and trace the real execution flow end to end.
+      Shrinking a diff without comprehension is the dangerous kind of laziness: it ships a confident wrong fix.
+
+      **The ladder (evaluate top-down, stop at the first rung that holds):**
+      1. Does this need to exist at all? Speculative need = delete it and say so in one line (YAGNI).
+      2. Is it already in this codebase? Reuse the helper, util, type, or pattern that already lives here. Re-implementing what sits a few files over is the most common waste.
+      3. Does the stdlib cover it? Then use it.
+      4. Does a native platform feature cover it? `<input type="date">` over a picker lib, CSS over JS, a DB constraint over app code.
+      5. Does an already-installed dependency solve it? Never add a new dependency for what a few lines can do.
+      6. Can it be one line? Then one line.
+      7. Only then: the minimum code that works.
+
+      **What to cut:**
+      - Unrequested abstractions: an interface with one implementation, a factory for one product, config for a value that never changes.
+      - Boilerplate and scaffolding "for later" — later can scaffold for itself.
+      - if/else branches calling the same function differing only by arguments.
+      - Fallbacks that aren't actually needed (`??`, `||`, `= defaultValue`).
+      - Old code/exports left behind by a refactor that replaced them.
+      - Functionality not requested in the task instructions.
+      Deletion over addition, boring over clever — clever is what someone decodes at 3am.
+      Two options of the same size? Take the one that's correct on edge cases. Lazy means writing less code, not picking the flimsier algorithm.
+
+      **Bug fixes address the root cause, not the symptom:**
+      Grep every caller of the function you are about to touch before editing. One guard in the shared
+      function is a smaller diff than a guard in every caller, and it also fixes the sibling callers
+      the report never mentioned.
+
+      **Record deliberate simplifications:**
+      If you keep a simplification with a known ceiling (global lock, O(n^2) scan, naive heuristic),
+      leave a one-line `ponytail:` comment naming the ceiling and the upgrade path
+      (e.g. `// ponytail: global lock, per-account locks if throughput matters`).
+
+      **Never simplify away:**
+      Input validation at trust boundaries, error handling that prevents data loss, security measures,
+      accessibility basics, and anything explicitly requested by {plan} or the task instructions.
+
+      **Mandatory verification:**
+      After changing anything, run the build (type check) and the tests and confirm everything passes.
+      If something breaks, revert that simplification or fix it so it passes.
+
+      **If there is nothing to cut:**
+      Never end your turn with a question to the user.
+      This step runs unattended, so nobody can answer it and the workflow would stall.
+      Declare the intentional no-change with a reason before finishing, in one of two ways:
+      - Call the `skip_step` tool with the reason in `reason`, if that tool is available.
+      - Otherwise, include a line starting at the beginning of a line in your output: `NO_CHANGES_INTENTIONAL: <reason>`.
+
+      **Required output (include the headings)**
+
+      ## Simplification Result
+
+      - What was cut, and which rung of the ladder drove the decision
+      - Over-engineering candidates left in place, with the reason
+      - Build and test results
   review-pass:
     group: review
 after-pr:
