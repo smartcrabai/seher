@@ -13,7 +13,110 @@ groups:
     steps:
       review-uncommitted:
         prompt: |-
-          /review-uncommitted
+          This is a read-only review of all uncommitted changes.
+          Execute the procedure below directly; do not depend on an external skill or command.
+          Do not edit, stage, or commit files, and do not suggest commands that mutate the git state.
+          Return only the review report. Fixes are handled by the following step.
+
+          ## Phase 1: Gather the diff
+
+          Inspect the complete working-tree change before reviewing anything. Do not review only one kind of diff.
+
+          1. Run `git diff` for unstaged changes to tracked files.
+          2. Run `git diff --cached` for staged changes.
+          3. Run `git status --porcelain` to identify untracked files (`??` entries).
+          4. Read untracked files that look like source code (not binaries, lockfiles, generated output, or vendored content) and include them in the review. Skip large files, binaries, and clearly generated output.
+
+          If all three checks are empty, state that there is nothing to review and stop.
+          Do not invent findings for an empty diff.
+
+          ## Phase 2: Discover project-specific perspectives
+
+          1. List `./.review/*.md`. If the directory does not exist or matches no files, apply generic perspectives only and state that plainly in the final report.
+          2. For each perspective file, first read only its YAML frontmatter and its "When to apply" section to judge relevance to this diff.
+          3. Drop perspectives that are clearly irrelevant (for example, a database-migration-safety perspective when the diff contains no database changes). Pass only relevant perspectives to the next phase.
+          4. For each relevant perspective, have its reviewer read the complete file, including frontmatter. If there are more than six relevant files, group them into batches of at most three per reviewer.
+
+          ## Phase 3: Run parallel reviews
+
+          Use the same complete diff for eight separate generic reviewers and run them concurrently whenever possible.
+          If same-named review criteria (code-review, ai-antipattern, security-review, etc.) are available, they may add criteria, but an external skill invocation is not required; the criteria below are the minimum.
+
+          1. **Code review (correctness, reuse, simplification, efficiency)**
+             Check logic errors, wrong conditions, boundary values, state handling, and races.
+             Also check duplicated existing helpers, needless complexity, and inefficient processing.
+          2. **AI antipattern**
+             Check for implementations that answer a different question, patterns found nowhere else in the codebase, and overly generic solutions to a narrow problem.
+             Check for hallucinated or deprecated APIs, syntactically valid but semantically wrong code, unwired parameters or fields, copy-paste inconsistencies, premature abstractions, unrequested compatibility shims, dead code, and unjustified fallbacks.
+          3. **Security**
+             Check SQL, command, and template injection; broken authentication or authorization; hardcoded secrets; unsafe deserialization; path traversal; SSRF; insecure cryptography or randomness; sensitive data in logs; and insecure defaults.
+          4. **Edge cases and failure paths**
+             Check failures from I/O and external calls, empty/zero/maximum values, Unicode, concurrency, abnormal inputs, resource cleanup, and inconsistent state after partial failure.
+          5. **Backward compatibility**
+             Check whether existing callers, public signatures, endpoints, fields, serialization formats, or configuration formats are broken.
+             Skip this perspective only when the user or project explicitly permits breaking changes, and record the reason in the final report. When uncertain, run it.
+          6. **Functional impact**
+             Check for lost or degraded existing functionality, unintended new constraints, and hardcoded assumptions that unnecessarily close foreseeable extension points.
+          7. **Test sufficiency**
+             Check whether tests were added or updated for changed behavior, whether stale assertions remain, and whether removed behavior left orphaned tests.
+             Read relevant existing tests; the diff alone is insufficient to judge what was already covered.
+          8. **Unit-test coverage**
+             Check normal, error/abnormal, and boundary cases, and verify that assertions check real outcomes rather than merely "does not throw".
+             Read relevant existing tests to identify untested paths remaining after this diff.
+
+          Assign reviewers to each relevant project-specific perspective as well.
+          Every reviewer must report only confident findings with a concrete reproduction condition (input, sequence, or state).
+          Do not report style preferences, unsupported possibilities, or speculation without a concrete failure scenario.
+          If there are no findings, the reviewer must return the literal text `NO FINDINGS`.
+
+          Give each reviewer a self-contained input containing:
+          - The complete `git diff` and `git diff --cached` output
+          - Paths and contents of untracked source files reported by `git status --porcelain`
+          - Complete contents of the project-specific perspective files assigned to that reviewer
+          - For test-sufficiency and unit-test-coverage reviewers, paths of relevant existing test files and an explicit instruction to read them
+          Do not make any reviewer depend on another reviewer's output. Every reviewer uses the same complete diff.
+
+          Every finding must use exactly this format:
+
+          FINDING
+          file: <path>
+          line: <number or range>
+          severity: critical | major | minor
+          perspective: <generic dimension name or custom perspective name>
+          summary: <one sentence>
+          detail: <why it is a problem and a concrete failure scenario>
+
+          ## Phase 4: Deduplicate and consolidate findings
+
+          Treat findings as duplicates when they identify the same root cause at the same location (same file and overlapping line ranges).
+          When merging duplicates, keep the highest severity and the clearest, most concrete explanation.
+          List every perspective that identified the finding.
+          Before finalizing, re-check questionable findings against the actual files and discard anything unsupported or contradicted by the code.
+          Do not inflate the report with low-confidence findings.
+
+          ## Phase 5: Report in English
+
+          Use this structure. Omit severity sections with no findings.
+
+          # Review Report: Uncommitted Changes
+          ## Summary
+          State the diff scope, overall assessment, and counts by severity in one to three sentences.
+          ## Findings
+          ### Critical
+          - `<file>:<line>` — <summary> (perspectives: <list>)
+            <detail>
+          ### Major
+          - `<file>:<line>` — <summary> (perspectives: <list>)
+            <detail>
+          ### Minor
+          - `<file>:<line>` — <summary> (perspectives: <list>)
+            <detail>
+          ## Perspectives applied
+          - Generic: code review, AI antipattern, security, edge cases and failure paths, backward compatibility (or why it was skipped), functional impact, test sufficiency, unit-test coverage
+          - Project-specific (`./.review/`): files used, files excluded as irrelevant, or no matching files
+
+          If there are no findings at all, state that clearly and still list every perspective applied.
+          End by stating plainly that this review only reports issues and does not modify files; fixes are a separate deliberate step.
       fix-review-result:
         prompt: |
           Based on the review results below, address anything that seems to need attention.
