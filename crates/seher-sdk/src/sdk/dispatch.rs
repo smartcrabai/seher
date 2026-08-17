@@ -366,6 +366,10 @@ fn stream_pi_backend(
 /// If `opts.tools` is non-empty and `resolved.sdk` does not support tools, the
 /// channel will contain a single [`StreamChunk::Error`] and then close.
 #[must_use]
+#[expect(
+    clippy::too_many_lines,
+    reason = "backend routing keeps all SDK branches together"
+)]
 pub fn stream_for_resolved(
     resolved: &ResolvedAgent,
     prompt: String,

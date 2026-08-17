@@ -724,6 +724,10 @@ fn fail_pending_responses(entry: &SessionEntry, message: &str) {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "RPC worker owns the session state machine"
+)]
 fn run_worker(
     key: &mut SessionKey,
     opts: &PiRpcRunnerOptions,
@@ -1148,6 +1152,10 @@ fn start_handshake(
     (rx, Some(thread))
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "candidate startup owns fallback and handshake state"
+)]
 fn spawn_candidate(
     opts: &PiRpcRunnerOptions,
     key: &SessionKey,
@@ -2151,7 +2159,7 @@ impl Bridge {
                 &stop_thread,
                 &connections_thread,
                 &workers_thread,
-            )
+            );
         });
         Ok(Some(Self {
             listener,
@@ -2270,7 +2278,7 @@ fn bridge_loop(
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(10))
+                thread::sleep(Duration::from_millis(10));
             }
             Err(_) => break,
         }
