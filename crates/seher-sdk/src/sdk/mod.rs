@@ -4,6 +4,7 @@ pub mod config_loader;
 pub mod dispatch;
 pub mod errors;
 pub mod pi_runner;
+pub mod pi_rpc;
 pub mod resolve;
 pub mod sleep;
 pub mod tool;
@@ -19,6 +20,9 @@ pub use dispatch::{RunAgentOptions, RunOutput, run_for_resolved, stream_for_reso
 pub use errors::{
     LimitError, RunError, TimeoutError, is_claude_rate_limit_message, is_client_error_retryable,
     is_transient_http_error,
+};
+pub use pi_rpc::{
+    PiRpcRunner, PiRpcRunnerOptions, close_all_pi_sessions, close_pi_session,
 };
 pub use pi_runner::{
     PiRunOutput, PiRunner, PiRunnerOptions, StreamChunk, pi_session_path, split_model_ref,

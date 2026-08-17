@@ -3,8 +3,12 @@
 //! Usage:
 //!   `ANTHROPIC_API_KEY=sk-... cargo run -p seher-sdk --example pi_mvp -- "say hi"`
 //!
-//! Streams the assistant's text deltas to stdout. Purpose: verify the dedicated-thread
-//! pi runtime does not panic when cohabiting a process that could also host tokio.
+//! Streams the assistant's text deltas to stdout. This example exercises the
+//! in-process Rust backend (`sdk: pi-rust`); the default `sdk: pi` backend
+//! uses the TypeScript Pi RPC subprocess.
+//!
+//! Purpose: verify the dedicated-thread pi runtime does not panic when
+//! cohabiting a process that could also host tokio.
 
 use std::io::Write;
 

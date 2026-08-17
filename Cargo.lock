@@ -3960,6 +3960,7 @@ version = "0.0.53"
 dependencies = [
  "chrono",
  "clap",
+ "dirs",
  "indexmap",
  "libc",
  "seher-sdk",

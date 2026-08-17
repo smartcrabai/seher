@@ -69,8 +69,8 @@ pub struct ResolveOptions {
     pub max_rescans: u32,
     pub quiet: bool,
     /// When true, the run will pass custom tools, so only SDKs that support
-    /// function calling (`pi` and `claude`) are eligible. `claude-terminal`
-    /// and `claude-headless` candidates are dropped (see
+    /// function calling (`pi`, `pi-rust`, and `claude`) are eligible.
+    /// `claude-terminal` and `claude-headless` candidates are dropped (see
     /// [`sdk_supports_tools`]).
     pub require_tools: bool,
 }
@@ -101,8 +101,8 @@ pub struct PollOptions {
     pub interval_ms: u64,
     pub cancel: Option<Arc<AtomicBool>>,
     /// When true, the run will pass custom tools, so only SDKs that support
-    /// function calling (`pi` and `claude`) are eligible. `claude-terminal`
-    /// and `claude-headless` candidates are dropped (see
+    /// function calling (`pi`, `pi-rust`, and `claude`) are eligible.
+    /// `claude-terminal` and `claude-headless` candidates are dropped (see
     /// [`sdk_supports_tools`]).
     pub require_tools: bool,
 }
@@ -132,7 +132,8 @@ pub struct Candidate {
 
 /// Supported `sdk` values that can actually be executed by this implementation.
 ///
-/// - `pi` -- in-process execution engine, supports custom tools.
+/// - `pi` -- TypeScript Pi RPC subprocess, supports custom tools.
+/// - `pi-rust` -- in-process Rust Pi engine, supports custom tools.
 /// - `claude-terminal` -- drives the local `claude` CLI via tmux.
 /// - `claude-headless` -- drives `claude -p` as a subprocess.
 /// - `claude` -- drives the `claude` CLI through the `claude-agent-sdk` crate
@@ -142,7 +143,8 @@ pub struct Candidate {
 /// `cursor`, `kimi`, `opencode`) cannot be run here. The config still accepts
 /// them (so the same `config.yaml` works in both implementations); they are
 /// silently filtered out of the candidate list.
-pub const SUPPORTED_SDK_KINDS: &[&str] = &["pi", "claude", "claude-terminal", "claude-headless"];
+pub const SUPPORTED_SDK_KINDS: &[&str] =
+    &["pi", "pi-rust", "claude", "claude-terminal", "claude-headless"];
 
 #[must_use]
 pub fn is_supported_sdk(sdk: &str) -> bool {
@@ -151,14 +153,15 @@ pub fn is_supported_sdk(sdk: &str) -> bool {
 
 /// Whether `sdk` can execute custom tools (function calling).
 ///
-/// - `pi` injects tool definitions directly into the in-process agent
-///   session.
+/// - `pi` serves tool definitions through the TypeScript Pi RPC subprocess.
+/// - `pi-rust` injects tool definitions directly into the in-process Rust
+///   Pi session.
 /// - `claude` drives the CLI via `claude-agent-sdk` and serves tools through
 ///   the SDK MCP control channel.
 /// - `claude-terminal` / `claude-headless` cannot honor custom tools.
 #[must_use]
 pub fn sdk_supports_tools(sdk: &str) -> bool {
-    sdk == "pi" || sdk == "claude"
+    sdk == "pi" || sdk == "pi-rust" || sdk == "claude"
 }
 
 /// Apply the `require_tools` filter to `candidates` and produce the final list,
@@ -170,10 +173,10 @@ fn filter_candidates_for_tools(
     provider_filter: Option<&str>,
     require_tools: bool,
 ) -> Result<Vec<Candidate>, NoMatchingAgentError> {
-    // Custom tools only run on the in-process `pi` engine and on the
-    // `claude` SDK (via the in-process MCP toolbox); drop the CLI-only
-    // claude backends so resolution never lands on one that can't honor
-    // the requested tools.
+    // Custom tools run on the TypeScript Pi RPC subprocess, the in-process
+    // `pi-rust` engine, and the `claude` SDK (via its in-process MCP toolbox);
+    // drop the CLI-only claude backends so resolution never lands on one that
+    // can't honor the requested tools.
     let dropped_for_tools = if require_tools {
         let before = candidates.len();
         candidates.retain(|c| sdk_supports_tools(&c.resolved.sdk));
@@ -898,14 +901,15 @@ mod tests {
     fn unsupported_sdk_providers_empty_when_all_pi() {
         let c = cfg(vec![
             entry_with_sdk("a", "a", "pi", &[("build", "anthropic/x", None)]),
-            entry_with_sdk("b", "b", "pi", &[("build", "openai/y", None)]),
+            entry_with_sdk("b", "b", "pi-rust", &[("build", "openai/y", None)]),
         ]);
         assert!(unsupported_sdk_providers(&c).is_empty());
     }
 
     #[test]
-    fn is_supported_sdk_accepts_pi_claude_and_claude_terminal_and_headless() {
+    fn is_supported_sdk_accepts_pi_variants_claude_and_terminal_backends() {
         assert!(is_supported_sdk("pi"));
+        assert!(is_supported_sdk("pi-rust"));
         assert!(is_supported_sdk("claude"));
         assert!(is_supported_sdk("claude-terminal"));
         assert!(is_supported_sdk("claude-headless"));
@@ -914,12 +918,12 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // require_tools (custom tools restrict candidates to pi and claude)
-    // -----------------------------------------------------------------------
+    // require_tools (custom tools restrict candidates to Pi and Claude)
 
     #[test]
-    fn sdk_supports_tools_only_pi_and_claude() {
+    fn sdk_supports_tools_for_both_pi_backends_and_claude() {
         assert!(sdk_supports_tools("pi"));
+        assert!(sdk_supports_tools("pi-rust"));
         assert!(sdk_supports_tools("claude"));
         assert!(!sdk_supports_tools("claude-terminal"));
         assert!(!sdk_supports_tools("claude-headless"));
