@@ -1,7 +1,7 @@
 //! SDK-agnostic dispatch layer.
 //!
 //! [`stream_for_resolved`] inspects a [`ResolvedAgent`] and routes to the
-//! appropriate runner backend (`pi`, `claude`, `claude-headless`,
+//! appropriate runner backend (`pi`, `pi-rust`, `claude`, `claude-headless`,
 //! `claude-terminal`). [`run_for_resolved`] wraps it with fold logic that
 //! accumulates [`StreamChunk`]s into a final [`RunOutput`].
 //!
@@ -15,9 +15,11 @@ use std::time::Duration;
 use crate::claude_agent::{ClaudeAgentRunnerConfig, stream_agent};
 use crate::claude_headless::{ClaudeHeadlessRunner, ClaudeHeadlessRunnerConfig, stream_headless};
 use crate::claude_terminal::{new_sdk_with_defaults, stream_via_thread};
+use crate::sdk::pi_rpc::{is_non_retryable_error, load_hardcoded_skills_appendix};
 use crate::sdk::{
-    CancelToken, EffortLevel, PiRunner, PiRunnerOptions, ResolvedAgent, RetryConfig, RunError,
-    SeherTool, StreamChunk, sdk_supports_tools, split_model_ref, split_thinking_suffix,
+    CancelToken, EffortLevel, PiRpcRunner, PiRpcRunnerOptions, PiRunner, PiRunnerOptions,
+    ResolvedAgent, RetryConfig, RunError, SeherTool, StreamChunk, sdk_supports_tools,
+    split_model_ref, split_thinking_suffix,
 };
 
 /// Options forwarded to the chosen runner backend.
@@ -32,22 +34,23 @@ pub struct RunAgentOptions {
     /// Session id to resume (multi-turn). `None` starts a fresh session.
     pub resume: Option<String>,
     /// Custom tools (function calling). Non-empty tools require a
-    /// tool-capable SDK (`pi` or `claude`); passing tools to
+    /// tool-capable SDK (`pi`, `pi-rust`, or `claude`); passing tools to
     /// `claude-headless` / `claude-terminal` returns a channel error.
     pub tools: Vec<SeherTool>,
     /// Override the API key resolved from `resolved.api.key`. When `None`,
-    /// `resolved.api.key` is used. Only forwarded to the `pi` backend; `claude`,
+    /// `resolved.api.key` is used. Only forwarded to the Pi backends; `claude`,
     /// `claude-headless`, and `claude-terminal` use the system credential chain.
     pub api_key: Option<String>,
     /// Hard deadline for the runner process. Forwarded to `claude-headless`
     /// (`ClaudeHeadlessRunnerConfig::timeout_ms`) and `claude-terminal`
-    /// (`new_sdk_with_defaults`). Has no effect on the `pi` or `claude` backends.
+    /// (`new_sdk_with_defaults`). Has no effect on the Pi or `claude` backends.
     pub timeout_ms: Option<u64>,
     /// Extra system-prompt text to append.
     pub system_prompt: Option<String>,
     /// Cancellation token. When [`CancelToken::cancel`] is called, the
-    /// runner should abort as soon as possible. Currently forwarded to the
-    /// `claude-headless` backend; other backends ignore it.
+    /// runner should abort as soon as possible. Forwarded to
+    /// `claude-headless` and the TypeScript Pi RPC runner; other backends
+    /// currently do not expose cancellation through this API.
     pub cancel: CancelToken,
     /// Optional callback invoked on each retry. Receives the 1-based attempt
     /// number and a short human-readable summary of the error that triggered
@@ -77,6 +80,11 @@ pub(crate) enum BackendChoice {
         model: String,
         thinking: Option<String>,
     },
+    PiRust {
+        provider: String,
+        model: String,
+        thinking: Option<String>,
+    },
     ClaudeAgent {
         model: Option<String>,
         effort: Option<EffortLevel>,
@@ -93,12 +101,48 @@ pub(crate) enum BackendChoice {
     Unsupported { message: String },
 }
 
-/// Map an [`EffortLevel`] to the `pi` backend's thinking-level string.
-///
-/// `pi::model::ThinkingLevel` has no `max` variant, so `EffortLevel::Max` maps
-/// to pi's highest tier, `"xhigh"`. Every other variant has an identically
-/// named pi thinking level.
-fn effort_to_thinking(effort: EffortLevel) -> &'static str {
+/// Map an [`EffortLevel`] to the TypeScript Pi RPC backend's thinking-level
+/// string. TypeScript Pi supports the explicit `max` tier.
+fn effort_to_ts_pi_thinking(effort: EffortLevel) -> &'static str {
+    match effort {
+        EffortLevel::Low => "low",
+        EffortLevel::Medium => "medium",
+        EffortLevel::High => "high",
+        EffortLevel::XHigh => "xhigh",
+        EffortLevel::Max => "max",
+    }
+}
+
+fn normalize_ts_pi_suffix(thinking: Option<String>) -> Option<String> {
+    thinking.map(|value| {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "off" | "none" | "0" => "off",
+            "minimal" | "min" => "minimal",
+            "low" | "1" => "low",
+            "medium" | "med" | "2" => "medium",
+            "high" | "3" => "high",
+            "xhigh" | "4" => "xhigh",
+            "max" | "5" => "max",
+            _ => value.as_str(),
+        }
+        .to_string()
+    })
+}
+
+fn normalize_pi_rust_suffix(thinking: Option<String>) -> Option<String> {
+    thinking.map(|value| {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "max" | "5" => "xhigh",
+            _ => value.as_str(),
+        }
+        .to_string()
+    })
+}
+
+/// Map an [`EffortLevel`] to the in-process Rust Pi backend's thinking-level
+/// string. `pi_agent_rust` has no `max` variant, so retain the compatibility
+/// mapping to its highest tier, `xhigh`.
+fn effort_to_pi_rust_thinking(effort: EffortLevel) -> &'static str {
     match effort {
         EffortLevel::Low => "low",
         EffortLevel::Medium => "medium",
@@ -147,7 +191,46 @@ fn claude_family_model_and_effort(
     (model, effort)
 }
 
-/// Error returned by [`choose_backend`] before any channel is opened.
+/// Resolve a standard provider credential, preferring resolved environment
+/// overrides without exposing the parent environment wholesale.
+fn ambient_api_key_for_provider(
+    provider: &str,
+    overrides: Option<&indexmap::IndexMap<String, String>>,
+) -> Option<String> {
+    let provider = provider
+        .rsplit('/')
+        .next()
+        .unwrap_or(provider)
+        .to_ascii_lowercase();
+    let vars: &[&str] = match provider.as_str() {
+        "anthropic" | "claude" => &["ANTHROPIC_API_KEY"],
+        "openai" | "codex" | "openai-codex" => &["OPENAI_API_KEY"],
+        "google" | "gemini" | "google-gemini" => &["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+        "mistral" => &["MISTRAL_API_KEY"],
+        "cohere" => &["COHERE_API_KEY"],
+        "groq" => &["GROQ_API_KEY"],
+        "xai" | "grok" => &["XAI_API_KEY"],
+        "deepseek" => &["DEEPSEEK_API_KEY"],
+        "together" => &["TOGETHER_API_KEY"],
+        "perplexity" => &["PERPLEXITY_API_KEY"],
+        "cerebras" => &["CEREBRAS_API_KEY"],
+        "fireworks" => &["FIREWORKS_API_KEY"],
+        "openrouter" => &["OPENROUTER_API_KEY"],
+        "huggingface" | "hf" => &["HUGGINGFACE_API_KEY", "HF_TOKEN"],
+        "ai21" => &["AI21_API_KEY"],
+        "nvidia" => &["NVIDIA_API_KEY"],
+        "moonshot" | "kimi" => &["MOONSHOT_API_KEY"],
+        "minimax" => &["MINIMAX_API_KEY"],
+        "dashscope" | "qwen" => &["DASHSCOPE_API_KEY"],
+        _ => return None,
+    };
+    vars.iter().find_map(|name| {
+        overrides
+            .and_then(|env| env.get(*name).cloned().filter(|value| !value.is_empty()))
+            .or_else(|| std::env::var(name).ok().filter(|value| !value.is_empty()))
+    })
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum DispatchError {
     /// The caller passed non-empty tools to a backend that cannot honor them.
@@ -163,25 +246,32 @@ pub(crate) fn choose_backend(
     opts: &RunAgentOptions,
 ) -> Result<BackendChoice, DispatchError> {
     let sdk = resolved.sdk.as_str();
-
     if !opts.tools.is_empty() && !sdk_supports_tools(sdk) {
         return Err(DispatchError::ToolsNotSupported {
             sdk: sdk.to_string(),
         });
     }
-
-    // The explicit `effort` field (programmatic or config-resolved) takes
-    // precedence over a `:level` suffix on the model id.
     let effort = opts.effort.or(resolved.effort);
-
     Ok(match sdk {
         "pi" => {
             let (provider, model, suffix_thinking) =
                 split_model_ref(&resolved.provider, &resolved.model_id);
             let thinking = effort
-                .map(|e| effort_to_thinking(e).to_string())
-                .or(suffix_thinking);
+                .map(|e| effort_to_ts_pi_thinking(e).to_string())
+                .or_else(|| normalize_ts_pi_suffix(suffix_thinking));
             BackendChoice::Pi {
+                provider,
+                model,
+                thinking,
+            }
+        }
+        "pi-rust" => {
+            let (provider, model, suffix_thinking) =
+                split_model_ref(&resolved.provider, &resolved.model_id);
+            let thinking = effort
+                .map(|e| effort_to_pi_rust_thinking(e).to_string())
+                .or_else(|| normalize_pi_rust_suffix(suffix_thinking));
+            BackendChoice::PiRust {
                 provider,
                 model,
                 thinking,
@@ -244,31 +334,67 @@ pub(crate) fn fold_stream(rx: &Receiver<StreamChunk>) -> Result<RunOutput, RunEr
     }
 }
 
+fn stream_pi_backend(
+    resolved: &ResolvedAgent,
+    prompt: String,
+    opts: RunAgentOptions,
+    provider: String,
+    model: String,
+    thinking: Option<String>,
+    configured_api_key: Option<String>,
+) -> Receiver<StreamChunk> {
+    let api_key =
+        configured_api_key.or_else(|| ambient_api_key_for_provider(&provider, Some(&resolved.env)));
+    let pi_opts = PiRpcRunnerOptions {
+        provider: Some(provider),
+        model: Some(model),
+        thinking,
+        api_key,
+        system_prompt: opts.system_prompt,
+        append_system_prompt: load_hardcoded_skills_appendix(opts.working_dir.as_deref()),
+        working_directory: opts.working_dir,
+        env: resolved.env.clone(),
+        tools: opts.tools,
+        cancel: opts.cancel,
+        ..Default::default()
+    };
+    PiRpcRunner::new(pi_opts).stream(prompt, opts.resume)
+}
 /// Route `resolved` to the appropriate runner and return a streaming channel.
 ///
 /// The caller iterates the returned [`Receiver`] to consume [`StreamChunk`]s.
 /// If `opts.tools` is non-empty and `resolved.sdk` does not support tools, the
 /// channel will contain a single [`StreamChunk::Error`] and then close.
 #[must_use]
+#[expect(
+    clippy::too_many_lines,
+    reason = "backend routing keeps all SDK branches together"
+)]
 pub fn stream_for_resolved(
     resolved: &ResolvedAgent,
     prompt: String,
     opts: RunAgentOptions,
 ) -> Receiver<StreamChunk> {
-    let api_key = opts
+    let configured_api_key = opts
         .api_key
         .clone()
         .or_else(|| resolved.api.as_ref().and_then(|a| a.key.clone()));
 
     match choose_backend(resolved, &opts) {
-        Err(DispatchError::ToolsNotSupported { sdk }) => {
-            let (tx, rx) = std::sync::mpsc::channel();
-            let _ = tx.send(StreamChunk::Error(format!(
-                "sdk '{sdk}' does not support custom tools"
-            )));
-            rx
-        }
         Ok(BackendChoice::Pi {
+            provider,
+            model,
+            thinking,
+        }) => stream_pi_backend(
+            resolved,
+            prompt,
+            opts,
+            provider,
+            model,
+            thinking,
+            configured_api_key,
+        ),
+        Ok(BackendChoice::PiRust {
             provider,
             model,
             thinking,
@@ -277,7 +403,7 @@ pub fn stream_for_resolved(
                 provider: Some(provider),
                 model: Some(model),
                 thinking,
-                api_key,
+                api_key: configured_api_key,
                 system_prompt: opts.system_prompt,
                 working_directory: opts.working_dir,
                 env: resolved.env.clone(),
@@ -350,6 +476,13 @@ pub fn stream_for_resolved(
             let _ = tx.send(StreamChunk::Error(message));
             rx
         }
+        Err(DispatchError::ToolsNotSupported { sdk }) => {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(StreamChunk::Error(format!(
+                "sdk '{sdk}' does not support custom tools"
+            )));
+            rx
+        }
     }
 }
 
@@ -392,13 +525,13 @@ where
                     return Err(err);
                 }
                 match &err {
-                    RunError::Timeout { .. } => return Err(err),
-                    RunError::Limit { .. } => {}
                     RunError::Other { message, .. } => {
-                        if !retry.is_retryable_message(message) {
+                        if is_non_retryable_error(message) || !retry.is_retryable_message(message) {
                             return Err(err);
                         }
                     }
+                    RunError::Limit { .. } => {}
+                    RunError::Timeout { .. } => return Err(err),
                 }
                 let retry_message = match &err {
                     RunError::Other { message, .. } => message.clone(),
@@ -523,6 +656,41 @@ mod tests {
                 assert_eq!(thinking, Some("xhigh".to_string()));
             }
             other => panic!("expected Pi, got {other:?}"),
+        }
+    }
+    #[test]
+    fn pi_rpc_options_preserve_user_prompt_and_skills_appendix() {
+        let options = PiRpcRunnerOptions {
+            provider: Some("openai-codex".into()),
+            model: Some("gpt-5.5".into()),
+            system_prompt: Some("user prompt".into()),
+            append_system_prompt: Some("formatted skills".into()),
+            api_key: Some("configured-key".into()),
+            ..Default::default()
+        };
+        assert_eq!(options.system_prompt.as_deref(), Some("user prompt"));
+        assert_eq!(
+            options.append_system_prompt.as_deref(),
+            Some("formatted skills")
+        );
+        assert_eq!(options.api_key.as_deref(), Some("configured-key"));
+    }
+
+    #[test]
+    fn choose_backend_pi_rust_routes_to_in_process_backend() {
+        let resolved = make_resolved("pi-rust", "anthropic", "claude-sonnet-4-5:high");
+        let choice = choose_backend(&resolved, &no_tools_opts()).expect("pi-rust backend is valid");
+        match choice {
+            BackendChoice::PiRust {
+                provider,
+                model,
+                thinking,
+            } => {
+                assert_eq!(provider, "anthropic");
+                assert_eq!(model, "claude-sonnet-4-5");
+                assert_eq!(thinking, Some("high".to_string()));
+            }
+            other => panic!("expected PiRust, got {other:?}"),
         }
     }
 
@@ -715,7 +883,7 @@ mod tests {
     fn choose_backend_pi_explicit_effort_overrides_suffix_thinking() {
         // Given: sdk=pi with a model suffix ":low" but opts.effort=Max
         // When: choose_backend is called
-        // Then: the explicit effort wins and maps to pi's "xhigh" thinking level
+        // Then: the explicit effort wins and maps to TypeScript Pi's "max" tier
         let resolved = make_resolved("pi", "codex", "openai-codex/gpt-5.5:low");
         let opts = RunAgentOptions {
             effort: Some(EffortLevel::Max),
@@ -724,22 +892,36 @@ mod tests {
         let choice = choose_backend(&resolved, &opts).expect("pi backend is always valid");
         match choice {
             BackendChoice::Pi { thinking, .. } => {
-                assert_eq!(thinking, Some("xhigh".to_string()));
+                assert_eq!(thinking, Some("max".to_string()));
             }
             other => panic!("expected Pi, got {other:?}"),
         }
     }
 
     #[test]
-    fn choose_backend_pi_recognizes_max_suffix_but_pi_has_no_max_tier() {
-        // Given: sdk=pi with a ":max" model suffix -- recognized as a suffix
-        // (so the model name is correctly stripped) even though pi's own
-        // ThinkingLevel has no "max" tier
+    fn choose_backend_pi_rust_explicit_max_retains_xhigh_compatibility() {
+        // Given: sdk=pi-rust with opts.effort=Max
         // When: choose_backend is called
-        // Then: the model id is NOT corrupted with a literal ":max" left
-        // attached; the raw "max" string is passed through as `thinking` and
-        // will surface a clear runtime error from pi_runner's own validation
-        // (parse_thinking) rather than reaching pi with a broken model id
+        // Then: the in-process Rust backend receives its highest supported tier
+        let resolved = make_resolved("pi-rust", "codex", "openai-codex/gpt-5.5:low");
+        let opts = RunAgentOptions {
+            effort: Some(EffortLevel::Max),
+            ..Default::default()
+        };
+        let choice = choose_backend(&resolved, &opts).expect("pi-rust backend is valid");
+        match choice {
+            BackendChoice::PiRust { thinking, .. } => {
+                assert_eq!(thinking, Some("xhigh".to_string()));
+            }
+            other => panic!("expected PiRust, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn choose_backend_pi_preserves_max_suffix() {
+        // Given: sdk=pi with a ":max" model suffix
+        // When: choose_backend is called
+        // Then: the model id is stripped and TypeScript Pi receives "max"
         let resolved = make_resolved("pi", "codex", "openai-codex/gpt-5.5:max");
         let choice =
             choose_backend(&resolved, &no_tools_opts()).expect("pi backend is always valid");
@@ -1067,6 +1249,26 @@ mod tests {
         );
         assert_eq!(result.unwrap().text, "ok");
         assert_eq!(calls, 2);
+    }
+    #[test]
+    fn pi_process_crash_marker_never_retries_retryable_stderr() {
+        let mut calls = 0;
+        let run = |_prompt: String, _opts: RunAgentOptions| {
+            calls += 1;
+            Err(other_error(
+                "Pi RPC non-retryable: Pi RPC process exited while prompting: HTTP 500",
+            ))
+        };
+        let result = run_with_retry_inner(
+            run,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            &RetryConfig::default(),
+            None,
+            |_| {},
+        );
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
     }
 
     #[test]

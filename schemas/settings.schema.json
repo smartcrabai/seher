@@ -96,10 +96,11 @@
         },
         "sdk": {
           "type": "string",
-          "description": "Execution engine. Defaults to \"pi\". Executable in this build: `pi` (in-process pi_agent_rust), `claude` (drives the local `claude` CLI through `claude-agent-sdk` -- stream-json + in-process MCP tools), `claude-terminal` (drives the local `claude` CLI via tmux), and `claude-headless` (runs `claude -p` as a subprocess). The seher-ts-only kinds (`codex`, `copilot`, `cursor`, `kimi`, `opencode`) are accepted for cross-implementation portability but silently filtered out of the candidate list at startup. `pi` and `claude` support custom tools; the two CLI-only backends do not",
+          "description": "Execution engine. Defaults to \"pi\" (TypeScript Pi RPC). Executable in this build: `pi` (TypeScript RPC), `pi-rust` (in-process Rust Pi), `claude` (through `claude-agent-sdk` -- stream-json + in-process MCP tools), `claude-terminal` (local `claude` CLI via tmux), and `claude-headless` (`claude -p`). The seher-ts-only kinds (`codex`, `copilot`, `cursor`, `kimi`, `opencode`) are accepted for cross-implementation portability but silently filtered out of the candidate list at startup. `pi`, `pi-rust`, and `claude` support custom tools.",
           "default": "pi",
           "examples": [
             "pi",
+            "pi-rust",
             "claude-terminal",
             "claude-headless",
             "claude",
@@ -130,7 +131,7 @@
         },
         "env": {
           "type": "object",
-          "description": "Extra environment variables injected when this provider executes. Keys override root-level `env` entries on a per-key basis. For `pi` (in-process), applied via std::env::set_var and affect the whole process.",
+          "description": "Extra environment variables injected when this provider executes. Keys override root-level `env` entries on a per-key basis. The `pi` RPC child receives these variables; the in-process `pi-rust` backend applies them via std::env::set_var and they affect the whole process.",
           "additionalProperties": {
             "type": "string"
           }

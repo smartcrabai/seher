@@ -3,10 +3,12 @@
 //! Implements the retry-on-limit loop: on a `LimitError`, the resolved YAML
 //! provider name is added to `exclude_providers` and resolution is retried.
 
-use std::path::PathBuf;
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use seher::claude_terminal::{default_transcript_root, encode_transcript_path};
+use seher::sdk::pi_rpc::is_non_retryable_error;
 use seher::sdk::{
     CancelToken, CodexBarProbe, Config, ResolveOptions, ResolvedAgent, RunAgentOptions,
     TimeoutError, load_config, pi_session_path, resolve_agent, stream_for_resolved,
@@ -41,7 +43,7 @@ pub fn resolve_and_stream(
     // knows why.
     for (provider, sdk) in unsupported_sdk_providers(&config) {
         logger.warn(&format!(
-            "Skipping provider '{provider}' (sdk='{sdk}'): not supported by this build (supported: 'pi', 'claude', 'claude-terminal', 'claude-headless')"
+            "Skipping provider '{provider}' (sdk='{sdk}'): not supported by this build (supported: 'pi', 'pi-rust', 'claude', 'claude-terminal', 'claude-headless')"
         ));
     }
 
@@ -111,32 +113,99 @@ fn effective_cwd(args: &Args) -> String {
     })
 }
 
-/// Whether two SDK backends are compatible for session resume. All claude-based
-/// backends (`claude`, `claude-terminal`, `claude-headless`) share the same
-/// Claude CLI transcript storage and can resume each other's sessions.
+/// Whether two SDK backends are compatible for session resume. Claude-based
+/// backends (`claude`, `claude-terminal`, `claude-headless`) share the Claude
+/// CLI transcript storage. The two Pi backends use separate session stores.
 fn sdk_backends_compatible(resolved_sdk: &str, pinned_sdk: &str) -> bool {
     const CLAUDE_SDKS: &[&str] = &["claude", "claude-terminal", "claude-headless"];
     resolved_sdk == pinned_sdk
         || (CLAUDE_SDKS.contains(&resolved_sdk) && CLAUDE_SDKS.contains(&pinned_sdk))
 }
 
-/// Detect which backend owns a session id by probing on-disk storage under `cwd`.
-/// Returns the sdk kind (`"claude-terminal"` / `"claude-headless"` / `"pi"`) or
-/// `None` if no backend has it.
-///
-/// Both `claude-terminal` and `claude-headless` use the same Claude CLI transcript
-/// storage, so a transcript hit could belong to either. We return
-/// `"claude-terminal"` as the default for that path; if the resolver selected
-/// `"claude-headless"`, the resume pinning in `resume_and_stream` accepts both
-/// claude-based backends interchangeably.
+fn pi_ts_session_exists(session_id: &str, cwd: &str) -> bool {
+    let base = dirs::data_dir()
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".local")
+                .join("share")
+        })
+        .join("seher")
+        .join("pi-ts-sessions");
+    pi_ts_session_exists_in(&base, session_id, cwd)
+}
+
+fn pi_ts_session_exists_in(base: &Path, session_id: &str, cwd: &str) -> bool {
+    let Ok(canonical_cwd) = std::fs::canonicalize(cwd) else {
+        return false;
+    };
+    let mut pending = vec![base.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                pending.push(path);
+            } else if file_type.is_file()
+                && path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
+                && pi_ts_session_header_matches(&path, session_id, &canonical_cwd)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn pi_ts_session_header_matches(path: &Path, session_id: &str, canonical_cwd: &Path) -> bool {
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let Ok(bytes) = reader.read_line(&mut line) else {
+            return false;
+        };
+        if bytes == 0 {
+            return false;
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        return entry.get("type").and_then(serde_json::Value::as_str) == Some("session")
+            && entry.get("id").and_then(serde_json::Value::as_str) == Some(session_id)
+            && entry
+                .get("cwd")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|cwd| std::fs::canonicalize(cwd).ok())
+                .as_deref()
+                == Some(canonical_cwd);
+    }
+}
+
+/// Detect which backend owns a session id by probing on-disk storage under
+/// `cwd`. The TypeScript and Rust Pi stores intentionally remain separate.
 fn probe_session_backend(cwd: &str, session_id: &str) -> Option<&'static str> {
     let claude_path = encode_transcript_path(&default_transcript_root(), cwd, session_id);
-    if std::path::Path::new(&claude_path).exists() {
+    if Path::new(&claude_path).exists() {
         return Some("claude-terminal");
     }
-    let pi_path = pi_session_path(Some(std::path::Path::new(cwd)), session_id);
-    if pi_path.exists() {
+    if pi_ts_session_exists(session_id, cwd) {
         return Some("pi");
+    }
+    let pi_path = pi_session_path(Some(Path::new(cwd)), session_id);
+    if pi_path.exists() {
+        return Some("pi-rust");
     }
     None
 }
@@ -308,6 +377,7 @@ fn stream_with_http_retry(
         match outcome {
             Outcome::Error(ref message)
                 if resolved.retry.enabled
+                    && !is_non_retryable_error(message)
                     && attempt < resolved.retry.effective_max_attempts()
                     && resolved.retry.is_retryable_message(message) =>
             {
@@ -514,6 +584,57 @@ mod tests {
         assert_eq!(env_api_key_for(None), None);
         assert_eq!(env_api_key_for(Some("cohere")), None);
         assert_eq!(env_api_key_for(Some("google")), None);
+    }
+
+    #[test]
+    fn pi_ts_session_probe_scans_nested_files_and_validates_header() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let cwd = tempfile::tempdir().expect("cwd dir");
+        let nested = temp.path().join("projects").join("nested");
+        std::fs::create_dir_all(&nested).expect("nested session dir");
+        let header = serde_json::json!({
+            "type": "session",
+            "id": "session-1",
+            "cwd": cwd.path(),
+        });
+        std::fs::write(
+            nested.join("unrelated-filename.jsonl"),
+            format!("{header}\n"),
+        )
+        .expect("session file");
+
+        assert!(pi_ts_session_exists_in(
+            temp.path(),
+            "session-1",
+            &cwd.path().to_string_lossy(),
+        ));
+    }
+
+    #[test]
+    fn pi_ts_session_probe_rejects_wrong_id_or_cwd() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let cwd = tempfile::tempdir().expect("cwd dir");
+        let other_cwd = tempfile::tempdir().expect("other cwd dir");
+        let nested = temp.path().join("nested");
+        std::fs::create_dir_all(&nested).expect("nested session dir");
+        let header = serde_json::json!({
+            "type": "session",
+            "id": "session-1",
+            "cwd": other_cwd.path(),
+        });
+        std::fs::write(nested.join("session-1.jsonl"), format!("{header}\n"))
+            .expect("session file");
+
+        assert!(!pi_ts_session_exists_in(
+            temp.path(),
+            "session-1",
+            &cwd.path().to_string_lossy(),
+        ));
+        assert!(!pi_ts_session_exists_in(
+            temp.path(),
+            "different-session",
+            &other_cwd.path().to_string_lossy(),
+        ));
     }
 
     #[test]

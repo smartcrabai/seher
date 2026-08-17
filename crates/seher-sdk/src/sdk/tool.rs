@@ -1,15 +1,15 @@
 //! Custom tool definitions (function calling) for the pi runner.
 //!
-//! A [`SeherTool`] pairs a JSON Schema with a synchronous handler. Before a prompt
-//! runs, [`crate::sdk::PiRunner`] converts each one into a `pi::tools::Tool`
-//! ([`PiToolAdapter`]) and injects it into the live agent session -- pi's
-//! `SessionOptions` has no custom-tool field, so injection happens post-creation
-//! via `AgentSessionHandle::session_mut()`.
+//! A [`SeherTool`] pairs a JSON Schema with a synchronous handler. The
+//! backends adapt each tool to their native execution path: [`crate::sdk::PiRunner`]
+//! (the `pi-rust` backend) injects it into the in-process Rust session, while
+//! [`crate::sdk::PiRpcRunner`] (the `pi` backend) serves it through the
+//! TypeScript subprocess bridge.
 //!
-//! Custom tools only run on the in-process `pi` engine. The `claude-terminal`
-//! backend drives the `claude` CLI via tmux and cannot honor them; resolution
-//! drops those candidates when tools are requested (see
-//! [`crate::sdk::resolve::ResolveOptions::require_tools`]).
+//! Custom tools run on both Pi backends and on the `claude` SDK. The
+//! `claude-terminal` / `claude-headless` backends drive the CLI externally and
+//! cannot honor them; resolution drops those candidates when tools are
+//! requested (see [`crate::sdk::resolve::ResolveOptions::require_tools`]).
 
 use std::sync::Arc;
 
