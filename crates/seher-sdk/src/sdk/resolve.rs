@@ -143,8 +143,13 @@ pub struct Candidate {
 /// `cursor`, `kimi`, `opencode`) cannot be run here. The config still accepts
 /// them (so the same `config.yaml` works in both implementations); they are
 /// silently filtered out of the candidate list.
-pub const SUPPORTED_SDK_KINDS: &[&str] =
-    &["pi", "pi-rust", "claude", "claude-terminal", "claude-headless"];
+pub const SUPPORTED_SDK_KINDS: &[&str] = &[
+    "pi",
+    "pi-rust",
+    "claude",
+    "claude-terminal",
+    "claude-headless",
+];
 
 #[must_use]
 pub fn is_supported_sdk(sdk: &str) -> bool {

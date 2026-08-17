@@ -8,12 +8,12 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use seher::claude_terminal::{default_transcript_root, encode_transcript_path};
+use seher::sdk::pi_rpc::is_non_retryable_error;
 use seher::sdk::{
     CancelToken, CodexBarProbe, Config, ResolveOptions, ResolvedAgent, RunAgentOptions,
     TimeoutError, load_config, pi_session_path, resolve_agent, stream_for_resolved,
     unsupported_sdk_providers,
 };
-use seher::sdk::pi_rpc::is_non_retryable_error;
 
 use crate::args::Args;
 use crate::logger::Logger;

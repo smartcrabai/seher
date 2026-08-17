@@ -15,12 +15,12 @@ use std::time::Duration;
 use crate::claude_agent::{ClaudeAgentRunnerConfig, stream_agent};
 use crate::claude_headless::{ClaudeHeadlessRunner, ClaudeHeadlessRunnerConfig, stream_headless};
 use crate::claude_terminal::{new_sdk_with_defaults, stream_via_thread};
+use crate::sdk::pi_rpc::{is_non_retryable_error, load_hardcoded_skills_appendix};
 use crate::sdk::{
     CancelToken, EffortLevel, PiRpcRunner, PiRpcRunnerOptions, PiRunner, PiRunnerOptions,
     ResolvedAgent, RetryConfig, RunError, SeherTool, StreamChunk, sdk_supports_tools,
     split_model_ref, split_thinking_suffix,
 };
-use crate::sdk::pi_rpc::{is_non_retryable_error, load_hardcoded_skills_appendix};
 
 /// Options forwarded to the chosen runner backend.
 #[derive(Default, Clone)]
@@ -114,23 +114,29 @@ fn effort_to_ts_pi_thinking(effort: EffortLevel) -> &'static str {
 }
 
 fn normalize_ts_pi_suffix(thinking: Option<String>) -> Option<String> {
-    thinking.map(|value| match value.trim().to_ascii_lowercase().as_str() {
-        "off" | "none" | "0" => "off",
-        "minimal" | "min" => "minimal",
-        "low" | "1" => "low",
-        "medium" | "med" | "2" => "medium",
-        "high" | "3" => "high",
-        "xhigh" | "4" => "xhigh",
-        "max" | "5" => "max",
-        _ => value.as_str(),
-    }.to_string())
+    thinking.map(|value| {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "off" | "none" | "0" => "off",
+            "minimal" | "min" => "minimal",
+            "low" | "1" => "low",
+            "medium" | "med" | "2" => "medium",
+            "high" | "3" => "high",
+            "xhigh" | "4" => "xhigh",
+            "max" | "5" => "max",
+            _ => value.as_str(),
+        }
+        .to_string()
+    })
 }
 
 fn normalize_pi_rust_suffix(thinking: Option<String>) -> Option<String> {
-    thinking.map(|value| match value.trim().to_ascii_lowercase().as_str() {
-        "max" | "5" => "xhigh",
-        _ => value.as_str(),
-    }.to_string())
+    thinking.map(|value| {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "max" | "5" => "xhigh",
+            _ => value.as_str(),
+        }
+        .to_string()
+    })
 }
 
 /// Map an [`EffortLevel`] to the in-process Rust Pi backend's thinking-level
@@ -191,7 +197,11 @@ fn ambient_api_key_for_provider(
     provider: &str,
     overrides: Option<&indexmap::IndexMap<String, String>>,
 ) -> Option<String> {
-    let provider = provider.rsplit('/').next().unwrap_or(provider).to_ascii_lowercase();
+    let provider = provider
+        .rsplit('/')
+        .next()
+        .unwrap_or(provider)
+        .to_ascii_lowercase();
     let vars: &[&str] = match provider.as_str() {
         "anthropic" | "claude" => &["ANTHROPIC_API_KEY"],
         "openai" | "codex" | "openai-codex" => &["OPENAI_API_KEY"],
@@ -215,7 +225,8 @@ fn ambient_api_key_for_provider(
         _ => return None,
     };
     vars.iter().find_map(|name| {
-        overrides.and_then(|env| env.get(*name).cloned().filter(|value| !value.is_empty()))
+        overrides
+            .and_then(|env| env.get(*name).cloned().filter(|value| !value.is_empty()))
             .or_else(|| std::env::var(name).ok().filter(|value| !value.is_empty()))
     })
 }
@@ -236,7 +247,9 @@ pub(crate) fn choose_backend(
 ) -> Result<BackendChoice, DispatchError> {
     let sdk = resolved.sdk.as_str();
     if !opts.tools.is_empty() && !sdk_supports_tools(sdk) {
-        return Err(DispatchError::ToolsNotSupported { sdk: sdk.to_string() });
+        return Err(DispatchError::ToolsNotSupported {
+            sdk: sdk.to_string(),
+        });
     }
     let effort = opts.effort.or(resolved.effort);
     Ok(match sdk {
@@ -246,7 +259,11 @@ pub(crate) fn choose_backend(
             let thinking = effort
                 .map(|e| effort_to_ts_pi_thinking(e).to_string())
                 .or_else(|| normalize_ts_pi_suffix(suffix_thinking));
-            BackendChoice::Pi { provider, model, thinking }
+            BackendChoice::Pi {
+                provider,
+                model,
+                thinking,
+            }
         }
         "pi-rust" => {
             let (provider, model, suffix_thinking) =
@@ -254,7 +271,11 @@ pub(crate) fn choose_backend(
             let thinking = effort
                 .map(|e| effort_to_pi_rust_thinking(e).to_string())
                 .or_else(|| normalize_pi_rust_suffix(suffix_thinking));
-            BackendChoice::PiRust { provider, model, thinking }
+            BackendChoice::PiRust {
+                provider,
+                model,
+                thinking,
+            }
         }
         "claude" => {
             let (model, effort) = claude_family_model_and_effort(resolved, effort);
@@ -313,7 +334,6 @@ pub(crate) fn fold_stream(rx: &Receiver<StreamChunk>) -> Result<RunOutput, RunEr
     }
 }
 
-
 fn stream_pi_backend(
     resolved: &ResolvedAgent,
     prompt: String,
@@ -323,7 +343,8 @@ fn stream_pi_backend(
     thinking: Option<String>,
     configured_api_key: Option<String>,
 ) -> Receiver<StreamChunk> {
-    let api_key = configured_api_key.or_else(|| ambient_api_key_for_provider(&provider, Some(&resolved.env)));
+    let api_key =
+        configured_api_key.or_else(|| ambient_api_key_for_provider(&provider, Some(&resolved.env)));
     let pi_opts = PiRpcRunnerOptions {
         provider: Some(provider),
         model: Some(model),
@@ -356,9 +377,19 @@ pub fn stream_for_resolved(
         .or_else(|| resolved.api.as_ref().and_then(|a| a.key.clone()));
 
     match choose_backend(resolved, &opts) {
-        Ok(BackendChoice::Pi { provider, model, thinking }) => {
-            stream_pi_backend(resolved, prompt, opts, provider, model, thinking, configured_api_key)
-        }
+        Ok(BackendChoice::Pi {
+            provider,
+            model,
+            thinking,
+        }) => stream_pi_backend(
+            resolved,
+            prompt,
+            opts,
+            provider,
+            model,
+            thinking,
+            configured_api_key,
+        ),
         Ok(BackendChoice::PiRust {
             provider,
             model,
@@ -634,16 +665,17 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(options.system_prompt.as_deref(), Some("user prompt"));
-        assert_eq!(options.append_system_prompt.as_deref(), Some("formatted skills"));
+        assert_eq!(
+            options.append_system_prompt.as_deref(),
+            Some("formatted skills")
+        );
         assert_eq!(options.api_key.as_deref(), Some("configured-key"));
     }
-
 
     #[test]
     fn choose_backend_pi_rust_routes_to_in_process_backend() {
         let resolved = make_resolved("pi-rust", "anthropic", "claude-sonnet-4-5:high");
-        let choice =
-            choose_backend(&resolved, &no_tools_opts()).expect("pi-rust backend is valid");
+        let choice = choose_backend(&resolved, &no_tools_opts()).expect("pi-rust backend is valid");
         match choice {
             BackendChoice::PiRust {
                 provider,
@@ -1219,7 +1251,9 @@ mod tests {
         let mut calls = 0;
         let run = |_prompt: String, _opts: RunAgentOptions| {
             calls += 1;
-            Err(other_error("Pi RPC non-retryable: Pi RPC process exited while prompting: HTTP 500"))
+            Err(other_error(
+                "Pi RPC non-retryable: Pi RPC process exited while prompting: HTTP 500",
+            ))
         };
         let result = run_with_retry_inner(
             run,
