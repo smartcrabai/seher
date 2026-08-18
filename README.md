@@ -2,14 +2,14 @@
 
 Seher picks the highest-priority coding agent that is **not** currently rate-limited, then runs a `plan` / `build` prompt through it. If every configured agent is at its limit, seher waits until the earliest reset and tries again.
 
-Prompts are executed through the TypeScript Pi RPC subprocess by default (`sdk: pi`), or through the in-process Rust [`pi`](https://github.com/Dicklesworthstone/pi_agent_rust) engine when explicitly configured as `sdk: pi-rust`. Seher also supports the local `claude` CLI: `claude-terminal` (via tmux), `claude-headless` (`claude -p`), and `claude` (through the in-tree [`claude-agent-sdk`](crates/claude-agent-sdk), which adds stream-json output, the control protocol, and in-process MCP tools). Rate-limit detection is delegated to the external [`codexbar`](https://codexbar.app/) binary, which seher invokes per provider.
+Prompts are executed through the TypeScript Pi RPC subprocess by default (`sdk: pi`), through the oh-my-pi RPC subprocess when configured as `sdk: omp`, or through the in-process Rust [`pi`](https://github.com/Dicklesworthstone/pi_agent_rust) engine when explicitly configured as `sdk: pi-rust`. Seher also supports the local `claude` CLI: `claude-terminal` (via tmux), `claude-headless` (`claude -p`), and `claude` (through the in-tree [`claude-agent-sdk`](crates/claude-agent-sdk), which adds stream-json output, the control protocol, and in-process MCP tools). Rate-limit detection is delegated to the external [`codexbar`](https://codexbar.app/) binary, which seher invokes per provider.
 
 The repository is a Cargo workspace with three crates:
 
 | Crate | Artifact | Purpose |
 |-------|----------|---------|
 | `crates/seher-cli` | `seher` binary | CLI entry point (argument parsing, plan/build modes, streaming) |
-| `crates/seher-sdk` | `seher` library | Agent resolution, codexbar-backed rate-limit checks, Pi (`pi` RPC / `pi-rust` in-process) and Claude runners |
+| `crates/seher-sdk` | `seher` library | Agent resolution, codexbar-backed rate-limit checks, Pi (`pi` RPC / `pi-rust` in-process), omp, and Claude runners |
 | `crates/claude-agent-sdk` | `claude_agent_sdk` library | Rust port of [`anthropics/claude-agent-sdk-python`](https://github.com/anthropics/claude-agent-sdk-python): drives the `claude` CLI over stream-json with control-protocol support (in-process MCP tools, `query()` / `ClaudeSDKClient`) |
 
 
@@ -193,11 +193,12 @@ loop {
 
 ### Working directory and multi-turn sessions
 
-`RunAgentOptions.working_dir` sets the directory the agent operates in. Both
-Pi backends accept a `resume` session id: `None` starts a fresh session and
+`RunAgentOptions.working_dir` sets the directory the agent operates in. Pi and
+omp backends accept a `resume` session id: `None` starts a fresh session and
 `Some(id)` continues a prior turn. The TypeScript `pi` backend stores sessions
-under the platform data directory at `seher/pi-ts-sessions`; `pi-rust` stores
-them under its separate `seher/pi-sessions/<cwd>/<id>.jsonl` tree.
+under the platform data directory at `seher/pi-ts-sessions`; `omp` stores them
+at `seher/omp-sessions`; `pi-rust` stores them under its separate
+`seher/pi-sessions/<cwd>/<id>.jsonl` tree.
 
 ```rust
 use seher::sdk::{PiRunner, PiRunnerOptions};
@@ -261,12 +262,13 @@ let runner = PiRpcRunner::new(PiRpcRunnerOptions {
 });
 ```
 
-Tool names must be unique and must not collide with pi's built-in tools; an
-invalid set fails fast with `StreamChunk::Error` before a prompt runs.
+Tool names must be unique; an invalid set fails fast with `StreamChunk::Error`
+before a prompt runs.
 
 Tool-capable SDKs:
 
 - **`pi`** -- tools are served through the TypeScript Pi RPC loopback bridge.
+- **`omp`** -- tools are served through the `set_host_tools` host-tool protocol.
 - **`pi-rust`** -- tools are injected into the in-process Rust agent session.
 - **`claude`** -- tools are served through the SDK MCP control channel of
   `claude-agent-sdk` (in-process JSON-RPC, no external server needed). Pass
@@ -443,7 +445,7 @@ providers:
 
   zai:
     provider: zai            # explicit provider name (overrides the map key)
-    sdk: pi                  # TypeScript Pi RPC; omitted sdk defaults here
+    sdk: pi                  # TypeScript Pi RPC; use omp for oh-my-pi RPC; omitted sdk defaults here
     api:
       key: sk-your-key
       endpoint: https://api.z.ai/...
@@ -464,7 +466,7 @@ providers:
 
 ### Auto-loaded skills
 
-When a provider uses the TypeScript `pi` SDK (the default), Seher automatically
+When a provider uses the TypeScript `pi` or `omp` SDK, Seher automatically
 loads any skills found under `~/.agents/skills` and appends them to the system
 prompt. The `pi-rust` backend is the explicit in-process Rust alternative.
 
@@ -474,9 +476,9 @@ prompt. The `pi-rust` backend is the explicit in-process Rust alternative.
 |-------|------|-------------|
 | *(map key)* | string | Provider label and default provider name |
 | `provider` | string | Explicit provider name; defaults to the map key |
-| `sdk` | string | Execution engine. Defaults to `"pi"` (TypeScript Pi RPC). Executable engines in this build: `pi` (TypeScript RPC), `pi-rust` (in-process Rust), `claude` (through `claude-agent-sdk` -- stream-json + in-process MCP tools), `claude-terminal` (via tmux), and `claude-headless` (`claude -p`); other kinds are filtered out. `pi`, `pi-rust`, and `claude` support custom tools |
+| `sdk` | string | Execution engine. Defaults to `"pi"` (TypeScript Pi RPC). Executable engines in this build: `pi` (TypeScript RPC), `omp` (oh-my-pi RPC subprocess), `pi-rust` (in-process Rust), `claude` (through `claude-agent-sdk` -- stream-json + in-process MCP tools), `claude-terminal` (via tmux), and `claude-headless` (`claude -p`); other kinds are filtered out. `pi`, `omp`, `pi-rust`, and `claude` support custom tools |
 | `priority` | integer (`i32`) | Provider-level priority. Used when a model entry omits its own `priority` |
-| `api.key` | string | API key (for API-key-based limit checks and Pi execution) |
+| `api.key` | string | API key (for API-key-based limit checks and Pi/omp execution) |
 | `api.endpoint` | string | API endpoint override |
 | `skills.includeClaude` | boolean | Whether to auto-discover Claude skills for this provider |
 | `retry.enabled` | boolean | Whether to retry transient provider API errors in both the SDK and CLI paths. Default: `true`. Also accepted at the top level |
@@ -485,7 +487,7 @@ prompt. The `pi-rust` backend is the explicit in-process Rust alternative.
 | `retry.maxDelaySecs` | integer | Maximum delay between retries, in seconds. Default: `60`. Also accepted at the top level |
 | `retry.multiplier` | number | Backoff multiplier applied after each retry. Default: `2.0`. Also accepted at the top level |
 | `retry.retryClientErrors` | boolean | Opt-in flag to also retry HTTP 401/404 errors that some providers return during transient outages. Default: `false`. Also accepted at the top level |
-| `env` | map (`string → string`) | Extra environment variables injected when this provider executes. Also accepted at the top level; root-level vars are applied first, then provider-level vars override on a per-key basis. The Pi RPC child receives these variables; the in-process `pi-rust` backend applies them process-wide |
+| `env` | map (`string → string`) | Extra environment variables injected when this provider executes. Also accepted at the top level; root-level vars are applied first, then provider-level vars override on a per-key basis. The Pi/omp RPC child receives these variables; the in-process `pi-rust` backend applies them process-wide |
 | `effort` | string | Provider-level reasoning effort default: `low`, `medium`, `high`, `xhigh`, or `max`. Overridden by a model entry's own `effort`. Also accepted at the top level as the final fallback (see *Model entries*) |
 | `models` | map | **Required.** Maps a mode key (`plan`, `build`, or any custom key passed via `-m`) to a model |
 
@@ -501,11 +503,11 @@ models:
   fast: anthropic/claude-opus-4-5:high        # with a thinking-suffix effort
 ```
 
-The **model id** uses a `provider/model` shape. The segment before the first `/` is passed to the selected Pi backend as the provider (e.g. `anthropic`, `openai`); the rest is the model name. A model id without a `/` is passed through as the model with no explicit provider.
+The **model id** uses a `provider/model` shape. The segment before the first `/` is passed to the selected Pi or omp backend as the provider (e.g. `anthropic`, `openai`); the rest is the model name. A model id without a `/` is passed through as the model with no explicit provider.
 
-**Reasoning effort** can be set three ways, in precedence order: the model entry's own `effort` field, then the provider-level `effort`, then a root-level `effort` (all `low`/`medium`/`high`/`xhigh`/`max`), then a trailing `:level` suffix on the model id. It is recognized for every SDK (`pi`, `pi-rust`, `claude`, `claude-terminal`, `claude-headless`). TypeScript Pi receives the corresponding thinking level, while `pi-rust` maps `max` to its highest supported `xhigh` tier; Claude receives the closest `--effort` tier.
+**Reasoning effort** can be set three ways, in precedence order: the model entry's own `effort` field, then the provider-level `effort`, then a root-level `effort` (all `low`/`medium`/`high`/`xhigh`/`max`), then a trailing `:level` suffix on the model id. It is recognized for every SDK (`pi`, `omp`, `pi-rust`, `claude`, `claude-terminal`, `claude-headless`). TypeScript Pi and omp receive the corresponding thinking level, while `pi-rust` maps `max` to its highest supported `xhigh` tier; Claude receives the closest `--effort` tier.
 
-For Pi execution, the API key comes from `api.key`; the RPC backend forwards it through Pi's existing `--api-key` option. If omitted, provider-specific environment credentials (for example `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`) are used by Pi.
+For Pi/omp execution, the API key comes from `api.key`; the RPC backend forwards it to the child process. If omitted, provider-specific environment credentials (for example `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`) are used by Pi/omp.
 ### Priority and ordering
 
 For each candidate, the effective priority is: the model entry's `priority`, else the provider's `priority`, else `0`. Candidates are sorted by priority descending; ties are broken by the provider's order in the YAML file (earlier wins).
@@ -544,8 +546,9 @@ Seher has a TypeScript counterpart (`seher-ts`) that supports additional
 a single `config.yaml` portable between both implementations, this Rust build
 accepts providers tagged with those SDK kinds but silently filters them out of
 the candidate list. Executable engines here are `pi` (TypeScript RPC),
-`pi-rust` (in-process Rust), `claude`, `claude-terminal`, and
-`claude-headless`; a one-time warning is printed for each skipped provider.
+`omp` (oh-my-pi RPC subprocess), `pi-rust` (in-process Rust), `claude`,
+`claude-terminal`, and `claude-headless`; a one-time warning is printed for
+each skipped provider.
 
 
 ## License

@@ -1,12 +1,13 @@
-//! Custom tool definitions (function calling) for the pi runner.
+//! Custom tool definitions (function calling) for the Pi and omp runners.
 //!
 //! A [`SeherTool`] pairs a JSON Schema with a synchronous handler. The
 //! backends adapt each tool to their native execution path: [`crate::sdk::PiRunner`]
-//! (the `pi-rust` backend) injects it into the in-process Rust session, while
+//! (the `pi-rust` backend) injects it into the in-process Rust session,
 //! [`crate::sdk::PiRpcRunner`] (the `pi` backend) serves it through the
-//! TypeScript subprocess bridge.
+//! TypeScript subprocess bridge, and [`crate::sdk::OmpRpcRunner`] (the `omp`
+//! backend) serves it through omp's host-tool protocol.
 //!
-//! Custom tools run on both Pi backends and on the `claude` SDK. The
+//! Custom tools run on both Pi backends, omp, and on the `claude` SDK. The
 //! `claude-terminal` / `claude-headless` backends drive the CLI externally and
 //! cannot honor them; resolution drops those candidates when tools are
 //! requested (see [`crate::sdk::resolve::ResolveOptions::require_tools`]).

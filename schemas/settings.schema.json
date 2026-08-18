@@ -96,10 +96,11 @@
         },
         "sdk": {
           "type": "string",
-          "description": "Execution engine. Defaults to \"pi\" (TypeScript Pi RPC). Executable in this build: `pi` (TypeScript RPC), `pi-rust` (in-process Rust Pi), `claude` (through `claude-agent-sdk` -- stream-json + in-process MCP tools), `claude-terminal` (local `claude` CLI via tmux), and `claude-headless` (`claude -p`). The seher-ts-only kinds (`codex`, `copilot`, `cursor`, `kimi`, `opencode`) are accepted for cross-implementation portability but silently filtered out of the candidate list at startup. `pi`, `pi-rust`, and `claude` support custom tools.",
+          "description": "Execution engine. Defaults to \"pi\" (TypeScript Pi RPC). Executable in this build: `pi` (TypeScript RPC), `omp` (oh-my-pi RPC subprocess), `pi-rust` (in-process Rust Pi), `claude` (through `claude-agent-sdk` -- stream-json + in-process MCP tools), `claude-terminal` (local `claude` CLI via tmux), and `claude-headless` (`claude -p`). The seher-ts-only kinds (`codex`, `copilot`, `cursor`, `kimi`, `opencode`) are accepted for cross-implementation portability but silently filtered out of the candidate list at startup. `pi`, `omp`, `pi-rust`, and `claude` support custom tools.",
           "default": "pi",
           "examples": [
             "pi",
+            "omp",
             "pi-rust",
             "claude-terminal",
             "claude-headless",

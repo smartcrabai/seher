@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use std::os::unix::process::CommandExt;
 
 use crate::sdk::cancel::CancelToken;
-use crate::sdk::errors::{LimitError, RunError};
+use crate::sdk::errors::{LimitError, NON_RETRYABLE_PREFIX, RunError, is_non_retryable_error};
 use crate::sdk::pi_runner::{PiRunOutput, StreamChunk};
 use crate::sdk::tool::SeherTool;
 #[cfg(unix)]
@@ -27,7 +27,6 @@ use std::os::fd::AsRawFd;
 const EXTENSION_TEMPLATE: &str = include_str!("pi_rpc_extension.ts");
 const PACKAGE: &str = "@earendil-works/pi-coding-agent";
 const CONTROL_RESPONSE_WAIT: Duration = Duration::from_secs(5);
-const PI_NON_RETRYABLE_PREFIX: &str = "Pi RPC non-retryable: ";
 const CLOSE_WAIT: Duration = Duration::from_millis(500);
 // Package managers can spend tens of seconds downloading a cold candidate.
 // This remains bounded and cancellation-aware, while close keeps its short deadline.
@@ -830,11 +829,16 @@ fn run_worker(
                         terminate_process(&entry.process);
                         let detail = stderr.take().map(StderrTail::finish).unwrap_or_default();
                         let source = if acknowledged && is_pi_process_failure(&error) {
-                            format!("{PI_NON_RETRYABLE_PREFIX}{error}")
+                            format!("{NON_RETRYABLE_PREFIX}{error}")
                         } else {
                             error.clone()
                         };
-                        let message = append_stderr(&source, &detail, opts, bridge.as_ref());
+                        let message = append_stderr(
+                            &source,
+                            &detail,
+                            opts,
+                            bridge.as_ref().map(|bridge| bridge.token.as_str()),
+                        );
                         let _ = output.send(classified_chunk_with_source(
                             &source,
                             &message,
@@ -883,13 +887,13 @@ struct SpawnedProcess {
     stderr: StderrTail,
 }
 
-struct StderrTail {
+pub(crate) struct StderrTail {
     bytes: Arc<Mutex<VecDeque<u8>>>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
 impl StderrTail {
-    fn start(stderr: impl std::io::Read + Send + 'static) -> Self {
+    pub(crate) fn start(stderr: impl std::io::Read + Send + 'static) -> Self {
         let bytes = Arc::new(Mutex::new(VecDeque::with_capacity(MAX_STDERR_BYTES)));
         let target = Arc::clone(&bytes);
         let thread = thread::spawn(move || {
@@ -917,7 +921,7 @@ impl StderrTail {
         }
     }
 
-    fn finish(mut self) -> String {
+    pub(crate) fn finish(mut self) -> String {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -930,13 +934,15 @@ impl StderrTail {
     }
 }
 
-fn resolve_candidate_program(program: &str, opts: &PiRpcRunnerOptions) -> PathBuf {
+pub(crate) fn resolve_candidate_program(
+    program: &str,
+    env: &indexmap::IndexMap<String, String>,
+) -> PathBuf {
     let path = Path::new(program);
     if path.components().count() > 1 {
         return path.to_path_buf();
     }
-    let search_path = opts
-        .env
+    let search_path = env
         .get("PATH")
         .map(String::as_str)
         .map(str::to_owned)
@@ -954,8 +960,7 @@ fn resolve_candidate_program(program: &str, opts: &PiRpcRunnerOptions) -> PathBu
             let mut candidates = Vec::new();
             #[cfg(windows)]
             if base.extension().is_none() {
-                let extensions = opts
-                    .env
+                let extensions = env
                     .get("PATHEXT")
                     .cloned()
                     .or_else(|| std::env::var("PATHEXT").ok())
@@ -979,7 +984,7 @@ fn resolve_candidate_program(program: &str, opts: &PiRpcRunnerOptions) -> PathBu
 }
 
 #[cfg(unix)]
-fn runtime_path_for_candidate(candidate: &Path) -> Option<OsString> {
+pub(crate) fn runtime_path_for_candidate(candidate: &Path) -> Option<OsString> {
     let source = std::fs::read_to_string(candidate).ok()?;
     let first_line = source.lines().next()?.trim();
     let shebang = first_line.strip_prefix("#!")?.trim();
@@ -995,23 +1000,18 @@ fn runtime_path_for_candidate(candidate: &Path) -> Option<OsString> {
         return None;
     };
     let parent_path = std::env::var_os("PATH")?;
-    let resolved = resolve_candidate_program(
-        interpreter,
-        &PiRpcRunnerOptions {
-            env: [(
-                String::from("PATH"),
-                parent_path.to_string_lossy().into_owned(),
-            )]
-            .into(),
-            ..Default::default()
-        },
-    );
+    let env: indexmap::IndexMap<String, String> = [(
+        String::from("PATH"),
+        parent_path.to_string_lossy().into_owned(),
+    )]
+    .into();
+    let resolved = resolve_candidate_program(interpreter, &env);
     resolved
         .parent()
         .map(|parent| parent.as_os_str().to_os_string())
 }
 
-fn provider_api_key_env(provider: &str) -> Option<&'static str> {
+pub(crate) fn provider_api_key_env(provider: &str) -> Option<&'static str> {
     match provider.rsplit('/').next()?.to_ascii_lowercase().as_str() {
         "anthropic" | "claude" => Some("ANTHROPIC_API_KEY"),
         "openai" | "codex" | "openai-codex" => Some("OPENAI_API_KEY"),
@@ -1036,7 +1036,7 @@ fn provider_api_key_env(provider: &str) -> Option<&'static str> {
     }
 }
 
-fn merged_child_path(configured: Option<&str>, runtime: Option<OsString>) -> OsString {
+pub(crate) fn merged_child_path(configured: Option<&str>, runtime: Option<OsString>) -> OsString {
     let mut paths = configured
         .map(std::env::split_paths)
         .into_iter()
@@ -1069,7 +1069,7 @@ fn candidate_command(
     program: &str,
     args: &[String],
 ) -> Command {
-    let program = resolve_candidate_program(program, opts);
+    let program = resolve_candidate_program(program, &opts.env);
     #[cfg(unix)]
     let runtime_path = runtime_path_for_candidate(Path::new(&program));
     #[cfg(not(unix))]
@@ -1198,7 +1198,12 @@ fn spawn_candidate(
         ) {
             terminate_process(&entry.process);
             let detail = stderr.finish();
-            last_error = append_stderr(&error.to_string(), &detail, opts, bridge);
+            last_error = append_stderr(
+                &error.to_string(),
+                &detail,
+                opts,
+                bridge.map(|bridge| bridge.token.as_str()),
+            );
             continue;
         }
         let (rx, mut handshake_thread) = start_handshake(stdout, key.id.clone());
@@ -1247,7 +1252,7 @@ fn spawn_candidate(
                 "Pi RPC candidate exited during handshake",
                 &detail,
                 opts,
-                bridge,
+                bridge.map(|bridge| bridge.token.as_str()),
             );
             continue;
         };
@@ -1270,12 +1275,22 @@ fn spawn_candidate(
             Handshake::ExecutionError(error) => {
                 terminate_process(&entry.process);
                 let detail = stderr.finish();
-                return Err(append_stderr(&error, &detail, opts, bridge));
+                return Err(append_stderr(
+                    &error,
+                    &detail,
+                    opts,
+                    bridge.map(|bridge| bridge.token.as_str()),
+                ));
             }
             Handshake::Next(error) => {
                 terminate_process(&entry.process);
                 let detail = stderr.finish();
-                last_error = append_stderr(&error, &detail, opts, bridge);
+                last_error = append_stderr(
+                    &error,
+                    &detail,
+                    opts,
+                    bridge.map(|bridge| bridge.token.as_str()),
+                );
             }
         }
     }
@@ -1425,7 +1440,7 @@ fn read_control_response(
     }
 }
 
-fn session_header_cwd(path: &Path) -> Option<PathBuf> {
+pub(crate) fn session_header_cwd(path: &Path) -> Option<PathBuf> {
     let file = std::fs::File::open(path).ok()?;
     let mut reader = BufReader::new(file);
     let mut line = String::new();
@@ -1437,18 +1452,45 @@ fn session_header_cwd(path: &Path) -> Option<PathBuf> {
         if line.trim().is_empty() {
             continue;
         }
-        let header = serde_json::from_str::<serde_json::Value>(&line).ok()?;
-        if header.get("type").and_then(serde_json::Value::as_str) != Some("session") {
-            return None;
+        if let Some(cwd) = parse_session_header_cwd(&line) {
+            return Some(cwd);
         }
-        return header
-            .get("cwd")
-            .and_then(serde_json::Value::as_str)
-            .map(|cwd| canonical_cwd(Some(Path::new(cwd))));
+        // oh-my-pi session files physically start with a fixed-width 256-byte
+        // `type: "title"` slot before the header; retry past the slot.
+        return session_header_cwd_after_title_slot(path);
     }
 }
 
-fn session_state_cwd(state: &serde_json::Value) -> Option<PathBuf> {
+fn parse_session_header_cwd(line: &str) -> Option<PathBuf> {
+    let header = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    if header.get("type").and_then(serde_json::Value::as_str) != Some("session") {
+        return None;
+    }
+    header
+        .get("cwd")
+        .and_then(serde_json::Value::as_str)
+        .map(|cwd| canonical_cwd(Some(Path::new(cwd))))
+}
+
+fn session_header_cwd_after_title_slot(path: &Path) -> Option<PathBuf> {
+    use std::io::{Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    file.seek(SeekFrom::Start(256)).ok()?;
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line).ok()? == 0 {
+            return None;
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        return parse_session_header_cwd(&line);
+    }
+}
+
+pub(crate) fn session_state_cwd(state: &serde_json::Value) -> Option<PathBuf> {
     for key in ["cwd", "workingDirectory", "working_directory"] {
         if let Some(cwd) = state.get(key).and_then(serde_json::Value::as_str) {
             return Some(canonical_cwd(Some(Path::new(cwd))));
@@ -1850,14 +1892,14 @@ fn handshake(
     }
 }
 
-fn message_end_error(event: &serde_json::Value) -> Option<String> {
+pub(crate) fn message_end_error(event: &serde_json::Value) -> Option<String> {
     if event.get("type").and_then(serde_json::Value::as_str) != Some("message_end") {
         return None;
     }
     message_error(event.get("message").unwrap_or(event))
 }
 
-fn message_error(message: &serde_json::Value) -> Option<String> {
+pub(crate) fn message_error(message: &serde_json::Value) -> Option<String> {
     if message
         .get("stopReason")
         .and_then(serde_json::Value::as_str)
@@ -1874,12 +1916,7 @@ fn message_error(message: &serde_json::Value) -> Option<String> {
     )
 }
 
-#[must_use]
-pub fn is_non_retryable_error(message: &str) -> bool {
-    message.starts_with(PI_NON_RETRYABLE_PREFIX)
-}
-
-fn is_pi_process_failure(message: &str) -> bool {
+pub(crate) fn is_pi_process_failure(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     lower.contains("process exited")
         || lower.contains("broken pipe")
@@ -1888,7 +1925,11 @@ fn is_pi_process_failure(message: &str) -> bool {
         || lower.contains("malformed pi rpc")
 }
 
-fn classified_chunk_with_source(source: &str, display: &str, provider: &str) -> StreamChunk {
+pub(crate) fn classified_chunk_with_source(
+    source: &str,
+    display: &str,
+    provider: &str,
+) -> StreamChunk {
     if is_non_retryable_error(source) {
         StreamChunk::Error(display.to_string())
     } else if is_pi_limit(source) {
@@ -1901,11 +1942,11 @@ fn classified_chunk_with_source(source: &str, display: &str, provider: &str) -> 
     }
 }
 
-fn classified_chunk(message: &str, provider: &str) -> StreamChunk {
+pub(crate) fn classified_chunk(message: &str, provider: &str) -> StreamChunk {
     classified_chunk_with_source(message, message, provider)
 }
 
-fn is_pi_limit(message: &str) -> bool {
+pub(crate) fn is_pi_limit(message: &str) -> bool {
     let lower = message.to_lowercase();
     lower.contains("rate limit")
         || lower.contains("usage limit")
@@ -1957,13 +1998,16 @@ fn contains_http_status(message: &str, status: u16) -> bool {
     })
 }
 
-fn write_json_line(writer: &mut impl Write, value: &serde_json::Value) -> std::io::Result<()> {
+pub(crate) fn write_json_line(
+    writer: &mut impl Write,
+    value: &serde_json::Value,
+) -> std::io::Result<()> {
     serde_json::to_writer(&mut *writer, value).map_err(std::io::Error::other)?;
     writer.write_all(b"\n")?;
     writer.flush()
 }
 
-fn read_jsonl_line(reader: &mut impl BufRead) -> std::io::Result<Option<String>> {
+pub(crate) fn read_jsonl_line(reader: &mut impl BufRead) -> std::io::Result<Option<String>> {
     let mut bytes = Vec::new();
     let mut limited = (&mut *reader).take((MAX_FRAME_BYTES + 1) as u64);
     let read = limited.read_until(b'\n', &mut bytes)?;
@@ -1987,7 +2031,7 @@ fn read_jsonl_line(reader: &mut impl BufRead) -> std::io::Result<Option<String>>
     })
 }
 
-fn parse_jsonl_frame(line: &str) -> Result<serde_json::Value, serde_json::Error> {
+pub(crate) fn parse_jsonl_frame(line: &str) -> Result<serde_json::Value, serde_json::Error> {
     if !line.ends_with('\n') {
         return Err(serde_json::Error::io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -1998,7 +2042,7 @@ fn parse_jsonl_frame(line: &str) -> Result<serde_json::Value, serde_json::Error>
     let line = line.strip_suffix('\r').unwrap_or(line);
     serde_json::from_str(line)
 }
-fn terminate_process(process: &Arc<Mutex<Option<Child>>>) {
+pub(crate) fn terminate_process(process: &Arc<Mutex<Option<Child>>>) {
     if let Ok(mut child) = process.lock()
         && let Some(child) = child.as_mut()
     {
@@ -2020,30 +2064,42 @@ fn terminate_process(process: &Arc<Mutex<Option<Child>>>) {
     }
 }
 
-fn append_stderr(
+pub(crate) fn append_stderr(
     message: &str,
     stderr: &str,
     opts: &PiRpcRunnerOptions,
-    bridge: Option<&Bridge>,
+    bridge_token: Option<&str>,
 ) -> String {
+    let mut secrets: Vec<&str> = Vec::new();
+    if let Some(secret) = &opts.api_key {
+        secrets.push(secret);
+    }
+    secrets.extend(
+        opts.env
+            .values()
+            .filter(|value| !value.is_empty())
+            .map(String::as_str),
+    );
+    if let Some(token) = bridge_token {
+        secrets.push(token);
+    }
+    append_stderr_redacted(message, stderr, &secrets)
+}
+
+/// Append a stderr tail to `message`, redacting every secret first.
+pub(crate) fn append_stderr_redacted(message: &str, stderr: &str, secrets: &[&str]) -> String {
     if stderr.is_empty() {
         return message.to_string();
     }
     let mut detail = stderr.to_string();
-    if let Some(secret) = &opts.api_key {
-        detail = detail.replace(secret, "[redacted]");
-    }
-    for value in opts.env.values() {
-        if !value.is_empty() {
-            detail = detail.replace(value, "[redacted]");
+    for secret in secrets {
+        if !secret.is_empty() {
+            detail = detail.replace(*secret, "[redacted]");
         }
-    }
-    if let Some(bridge) = bridge {
-        detail = detail.replace(&bridge.token, "[redacted]");
     }
     format!("{message}: {}", detail.trim())
 }
-fn canonical_cwd(cwd: Option<&Path>) -> PathBuf {
+pub(crate) fn canonical_cwd(cwd: Option<&Path>) -> PathBuf {
     let path = cwd.map_or_else(
         || std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         Path::to_path_buf,
@@ -2574,7 +2630,7 @@ mod tests {
         let (program, args) = candidates
             .into_iter()
             .find_map(|(program, args)| {
-                let path = resolve_candidate_program(program, &opts);
+                let path = resolve_candidate_program(program, &opts.env);
                 path.is_file().then_some((path, args))
             })
             .expect("pi, bunx, or npx must be available");
@@ -2938,7 +2994,7 @@ done
             env: [("PATH".into(), dir.path().display().to_string())].into(),
             ..Default::default()
         };
-        assert_eq!(resolve_candidate_program("pi", &opts), program);
+        assert_eq!(resolve_candidate_program("pi", &opts.env), program);
     }
     #[cfg(unix)]
     #[test]
