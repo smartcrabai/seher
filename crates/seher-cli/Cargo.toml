@@ -19,7 +19,7 @@ chrono.workspace = true
 clap.workspace = true
 dirs.workspace = true
 indexmap.workspace = true
-seher-sdk = { path = "../seher-sdk", version = "0.0.53" }
+seher-sdk = { path = "../seher-sdk", version = "0.0.54" }
 serde_json.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
