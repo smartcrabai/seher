@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use seher::claude_terminal::{default_transcript_root, encode_transcript_path};
-use seher::sdk::pi_rpc::is_non_retryable_error;
+use seher::sdk::is_non_retryable_error;
 use seher::sdk::{
     CancelToken, CodexBarProbe, Config, ResolveOptions, ResolvedAgent, RunAgentOptions,
     TimeoutError, load_config, pi_session_path, resolve_agent, stream_for_resolved,
@@ -43,7 +43,7 @@ pub fn resolve_and_stream(
     // knows why.
     for (provider, sdk) in unsupported_sdk_providers(&config) {
         logger.warn(&format!(
-            "Skipping provider '{provider}' (sdk='{sdk}'): not supported by this build (supported: 'pi', 'pi-rust', 'claude', 'claude-terminal', 'claude-headless')"
+            "Skipping provider '{provider}' (sdk='{sdk}'): not supported by this build (supported: 'pi', 'pi-rust', 'omp', 'claude', 'claude-terminal', 'claude-headless')"
         ));
     }
 
@@ -115,7 +115,7 @@ fn effective_cwd(args: &Args) -> String {
 
 /// Whether two SDK backends are compatible for session resume. Claude-based
 /// backends (`claude`, `claude-terminal`, `claude-headless`) share the Claude
-/// CLI transcript storage. The two Pi backends use separate session stores.
+/// CLI transcript storage. The Pi, omp, and Rust Pi stores remain separate.
 fn sdk_backends_compatible(resolved_sdk: &str, pinned_sdk: &str) -> bool {
     const CLAUDE_SDKS: &[&str] = &["claude", "claude-terminal", "claude-headless"];
     resolved_sdk == pinned_sdk
@@ -136,6 +136,15 @@ fn pi_ts_session_exists(session_id: &str, cwd: &str) -> bool {
 }
 
 fn pi_ts_session_exists_in(base: &Path, session_id: &str, cwd: &str) -> bool {
+    session_exists_in(base, session_id, cwd, pi_ts_session_header_matches)
+}
+
+fn session_exists_in(
+    base: &Path,
+    session_id: &str,
+    cwd: &str,
+    header_matches: fn(&Path, &str, &Path) -> bool,
+) -> bool {
     let Ok(canonical_cwd) = std::fs::canonicalize(cwd) else {
         return false;
     };
@@ -153,7 +162,7 @@ fn pi_ts_session_exists_in(base: &Path, session_id: &str, cwd: &str) -> bool {
                 pending.push(path);
             } else if file_type.is_file()
                 && path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
-                && pi_ts_session_header_matches(&path, session_id, &canonical_cwd)
+                && header_matches(&path, session_id, &canonical_cwd)
             {
                 return true;
             }
@@ -193,8 +202,89 @@ fn pi_ts_session_header_matches(path: &Path, session_id: &str, canonical_cwd: &P
     }
 }
 
+fn omp_session_exists(session_id: &str, cwd: &str) -> bool {
+    let base = dirs::data_dir()
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".local")
+                .join("share")
+        })
+        .join("seher")
+        .join("omp-sessions");
+    omp_session_exists_in(&base, session_id, cwd)
+}
+
+fn omp_session_exists_in(base: &Path, session_id: &str, cwd: &str) -> bool {
+    session_exists_in(base, session_id, cwd, omp_session_header_matches)
+}
+
+fn omp_session_header_matches(path: &Path, session_id: &str, canonical_cwd: &Path) -> bool {
+    use std::io::{Seek, SeekFrom};
+
+    fn matches_header(line: &str, session_id: &str, canonical_cwd: &Path) -> Option<bool> {
+        let entry = serde_json::from_str::<serde_json::Value>(line).ok()?;
+        if entry.get("type").and_then(serde_json::Value::as_str) != Some("session") {
+            return None;
+        }
+        Some(
+            entry.get("id").and_then(serde_json::Value::as_str) == Some(session_id)
+                && entry
+                    .get("cwd")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|cwd| std::fs::canonicalize(cwd).ok())
+                    .as_deref()
+                    == Some(canonical_cwd),
+        )
+    }
+
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let Ok(bytes) = reader.read_line(&mut line) else {
+            return false;
+        };
+        if bytes == 0 {
+            break;
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Some(matches) = matches_header(&line, session_id, canonical_cwd) {
+            return matches;
+        }
+        break;
+    }
+
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    if file.seek(SeekFrom::Start(256)).is_err() {
+        return false;
+    }
+    let mut reader = BufReader::new(file);
+    line.clear();
+    loop {
+        line.clear();
+        let Ok(bytes) = reader.read_line(&mut line) else {
+            return false;
+        };
+        if bytes == 0 {
+            return false;
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        return matches_header(&line, session_id, canonical_cwd).unwrap_or(false);
+    }
+}
+
 /// Detect which backend owns a session id by probing on-disk storage under
-/// `cwd`. The TypeScript and Rust Pi stores intentionally remain separate.
+/// `cwd`. The TypeScript Pi, omp, and Rust Pi stores remain separate.
 fn probe_session_backend(cwd: &str, session_id: &str) -> Option<&'static str> {
     let claude_path = encode_transcript_path(&default_transcript_root(), cwd, session_id);
     if Path::new(&claude_path).exists() {
@@ -202,6 +292,9 @@ fn probe_session_backend(cwd: &str, session_id: &str) -> Option<&'static str> {
     }
     if pi_ts_session_exists(session_id, cwd) {
         return Some("pi");
+    }
+    if omp_session_exists(session_id, cwd) {
+        return Some("omp");
     }
     let pi_path = pi_session_path(Some(Path::new(cwd)), session_id);
     if pi_path.exists() {
@@ -634,6 +727,45 @@ mod tests {
             temp.path(),
             "different-session",
             &other_cwd.path().to_string_lossy(),
+        ));
+    }
+
+    #[test]
+    fn omp_session_probe_handles_title_slot_and_legacy_header() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let cwd = tempfile::tempdir().expect("cwd dir");
+        let nested = temp.path().join("projects").join("nested");
+        std::fs::create_dir_all(&nested).expect("nested session dir");
+        let header = serde_json::json!({
+            "type": "session",
+            "id": "omp-session",
+            "cwd": cwd.path(),
+        });
+        let title = serde_json::to_vec(&serde_json::json!({
+            "type": "title",
+            "v": 1,
+            "title": "",
+        }))
+        .expect("title");
+        let header_line = format!("{header}\n").into_bytes();
+        let mut with_slot = vec![b' '; 256];
+        with_slot[..title.len()].copy_from_slice(&title);
+        with_slot[255] = b'\n';
+        with_slot.extend_from_slice(&header_line);
+        std::fs::write(nested.join("with-slot.jsonl"), with_slot).expect("slot session file");
+
+        assert!(omp_session_exists_in(
+            temp.path(),
+            "omp-session",
+            &cwd.path().to_string_lossy(),
+        ));
+
+        let legacy = temp.path().join("legacy.jsonl");
+        std::fs::write(&legacy, header_line).expect("legacy session file");
+        assert!(omp_session_header_matches(
+            &legacy,
+            "omp-session",
+            &std::fs::canonicalize(cwd.path()).expect("canonical cwd"),
         ));
     }
 

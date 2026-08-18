@@ -1,9 +1,9 @@
 //! SDK-agnostic dispatch layer.
 //!
 //! [`stream_for_resolved`] inspects a [`ResolvedAgent`] and routes to the
-//! appropriate runner backend (`pi`, `pi-rust`, `claude`, `claude-headless`,
-//! `claude-terminal`). [`run_for_resolved`] wraps it with fold logic that
-//! accumulates [`StreamChunk`]s into a final [`RunOutput`].
+//! appropriate runner backend (`pi`, `omp`, `pi-rust`, `claude`,
+//! `claude-headless`, `claude-terminal`). [`run_for_resolved`] wraps it with
+//! fold logic that accumulates [`StreamChunk`]s into a final [`RunOutput`].
 //!
 //! This module centralises the dispatch logic that previously lived in
 //! `seher_cli::run_mode::dispatch_stream`.
@@ -15,11 +15,12 @@ use std::time::Duration;
 use crate::claude_agent::{ClaudeAgentRunnerConfig, stream_agent};
 use crate::claude_headless::{ClaudeHeadlessRunner, ClaudeHeadlessRunnerConfig, stream_headless};
 use crate::claude_terminal::{new_sdk_with_defaults, stream_via_thread};
-use crate::sdk::pi_rpc::{is_non_retryable_error, load_hardcoded_skills_appendix};
+use crate::sdk::errors::is_non_retryable_error;
+use crate::sdk::pi_rpc::load_hardcoded_skills_appendix;
 use crate::sdk::{
-    CancelToken, EffortLevel, PiRpcRunner, PiRpcRunnerOptions, PiRunner, PiRunnerOptions,
-    ResolvedAgent, RetryConfig, RunError, SeherTool, StreamChunk, sdk_supports_tools,
-    split_model_ref, split_thinking_suffix,
+    CancelToken, EffortLevel, OmpRpcRunner, OmpRpcRunnerOptions, PiRpcRunner, PiRpcRunnerOptions,
+    PiRunner, PiRunnerOptions, ResolvedAgent, RetryConfig, RunError, SeherTool, StreamChunk,
+    sdk_supports_tools, split_model_ref, split_thinking_suffix,
 };
 
 /// Options forwarded to the chosen runner backend.
@@ -34,12 +35,13 @@ pub struct RunAgentOptions {
     /// Session id to resume (multi-turn). `None` starts a fresh session.
     pub resume: Option<String>,
     /// Custom tools (function calling). Non-empty tools require a
-    /// tool-capable SDK (`pi`, `pi-rust`, or `claude`); passing tools to
+    /// tool-capable SDK (`pi`, `omp`, `pi-rust`, or `claude`); passing tools to
     /// `claude-headless` / `claude-terminal` returns a channel error.
     pub tools: Vec<SeherTool>,
     /// Override the API key resolved from `resolved.api.key`. When `None`,
-    /// `resolved.api.key` is used. Only forwarded to the Pi backends; `claude`,
-    /// `claude-headless`, and `claude-terminal` use the system credential chain.
+    /// `resolved.api.key` is used. Only forwarded to the Pi/omp backends;
+    /// `claude`, `claude-headless`, and `claude-terminal` use the system
+    /// credential chain.
     pub api_key: Option<String>,
     /// Hard deadline for the runner process. Forwarded to `claude-headless`
     /// (`ClaudeHeadlessRunnerConfig::timeout_ms`) and `claude-terminal`
@@ -47,9 +49,8 @@ pub struct RunAgentOptions {
     pub timeout_ms: Option<u64>,
     /// Extra system-prompt text to append.
     pub system_prompt: Option<String>,
-    /// Cancellation token. When [`CancelToken::cancel`] is called, the
     /// runner should abort as soon as possible. Forwarded to
-    /// `claude-headless` and the TypeScript Pi RPC runner; other backends
+    /// `claude-headless` and the TypeScript Pi/omp RPC runners; other backends
     /// currently do not expose cancellation through this API.
     pub cancel: CancelToken,
     /// Optional callback invoked on each retry. Receives the 1-based attempt
@@ -58,7 +59,7 @@ pub struct RunAgentOptions {
     pub on_retry: Option<Arc<dyn Fn(u32, &str) + Send + Sync>>,
     /// Reasoning effort level forwarded to the backend. When set, takes
     /// precedence over any effort resolved from `config.yaml` (`resolved.effort`)
-    /// or a `:level` suffix on the model id (all four backends honor the
+    /// or a `:level` suffix on the model id (all five backends honor the
     /// suffix as a final fallback).
     pub effort: Option<EffortLevel>,
 }
@@ -76,6 +77,11 @@ pub struct RunOutput {
 #[derive(Debug)]
 pub(crate) enum BackendChoice {
     Pi {
+        provider: String,
+        model: String,
+        thinking: Option<String>,
+    },
+    Omp {
         provider: String,
         model: String,
         thinking: Option<String>,
@@ -253,16 +259,24 @@ pub(crate) fn choose_backend(
     }
     let effort = opts.effort.or(resolved.effort);
     Ok(match sdk {
-        "pi" => {
+        "pi" | "omp" => {
             let (provider, model, suffix_thinking) =
                 split_model_ref(&resolved.provider, &resolved.model_id);
             let thinking = effort
                 .map(|e| effort_to_ts_pi_thinking(e).to_string())
                 .or_else(|| normalize_ts_pi_suffix(suffix_thinking));
-            BackendChoice::Pi {
-                provider,
-                model,
-                thinking,
+            if sdk == "pi" {
+                BackendChoice::Pi {
+                    provider,
+                    model,
+                    thinking,
+                }
+            } else {
+                BackendChoice::Omp {
+                    provider,
+                    model,
+                    thinking,
+                }
             }
         }
         "pi-rust" => {
@@ -360,6 +374,33 @@ fn stream_pi_backend(
     };
     PiRpcRunner::new(pi_opts).stream(prompt, opts.resume)
 }
+
+fn stream_omp_backend(
+    resolved: &ResolvedAgent,
+    prompt: String,
+    opts: RunAgentOptions,
+    provider: String,
+    model: String,
+    thinking: Option<String>,
+    configured_api_key: Option<String>,
+) -> Receiver<StreamChunk> {
+    let api_key =
+        configured_api_key.or_else(|| ambient_api_key_for_provider(&provider, Some(&resolved.env)));
+    let omp_opts = OmpRpcRunnerOptions {
+        provider: Some(provider),
+        model: Some(model),
+        thinking,
+        api_key,
+        system_prompt: opts.system_prompt,
+        append_system_prompt: load_hardcoded_skills_appendix(opts.working_dir.as_deref()),
+        working_directory: opts.working_dir,
+        env: resolved.env.clone(),
+        tools: opts.tools,
+        cancel: opts.cancel,
+        ..Default::default()
+    };
+    OmpRpcRunner::new(omp_opts).stream(prompt, opts.resume)
+}
 /// Route `resolved` to the appropriate runner and return a streaming channel.
 ///
 /// The caller iterates the returned [`Receiver`] to consume [`StreamChunk`]s.
@@ -386,6 +427,19 @@ pub fn stream_for_resolved(
             model,
             thinking,
         }) => stream_pi_backend(
+            resolved,
+            prompt,
+            opts,
+            provider,
+            model,
+            thinking,
+            configured_api_key,
+        ),
+        Ok(BackendChoice::Omp {
+            provider,
+            model,
+            thinking,
+        }) => stream_omp_backend(
             resolved,
             prompt,
             opts,
@@ -656,6 +710,39 @@ mod tests {
                 assert_eq!(thinking, Some("xhigh".to_string()));
             }
             other => panic!("expected Pi, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn choose_backend_omp_extracts_thinking_and_explicit_effort_wins() {
+        let resolved = make_resolved("omp", "codex", "openai-codex/gpt-5.6:low");
+        let suffix_choice =
+            choose_backend(&resolved, &no_tools_opts()).expect("omp backend is valid");
+        match suffix_choice {
+            BackendChoice::Omp {
+                provider,
+                model,
+                thinking,
+            } => {
+                assert_eq!(provider, "openai-codex");
+                assert_eq!(model, "gpt-5.6");
+                assert_eq!(thinking, Some("low".to_string()));
+            }
+            other => panic!("expected Omp, got {other:?}"),
+        }
+        let choice = choose_backend(
+            &resolved,
+            &RunAgentOptions {
+                effort: Some(EffortLevel::Max),
+                ..Default::default()
+            },
+        )
+        .expect("omp backend is valid");
+        match choice {
+            BackendChoice::Omp { thinking, .. } => {
+                assert_eq!(thinking, Some("max".to_string()));
+            }
+            other => panic!("expected Omp, got {other:?}"),
         }
     }
     #[test]

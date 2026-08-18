@@ -1,5 +1,15 @@
 use chrono::{DateTime, Utc};
 
+/// Marker prefix for RPC backend failures that must never be retried.
+/// Wire/state contract: matched by [`is_non_retryable_error`] callers.
+pub const NON_RETRYABLE_PREFIX: &str = "Pi RPC non-retryable: ";
+
+/// Returns true when the error message carries the non-retryable marker.
+#[must_use]
+pub fn is_non_retryable_error(message: &str) -> bool {
+    message.starts_with(NON_RETRYABLE_PREFIX)
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("Provider '{provider}' hit API rate/usage limit")]
 pub struct LimitError {
