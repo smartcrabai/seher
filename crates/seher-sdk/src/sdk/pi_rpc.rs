@@ -31,7 +31,11 @@ const CLOSE_WAIT: Duration = Duration::from_millis(500);
 // Package managers can spend tens of seconds downloading a cold candidate.
 // This remains bounded and cancellation-aware, while close keeps its short deadline.
 const HANDSHAKE_WAIT: Duration = Duration::from_secs(30);
-const MAX_FRAME_BYTES: usize = 1024 * 1024;
+// Pi and OMP agent_end events include the complete message history, so frame size grows with the session.
+// A 1.25 MiB real-world history exceeded the former 1 MiB limit and caused a non-retryable failure.
+// Keep a finite ceiling to prevent unbounded output from exhausting memory.
+// ponytail: raise the fixed ceiling if observed session histories outgrow 64 MiB.
+const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STDERR_BYTES: usize = 16 * 1024;
 const MAX_BRIDGE_CONNECTIONS: usize = 32;
 const BRIDGE_READ_WAIT: Duration = Duration::from_millis(250);
@@ -2007,14 +2011,17 @@ pub(crate) fn write_json_line(
     writer.flush()
 }
 
-pub(crate) fn read_jsonl_line(reader: &mut impl BufRead) -> std::io::Result<Option<String>> {
+fn read_jsonl_line_limited(
+    reader: &mut impl BufRead,
+    limit: usize,
+) -> std::io::Result<Option<String>> {
     let mut bytes = Vec::new();
-    let mut limited = (&mut *reader).take((MAX_FRAME_BYTES + 1) as u64);
+    let mut limited = (&mut *reader).take(limit.saturating_add(1) as u64);
     let read = limited.read_until(b'\n', &mut bytes)?;
     if read == 0 {
         return Ok(None);
     }
-    if read > MAX_FRAME_BYTES {
+    if read > limit {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "JSONL frame exceeds size limit",
@@ -2029,6 +2036,10 @@ pub(crate) fn read_jsonl_line(reader: &mut impl BufRead) -> std::io::Result<Opti
     String::from_utf8(bytes).map(Some).map_err(|_| {
         std::io::Error::new(std::io::ErrorKind::InvalidData, "JSONL frame is not UTF-8")
     })
+}
+
+pub(crate) fn read_jsonl_line(reader: &mut impl BufRead) -> std::io::Result<Option<String>> {
+    read_jsonl_line_limited(reader, MAX_FRAME_BYTES)
 }
 
 pub(crate) fn parse_jsonl_frame(line: &str) -> Result<serde_json::Value, serde_json::Error> {
@@ -2454,6 +2465,132 @@ mod tests {
         assert!(parse_jsonl_frame("{\"ok\":true}").is_err());
         assert!(parse_jsonl_frame("{\"ok\":true}\r").is_err());
         assert!(parse_jsonl_frame("{\"ok\":true}\n").is_ok());
+    }
+
+    #[test]
+    fn jsonl_frame_exactly_at_the_limit_is_accepted() {
+        let limit = 64;
+        let mut input = vec![b'a'; limit - 1];
+        input.push(b'\n');
+        let mut reader = std::io::Cursor::new(input);
+
+        let line = read_jsonl_line_limited(&mut reader, limit)
+            .expect("frame at limit")
+            .expect("frame exists");
+        assert_eq!(line.len(), limit);
+        assert!(line.ends_with('\n'));
+    }
+
+    #[test]
+    fn jsonl_frame_over_the_limit_returns_invalid_data() {
+        let limit = 64;
+        let mut input = vec![b'a'; limit];
+        input.push(b'\n');
+        let mut reader = std::io::Cursor::new(input);
+
+        let error = read_jsonl_line_limited(&mut reader, limit).expect_err("oversized frame");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("JSONL frame exceeds size limit"));
+    }
+
+    #[test]
+    fn jsonl_reader_returns_none_at_eof() {
+        let mut reader = std::io::Cursor::new(Vec::<u8>::new());
+        assert_eq!(read_jsonl_line_limited(&mut reader, 64).expect("EOF"), None);
+    }
+
+    #[test]
+    fn jsonl_frame_without_lf_returns_invalid_data() {
+        let mut reader = std::io::Cursor::new(b"{\"ok\":true}".to_vec());
+        let error = read_jsonl_line_limited(&mut reader, 64).expect_err("unterminated frame");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            error
+                .to_string()
+                .contains("JSONL frame is not LF terminated")
+        );
+    }
+
+    #[test]
+    fn jsonl_frame_with_invalid_utf8_returns_invalid_data() {
+        let mut reader = std::io::Cursor::new(vec![0xff, b'\n']);
+        let error = read_jsonl_line_limited(&mut reader, 64).expect_err("invalid UTF-8");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("JSONL frame is not UTF-8"));
+    }
+
+    #[test]
+    fn jsonl_reader_preserves_consecutive_frame_boundaries() {
+        let mut reader = std::io::Cursor::new(b"first\nsecond\n".to_vec());
+        assert_eq!(
+            read_jsonl_line_limited(&mut reader, 64).expect("first"),
+            Some("first\n".into())
+        );
+        assert_eq!(
+            read_jsonl_line_limited(&mut reader, 64).expect("second"),
+            Some("second\n".into())
+        );
+        assert_eq!(read_jsonl_line_limited(&mut reader, 64).expect("EOF"), None);
+    }
+
+    fn oversized_agent_end_frame(error_message: Option<&str>) -> Vec<u8> {
+        let text = "x".repeat(50_000);
+        let mut messages = (0..26)
+            .map(|_| {
+                serde_json::json!({
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": text.clone()}]
+                })
+            })
+            .collect::<Vec<_>>();
+        if let Some(error_message) = error_message {
+            messages.push(serde_json::json!({
+                "role": "assistant",
+                "stopReason": "error",
+                "errorMessage": error_message
+            }));
+        }
+        let mut frame = serde_json::to_vec(&serde_json::json!({
+            "type": "agent_end",
+            "willRetry": false,
+            "messages": messages
+        }))
+        .expect("agent_end fixture");
+        frame.push(b'\n');
+        assert!(frame.len() > 1024 * 1024 && frame.len() < 2 * 1024 * 1024);
+        frame
+    }
+
+    #[test]
+    fn large_agent_end_frames_are_read_and_preserve_assistant_errors() {
+        let mut reader = std::io::Cursor::new(oversized_agent_end_frame(None));
+        let line = read_jsonl_line(&mut reader)
+            .expect("large frame")
+            .expect("frame exists");
+        let frame = parse_jsonl_frame(&line).expect("valid JSONL");
+        assert_eq!(frame["type"], "agent_end");
+        assert_eq!(
+            frame["messages"]
+                .as_array()
+                .expect("messages")
+                .iter()
+                .rev()
+                .find_map(message_error),
+            None
+        );
+
+        let mut reader = std::io::Cursor::new(oversized_agent_end_frame(Some("boom")));
+        let line = read_jsonl_line(&mut reader)
+            .expect("large frame")
+            .expect("frame exists");
+        let frame = parse_jsonl_frame(&line).expect("valid JSONL");
+        let error = frame["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .rev()
+            .find_map(message_error);
+        assert_eq!(error.as_deref(), Some("boom"));
     }
 
     #[test]
