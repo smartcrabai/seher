@@ -13,7 +13,7 @@ version = "0.0.55"
 aes = "0.9"
 aes-gcm = "0.11"
 async-trait = "0.1"
-base64 = "0.22"
+base64 = "0.23"
 cbc = { version = "0.2", features = ["alloc"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
