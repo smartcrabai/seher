@@ -24,6 +24,10 @@
         "type": "string"
       }
     },
+    "effort": {
+      "$ref": "#/$defs/effortLevel",
+      "description": "Root-level reasoning effort default: low, medium, high, xhigh, or max."
+    },
     "providers": {
       "type": "object",
       "description": "Map of provider entries. The map key doubles as the provider label and the default provider name.",
@@ -43,6 +47,11 @@
         }
       },
       "additionalProperties": false
+    },
+    "effortLevel": {
+      "type": "string",
+      "enum": ["low", "medium", "high", "xhigh", "max"],
+      "description": "Reasoning effort level forwarded to supported backends."
     },
     "retryConfig": {
       "type": "object",
@@ -137,6 +146,10 @@
             "type": "string"
           }
         },
+        "effort": {
+          "$ref": "#/$defs/effortLevel",
+          "description": "Provider-level reasoning effort default."
+        },
         "models": {
           "type": "object",
           "description": "Map from a mode key (`plan`, `build`, or any custom key passed via `-m`) to a model entry. A provider with no models is rejected at load time.",
@@ -185,6 +198,10 @@
               "description": "Model-level priority. Takes precedence over the provider-level `priority` when set.",
               "minimum": -2147483648,
               "maximum": 2147483647
+            },
+            "effort": {
+              "$ref": "#/$defs/effortLevel",
+              "description": "Model-level reasoning effort. Takes precedence over provider and root defaults."
             }
           },
           "additionalProperties": false
