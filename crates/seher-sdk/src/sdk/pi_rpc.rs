@@ -2974,11 +2974,11 @@ mod tests {
     fn ambient_secret_values_filters_by_name_needle_and_value_length() {
         let vars = [
             ("AWS_SECRET_ACCESS_KEY", "supersecret99"), // SECRET needle, kept
-            ("seher_test_token", "abcdefgh"), // case-insensitive name match, kept
-            ("MY_KEY", "short"), // value below the 8-byte threshold, dropped
-            ("MY_TOKEN", ""),    // empty value, dropped
-            ("HOME", "/Users/example/long"), // no needle in name, dropped
-            ("GIT_AUTHOR_NAME", "Alice Smith"), // over-redaction via AUTH, kept by design
+            ("seher_test_token", "abcdefgh"),           // case-insensitive name match, kept
+            ("MY_KEY", "short"),                        // value below the 8-byte threshold, dropped
+            ("MY_TOKEN", ""),                           // empty value, dropped
+            ("HOME", "/Users/example/long"),            // no needle in name, dropped
+            ("GIT_AUTHOR_NAME", "Alice Smith"),         // over-redaction via AUTH, kept by design
         ];
         let mut values = ambient_secret_values_from(
             vars.iter()
@@ -2995,10 +2995,7 @@ mod tests {
         );
         // Exactly 8 bytes passes the >= threshold.
         assert_eq!(
-            ambient_secret_values_from([(
-                OsString::from("MY_KEY"),
-                OsString::from("12345678")
-            )]),
+            ambient_secret_values_from([(OsString::from("MY_KEY"), OsString::from("12345678"))]),
             vec!["12345678".to_string()]
         );
     }

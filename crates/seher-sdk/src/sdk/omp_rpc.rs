@@ -37,11 +37,11 @@ use crate::sdk::errors::{NON_RETRYABLE_PREFIX, RunError};
 #[cfg(unix)]
 use crate::sdk::pi_rpc::runtime_path_for_candidate;
 use crate::sdk::pi_rpc::{
-    StderrTail, agent_messages_error, ambient_secret_values, append_stderr_redacted,
-    canonical_cwd, classified_chunk, classified_chunk_with_source, merged_child_path,
-    message_end_error, network_error_reason,
-    parse_jsonl_frame, provider_api_key_env, read_jsonl_line, resolve_candidate_program,
-    session_header_cwd, session_state_cwd, terminate_process, write_json_line,
+    StderrTail, agent_messages_error, ambient_secret_values, append_stderr_redacted, canonical_cwd,
+    classified_chunk, classified_chunk_with_source, merged_child_path, message_end_error,
+    network_error_reason, parse_jsonl_frame, provider_api_key_env, read_jsonl_line,
+    resolve_candidate_program, session_header_cwd, session_state_cwd, terminate_process,
+    write_json_line,
 };
 use crate::sdk::pi_runner::{PiRunOutput, StreamChunk};
 use crate::sdk::tool::SeherTool;
