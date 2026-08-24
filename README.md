@@ -319,6 +319,12 @@ See `crates/seher-sdk/examples/pi_mvp.rs` for a runnable example, and
 `crates/seher-cli/src/run_mode.rs` for the full
 resolve -> stream -> retry-on-limit loop.
 
+For an SDK-level resolve-and-run flow, use `run_with_provider_fallback` with
+the same `ResolveOptions` and `LimitProbe`. A structured `network_error`
+excludes only the failed YAML provider for that invocation and re-runs
+resolution; rate limits, timeouts, cancellation, and ordinary errors retain
+their existing behavior, and resumed sessions stay pinned.
+
 ### Driving the `claude` CLI directly
 
 For the `claude` SDK, seher-sdk re-exports the underlying

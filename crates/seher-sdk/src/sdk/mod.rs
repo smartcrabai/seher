@@ -17,7 +17,10 @@ pub use config::{
     ResolvedSkillsConfig, RetryConfig, SkillsConfig,
 };
 pub use config_loader::{ConfigError, load_config, resolve_config_path};
-pub use dispatch::{RunAgentOptions, RunOutput, run_for_resolved, stream_for_resolved};
+pub use dispatch::{
+    ProviderFallbackError, RunAgentOptions, RunOutput, run_for_resolved,
+    run_with_provider_fallback, stream_for_resolved,
+};
 pub use errors::{
     LimitError, RunError, TimeoutError, is_claude_rate_limit_message, is_client_error_retryable,
     is_non_retryable_error, is_transient_http_error,

@@ -9,7 +9,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Mutex, MutexGuard};
 use std::thread;
 
-use crate::sdk::errors::{LimitError, RunError, contains_http_status};
+use crate::sdk::errors::{LimitError, NETWORK_ERROR_REASON, RunError, contains_http_status};
 use crate::sdk::tool::{PiToolAdapter, SeherTool};
 use crate::sdk::util::encode_session_id;
 
@@ -312,12 +312,12 @@ impl PiRunner {
     /// carries a non-empty final text it overrides the concatenated deltas.
     ///
     /// On `Limit` / `Error`, the partial text accumulated so far is returned alongside
-    /// the error as `RunError::Limit { partial }` / `RunError::Other { partial }`.
+    /// the error as `RunError::Limit { partial }` or `RunError::Other { partial }`.
     ///
     /// # Errors
     ///
-    /// Returns `RunError::Limit` on pi rate/usage limits, `RunError::Other` for any other
-    /// failure (transport error, channel disconnect, etc.).
+    /// Returns `RunError::Limit` on pi rate/usage limits and `RunError::Other` for
+    /// any other failure (transport error, channel disconnect, etc.).
     pub fn run(&self, prompt: String, resume: Option<String>) -> Result<PiRunOutput, RunError> {
         let rx = self.stream(prompt, resume);
         let mut buffered = String::new();
@@ -594,17 +594,19 @@ enum CloseOutcome {
 /// from failure.
 fn trailing_assistant_error(assistant: &pi::model::AssistantMessage) -> Option<String> {
     if matches!(assistant.stop_reason, pi::model::StopReason::Error) {
-        Some(
-            assistant
-                .error_message
-                .clone()
-                .unwrap_or_else(|| "pi: assistant turn ended with stopReason error".to_string()),
-        )
+        let error = assistant
+            .error_message
+            .clone()
+            .unwrap_or_else(|| "pi: assistant turn ended with stopReason error".to_string());
+        Some(if error == NETWORK_ERROR_REASON {
+            format!("provider error: {error}")
+        } else {
+            error
+        })
     } else {
         None
     }
 }
-
 /// [`trailing_assistant_error`] routed through [`classify_pi_error`], shaped
 /// for use as the tail of the prompt future.
 fn check_trailing_assistant_error(
@@ -645,6 +647,29 @@ mod tests {
     fn rejects_unrelated_messages() {
         assert!(!is_pi_limit("unexpected end of stream"));
         assert!(!is_pi_limit("connection refused"));
+    }
+
+    #[test]
+    fn trailing_network_marker_text_stays_an_ordinary_error() {
+        let assistant = pi::model::AssistantMessage {
+            stop_reason: pi::model::StopReason::Error,
+            error_message: Some(NETWORK_ERROR_REASON.to_string()),
+            ..Default::default()
+        };
+        let msg = trailing_assistant_error(&assistant).expect("error stop must be detected");
+        let close = classify_pi_error("opencode-go", &msg);
+        let CloseOutcome::Error(msg) = close else {
+            panic!("network marker text must remain an ordinary error");
+        };
+        let error = RunError::Other {
+            message: msg,
+            partial: "partial".to_string(),
+        };
+        assert!(matches!(
+            error,
+            RunError::Other { message, partial }
+                if message == "provider error: network_error" && partial == "partial"
+        ));
     }
 
     #[test]
