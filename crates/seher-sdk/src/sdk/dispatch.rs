@@ -8,6 +8,7 @@
 //! This module centralises the dispatch logic that previously lived in
 //! `seher_cli::run_mode::dispatch_stream`.
 
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
@@ -15,12 +16,14 @@ use std::time::Duration;
 use crate::claude_agent::{ClaudeAgentRunnerConfig, stream_agent};
 use crate::claude_headless::{ClaudeHeadlessRunner, ClaudeHeadlessRunnerConfig, stream_headless};
 use crate::claude_terminal::{new_sdk_with_defaults, stream_via_thread};
+use crate::sdk::config_loader::load_config;
 use crate::sdk::errors::is_non_retryable_error;
 use crate::sdk::pi_rpc::load_hardcoded_skills_appendix;
 use crate::sdk::{
-    CancelToken, EffortLevel, OmpRpcRunner, OmpRpcRunnerOptions, PiRpcRunner, PiRpcRunnerOptions,
-    PiRunner, PiRunnerOptions, ResolvedAgent, RetryConfig, RunError, SeherTool, StreamChunk,
-    sdk_supports_tools, split_model_ref, split_thinking_suffix,
+    CancelToken, EffortLevel, LimitProbe, OmpRpcRunner, OmpRpcRunnerOptions, PiRpcRunner,
+    PiRpcRunnerOptions, PiRunner, PiRunnerOptions, ResolveError, ResolveOptions, ResolvedAgent,
+    RetryConfig, RunError, SeherTool, StreamChunk, resolve_agent, sdk_supports_tools,
+    split_model_ref, split_thinking_suffix,
 };
 
 /// Options forwarded to the chosen runner backend.
@@ -69,6 +72,15 @@ pub struct RunAgentOptions {
 pub struct RunOutput {
     pub text: String,
     pub session_id: Option<String>,
+}
+
+/// Failure returned by [`run_with_provider_fallback`].
+#[derive(Debug, thiserror::Error)]
+pub enum ProviderFallbackError {
+    #[error(transparent)]
+    Resolve(#[from] ResolveError),
+    #[error(transparent)]
+    Run(#[from] RunError),
 }
 
 /// Internal representation of which backend to use and with what parameters.
@@ -617,8 +629,8 @@ where
 /// # Errors
 ///
 /// Returns [`RunError::Limit`] after retrying with exponential backoff,
-/// [`RunError::Other`] for non-retryable failures, and [`RunError::Timeout`]
-/// without retry.
+/// [`RunError::Other`] for non-retryable failures, including the exact
+/// structured network marker, and [`RunError::Timeout`] without retry.
 pub fn run_for_resolved(
     resolved: &ResolvedAgent,
     prompt: String,
@@ -644,6 +656,85 @@ pub fn run_for_resolved(
     )
 }
 
+/// Run a prompt, falling back to the next eligible provider on a network error.
+///
+/// Resolution and execution remain typed independently: resolver failures are
+/// returned as [`ProviderFallbackError::Resolve`], while execution failures are
+/// returned as [`ProviderFallbackError::Run`]. A resumed session is always
+/// pinned to the initially resolved provider.
+///
+/// # Errors
+///
+/// Returns [`ProviderFallbackError::Resolve`] when provider resolution fails,
+/// or [`ProviderFallbackError::Run`] for a terminal execution failure.
+pub async fn run_with_provider_fallback(
+    resolve_options: ResolveOptions,
+    probe: &mut dyn LimitProbe,
+    prompt: String,
+    opts: RunAgentOptions,
+) -> Result<RunOutput, ProviderFallbackError> {
+    run_with_provider_fallback_inner(
+        resolve_options,
+        probe,
+        prompt,
+        opts,
+        |resolved, prompt, opts| {
+            let resolved = resolved.clone();
+            async move {
+                tokio::task::spawn_blocking(move || run_for_resolved(&resolved, prompt, opts))
+                    .await
+                    .map_err(|error| RunError::Other {
+                        message: format!("provider run task failed: {error}"),
+                        partial: String::new(),
+                    })?
+            }
+        },
+    )
+    .await
+}
+async fn run_with_provider_fallback_inner<F, Fut>(
+    resolve_options: ResolveOptions,
+    probe: &mut dyn LimitProbe,
+    prompt: String,
+    opts: RunAgentOptions,
+    mut run: F,
+) -> Result<RunOutput, ProviderFallbackError>
+where
+    F: FnMut(&ResolvedAgent, String, RunAgentOptions) -> Fut,
+    Fut: Future<Output = Result<RunOutput, RunError>>,
+{
+    let config = match resolve_options.config.clone() {
+        Some(config) => config,
+        None => load_config(resolve_options.config_path.as_deref()).map_err(ResolveError::from)?,
+    };
+    let mut excluded = resolve_options.exclude_providers.clone();
+    let mut last_network_error = None;
+
+    loop {
+        let mut options = resolve_options.clone();
+        options.config = Some(config.clone());
+        options.exclude_providers = excluded.clone();
+        let resolved = match resolve_agent(options, probe).await {
+            Ok(resolved) => resolved,
+            Err(error @ ResolveError::NoMatching(_)) => {
+                return Err(last_network_error.map_or_else(
+                    || ProviderFallbackError::Resolve(error),
+                    ProviderFallbackError::Run,
+                ));
+            }
+            Err(error) => return Err(error.into()),
+        };
+        match run(&resolved, prompt.clone(), opts.clone()).await {
+            Ok(output) => return Ok(output),
+            Err(error) if error.is_network_error() && opts.resume.is_none() => {
+                excluded.push(resolved.provider.clone());
+                last_network_error = Some(error);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
 #[cfg(test)]
 #[expect(
     clippy::expect_used,
@@ -651,12 +742,16 @@ pub fn run_for_resolved(
     reason = "tests may panic on unexpected fixtures"
 )]
 mod tests {
+    use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::mpsc::channel;
 
     use super::*;
-    use crate::sdk::config::{ResolvedSkillsConfig, RetryConfig};
-    use crate::sdk::errors::{LimitError, TimeoutError};
+    use crate::sdk::config::{
+        Config, ModelEntry, ProviderEntry, ResolvedSkillsConfig, RetryConfig,
+    };
+    use crate::sdk::errors::{LimitError, NETWORK_ERROR_REASON, TimeoutError};
+    use crate::sdk::{CancelToken, LimitProbe, ProbeFuture};
 
     fn make_resolved(sdk: &str, provider: &str, model_id: &str) -> ResolvedAgent {
         ResolvedAgent {
@@ -669,6 +764,92 @@ mod tests {
             retry: RetryConfig::default(),
             env: indexmap::IndexMap::new(),
             effort: None,
+        }
+    }
+
+    struct AvailableProbe;
+
+    impl LimitProbe for AvailableProbe {
+        fn probe<'a>(
+            &'a mut self,
+            _entry: &'a ProviderEntry,
+            _resolved: &'a ResolvedAgent,
+        ) -> ProbeFuture<'a> {
+            Box::pin(async {
+                Ok::<_, Box<dyn std::error::Error>>(crate::codexbar::AgentLimit::NotLimited)
+            })
+        }
+    }
+    struct FailingProbe {
+        provider: String,
+    }
+
+    impl LimitProbe for FailingProbe {
+        fn probe<'a>(
+            &'a mut self,
+            _entry: &'a ProviderEntry,
+            resolved: &'a ResolvedAgent,
+        ) -> ProbeFuture<'a> {
+            let should_fail = resolved.provider == self.provider;
+            Box::pin(async move {
+                if should_fail {
+                    Err(std::io::Error::other("probe failed").into())
+                } else {
+                    Ok(crate::codexbar::AgentLimit::NotLimited)
+                }
+            })
+        }
+    }
+    struct LimitedProbe;
+
+    impl LimitProbe for LimitedProbe {
+        fn probe<'a>(
+            &'a mut self,
+            _entry: &'a ProviderEntry,
+            _resolved: &'a ResolvedAgent,
+        ) -> ProbeFuture<'a> {
+            Box::pin(async {
+                Ok::<_, Box<dyn std::error::Error>>(crate::codexbar::AgentLimit::Limited {
+                    reset_time: None,
+                })
+            })
+        }
+    }
+
+    fn fallback_config(providers: &[(&str, &str)]) -> Config {
+        Config {
+            providers: providers
+                .iter()
+                .enumerate()
+                .map(|(order, (provider, sdk))| ProviderEntry {
+                    key: (*provider).to_string(),
+                    order,
+                    provider: (*provider).to_string(),
+                    sdk: (*sdk).to_string(),
+                    priority: None,
+                    api: None,
+                    skills: None,
+                    retry: None,
+                    env: None,
+                    effort: None,
+                    models: indexmap::IndexMap::from([(
+                        "build".to_string(),
+                        ModelEntry {
+                            model: format!("{provider}-model"),
+                            priority: None,
+                            effort: None,
+                        },
+                    )]),
+                })
+                .collect(),
+            ..Config::default()
+        }
+    }
+
+    fn network_error(_message: &str) -> RunError {
+        RunError::Other {
+            message: NETWORK_ERROR_REASON.to_string(),
+            partial: "partial".to_string(),
         }
     }
 
@@ -1223,6 +1404,358 @@ mod tests {
         }
     }
 
+    #[test]
+    fn fold_stream_maps_only_exact_network_marker_to_network_error() {
+        let (tx, rx) = channel();
+        tx.send(StreamChunk::Delta("partial".to_string()))
+            .expect("send Delta");
+        tx.send(StreamChunk::Error(NETWORK_ERROR_REASON.to_string()))
+            .expect("send network error");
+        drop(tx);
+
+        let err = fold_stream(&rx).expect_err("network marker should fail");
+        assert!(matches!(
+            err,
+            RunError::Other { ref message, ref partial }
+                if message == NETWORK_ERROR_REASON && partial == "partial"
+        ));
+
+        let (tx, rx) = channel();
+        tx.send(StreamChunk::Error("network_error: timeout".to_string()))
+            .expect("send ordinary error");
+        drop(tx);
+        let err = fold_stream(&rx).expect_err("ordinary error should fail");
+        assert!(
+            matches!(err, RunError::Other { message, .. } if message == "network_error: timeout")
+        );
+    }
+
+    // -- run_with_provider_fallback -------------------------------------------
+
+    #[test]
+    fn provider_fallback_network_error_moves_from_a_to_b() {
+        let config = fallback_config(&[("a", "pi"), ("b", "pi")]);
+        let resolve_options = ResolveOptions {
+            config: Some(config),
+            no_wait: true,
+            ..Default::default()
+        };
+        let mut probe = AvailableProbe;
+        let mut calls = Vec::new();
+        let result = futures::executor::block_on(run_with_provider_fallback_inner(
+            resolve_options,
+            &mut probe,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            |resolved, _, _| {
+                calls.push(resolved.provider.clone());
+                let result = if resolved.provider == "a" {
+                    Err(network_error("a unavailable"))
+                } else {
+                    Ok(RunOutput {
+                        text: "ok".to_string(),
+                        session_id: None,
+                    })
+                };
+                async move { result }
+            },
+        ))
+        .expect("fallback should succeed");
+        assert_eq!(result.text, "ok");
+        assert_eq!(calls, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn public_provider_fallback_uses_the_real_runner_wrapper() {
+        let resolve_options = ResolveOptions {
+            config: Some(fallback_config(&[("a", "claude-headless")])),
+            no_wait: true,
+            ..Default::default()
+        };
+        let mut probe = AvailableProbe;
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let result = run_with_provider_fallback(
+            resolve_options,
+            &mut probe,
+            "prompt".to_string(),
+            RunAgentOptions {
+                cancel,
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(matches!(result, Err(ProviderFallbackError::Run(_))));
+    }
+
+    #[test]
+    fn provider_fallback_honors_initial_exclusions() {
+        let config = fallback_config(&[("a", "pi"), ("b", "pi")]);
+        let resolve_options = ResolveOptions {
+            config: Some(config),
+            exclude_providers: vec!["a".to_string()],
+            no_wait: true,
+            ..Default::default()
+        };
+        let mut probe = AvailableProbe;
+        let mut calls = Vec::new();
+        let result = futures::executor::block_on(run_with_provider_fallback_inner(
+            resolve_options,
+            &mut probe,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            |resolved, _, _| {
+                calls.push(resolved.provider.clone());
+                let result = Ok(RunOutput {
+                    text: "ok".to_string(),
+                    session_id: None,
+                });
+                async move { result }
+            },
+        ))
+        .expect("eligible provider should run");
+        assert_eq!(result.text, "ok");
+        assert_eq!(calls, vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn provider_fallback_returns_last_network_error_after_finite_exhaustion() {
+        let config = fallback_config(&[("a", "pi"), ("b", "pi")]);
+        let resolve_options = ResolveOptions {
+            config: Some(config),
+            no_wait: true,
+            ..Default::default()
+        };
+        let mut probe = AvailableProbe;
+        let mut calls = Vec::new();
+        let error = futures::executor::block_on(run_with_provider_fallback_inner(
+            resolve_options,
+            &mut probe,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            |resolved, _, _| {
+                calls.push(resolved.provider.clone());
+                let result = Err(network_error(&format!("{} unavailable", resolved.provider)));
+                async move { result }
+            },
+        ))
+        .expect_err("all network failures should be returned");
+        assert_eq!(calls, vec!["a".to_string(), "b".to_string()]);
+        match error {
+            ProviderFallbackError::Run(RunError::Other { message, .. }) => {
+                assert_eq!(message, NETWORK_ERROR_REASON);
+            }
+            other => panic!("expected last network error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn provider_fallback_keeps_resumed_session_pinned() {
+        let resolve_options = ResolveOptions {
+            config: Some(fallback_config(&[("a", "pi"), ("b", "pi")])),
+            no_wait: true,
+            ..Default::default()
+        };
+        let mut probe = AvailableProbe;
+        let mut calls = Vec::new();
+        let opts = RunAgentOptions {
+            resume: Some("session-a".to_string()),
+            ..Default::default()
+        };
+        let error = futures::executor::block_on(run_with_provider_fallback_inner(
+            resolve_options,
+            &mut probe,
+            "prompt".to_string(),
+            opts,
+            |resolved, prompt, opts| {
+                assert_eq!(prompt, "prompt");
+                assert_eq!(opts.resume.as_deref(), Some("session-a"));
+                calls.push(resolved.provider.clone());
+                let result = Err(network_error("network_error"));
+                async move { result }
+            },
+        ))
+        .expect_err("resumed network failure should stay terminal");
+        assert_eq!(calls, vec!["a".to_string()]);
+        assert!(matches!(
+            error,
+            ProviderFallbackError::Run(RunError::Other { message, .. })
+                if message == NETWORK_ERROR_REASON
+        ));
+    }
+
+    #[test]
+    fn provider_fallback_keeps_timeout_and_cancellation_terminal() {
+        for failure in [
+            RunError::Timeout {
+                error: TimeoutError {
+                    ms: 1,
+                    label: "test",
+                },
+                partial: "partial".to_string(),
+            },
+            RunError::Other {
+                message: "pi session cancelled before worker startup".to_string(),
+                partial: "partial".to_string(),
+            },
+        ] {
+            let resolve_options = ResolveOptions {
+                config: Some(fallback_config(&[("a", "pi"), ("b", "pi")])),
+                no_wait: true,
+                ..Default::default()
+            };
+            let mut probe = AvailableProbe;
+            let mut calls = Vec::new();
+            let mut failure = Some(failure);
+            let error = futures::executor::block_on(run_with_provider_fallback_inner(
+                resolve_options,
+                &mut probe,
+                "prompt".to_string(),
+                RunAgentOptions::default(),
+                |resolved, _, _| {
+                    calls.push(resolved.provider.clone());
+                    let result = Err(failure.take().expect("runner is called once"));
+                    async move { result }
+                },
+            ))
+            .expect_err("terminal errors must stay on the selected provider");
+            assert_eq!(calls, vec!["a".to_string()]);
+            match error {
+                ProviderFallbackError::Run(RunError::Timeout { .. } | RunError::Other { .. }) => {}
+                other => panic!("expected terminal run error, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn provider_fallback_surfaces_resolver_rate_limits() {
+        let resolve_options = ResolveOptions {
+            config: Some(fallback_config(&[("a", "pi"), ("b", "pi")])),
+            no_wait: true,
+            ..Default::default()
+        };
+        let mut probe = LimitedProbe;
+        let error = futures::executor::block_on(run_with_provider_fallback_inner(
+            resolve_options,
+            &mut probe,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            |_, _, _| async {
+                Err(RunError::Other {
+                    message: "runner must not be called".to_string(),
+                    partial: String::new(),
+                })
+            },
+        ))
+        .expect_err("resolver rate limits must remain resolution errors");
+        assert!(matches!(
+            error,
+            ProviderFallbackError::Resolve(ResolveError::AllLimited(_))
+        ));
+    }
+
+    #[test]
+    fn provider_fallback_surfaces_config_errors_as_resolution_errors() {
+        let resolve_options = ResolveOptions {
+            config_path: Some(PathBuf::from(
+                "/definitely-missing-seher-config/config.yaml",
+            )),
+            no_wait: true,
+            ..Default::default()
+        };
+        let mut probe = AvailableProbe;
+        let error = futures::executor::block_on(run_with_provider_fallback_inner(
+            resolve_options,
+            &mut probe,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            |_, _, _| async {
+                Err(RunError::Other {
+                    message: "runner must not be called".to_string(),
+                    partial: String::new(),
+                })
+            },
+        ))
+        .expect_err("config errors must remain resolution errors");
+        assert!(matches!(
+            error,
+            ProviderFallbackError::Resolve(ResolveError::Config(_))
+        ));
+    }
+
+    #[test]
+    fn provider_fallback_returns_original_error_when_next_resolution_has_no_match() {
+        let resolve_options = ResolveOptions {
+            config: Some(fallback_config(&[("a", "pi"), ("b", "pi")])),
+            no_wait: true,
+            ..Default::default()
+        };
+        let mut probe = FailingProbe {
+            provider: "b".to_string(),
+        };
+        let mut calls = Vec::new();
+        let error = futures::executor::block_on(run_with_provider_fallback_inner(
+            resolve_options,
+            &mut probe,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            |resolved, _, _| {
+                calls.push(resolved.provider.clone());
+                let result = Err(network_error("a network failure"));
+                async move { result }
+            },
+        ))
+        .expect_err("the original network error should survive re-resolution failure");
+        assert_eq!(calls, vec!["a".to_string()]);
+        match error {
+            ProviderFallbackError::Run(RunError::Other { message, .. }) => {
+                assert_eq!(message, NETWORK_ERROR_REASON);
+            }
+            other => panic!("expected original network error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn provider_fallback_preserves_non_network_and_rate_limit_errors() {
+        for failure in [
+            RunError::Other {
+                message: "HTTP 400".to_string(),
+                partial: "partial".to_string(),
+            },
+            RunError::Limit {
+                error: LimitError {
+                    provider: "a".to_string(),
+                    reset_at: None,
+                },
+                partial: "partial".to_string(),
+            },
+        ] {
+            let config = fallback_config(&[("a", "pi"), ("b", "pi")]);
+            let resolve_options = ResolveOptions {
+                config: Some(config),
+                no_wait: true,
+                ..Default::default()
+            };
+            let mut probe = AvailableProbe;
+            let mut calls = Vec::new();
+            let mut failure = Some(failure);
+            let error = futures::executor::block_on(run_with_provider_fallback_inner(
+                resolve_options,
+                &mut probe,
+                "prompt".to_string(),
+                RunAgentOptions::default(),
+                |resolved, _, _| {
+                    calls.push(resolved.provider.clone());
+                    let result = Err(failure.take().expect("runner is called once"));
+                    async move { result }
+                },
+            ))
+            .expect_err("non-network errors must stay on the selected provider");
+            assert_eq!(calls, vec!["a".to_string()]);
+            assert!(matches!(error, ProviderFallbackError::Run(_)));
+        }
+    }
+
     // -----------------------------------------------------------------------
     // run_with_retry_inner
     // -----------------------------------------------------------------------
@@ -1561,6 +2094,28 @@ mod tests {
             |_| {},
         );
         assert!(result.is_err());
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn retry_network_error_fails_immediately() {
+        let mut calls = 0;
+        let run = |_prompt: String, _opts: RunAgentOptions| {
+            calls += 1;
+            Err(network_error("connection reset"))
+        };
+        let result = run_with_retry_inner(
+            run,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            &RetryConfig::default(),
+            None,
+            |_| {},
+        );
+        assert!(matches!(
+            result,
+            Err(RunError::Other { message, .. }) if message == NETWORK_ERROR_REASON
+        ));
         assert_eq!(calls, 1);
     }
 

@@ -498,7 +498,7 @@ mod tests {
         let tail = snapshot_stderr_tail(&buf);
         assert_eq!(tail.len(), STDERR_TAIL_LINES);
         // Oldest 5 lines must have been evicted.
-        assert_eq!(tail[0], format!("line 5"));
+        assert_eq!(tail[0], "line 5".to_string());
         assert_eq!(
             tail[STDERR_TAIL_LINES - 1],
             format!("line {}", STDERR_TAIL_LINES + 4)

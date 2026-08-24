@@ -18,7 +18,9 @@ use std::time::{Duration, Instant};
 use std::os::unix::process::CommandExt;
 
 use crate::sdk::cancel::CancelToken;
-use crate::sdk::errors::{LimitError, NON_RETRYABLE_PREFIX, RunError, is_non_retryable_error};
+use crate::sdk::errors::{
+    LimitError, NETWORK_ERROR_REASON, NON_RETRYABLE_PREFIX, RunError, is_non_retryable_error,
+};
 use crate::sdk::pi_runner::{PiRunOutput, StreamChunk};
 use crate::sdk::tool::SeherTool;
 #[cfg(unix)]
@@ -1637,10 +1639,8 @@ fn prompt_once(
             Some("agent_end")
                 if frame.get("willRetry").and_then(serde_json::Value::as_bool) != Some(true) =>
             {
-                assistant_error = frame
-                    .get("messages")
-                    .and_then(serde_json::Value::as_array)
-                    .and_then(|messages| messages.iter().rev().find_map(message_error));
+                assistant_error =
+                    network_error_reason(&frame).or_else(|| agent_messages_error(&frame));
             }
             Some("agent_settled") => {
                 if !acknowledged {
@@ -1905,10 +1905,36 @@ pub(crate) fn message_end_error(event: &serde_json::Value) -> Option<String> {
     if event.get("type").and_then(serde_json::Value::as_str) != Some("message_end") {
         return None;
     }
-    message_error(event.get("message").unwrap_or(event))
+    let message = event.get("message").unwrap_or(event);
+    if has_message_reason(event, NETWORK_ERROR_REASON)
+        || has_message_reason(message, NETWORK_ERROR_REASON)
+    {
+        return Some(NETWORK_ERROR_REASON.to_string());
+    }
+    message_error(message)
+}
+
+fn has_message_reason(message: &serde_json::Value, reason: &str) -> bool {
+    ["stopReason", "stop_reason", "finishReason", "finish_reason"]
+        .iter()
+        .any(|field| message.get(*field).and_then(serde_json::Value::as_str) == Some(reason))
+}
+
+pub(crate) fn network_error_reason(message: &serde_json::Value) -> Option<String> {
+    has_message_reason(message, NETWORK_ERROR_REASON).then(|| NETWORK_ERROR_REASON.to_string())
+}
+
+pub(crate) fn agent_messages_error(frame: &serde_json::Value) -> Option<String> {
+    frame
+        .get("messages")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|messages| messages.iter().rev().find_map(message_error))
 }
 
 pub(crate) fn message_error(message: &serde_json::Value) -> Option<String> {
+    if has_message_reason(message, NETWORK_ERROR_REASON) {
+        return Some(NETWORK_ERROR_REASON.to_string());
+    }
     if message
         .get("stopReason")
         .and_then(serde_json::Value::as_str)
@@ -1916,13 +1942,15 @@ pub(crate) fn message_error(message: &serde_json::Value) -> Option<String> {
     {
         return None;
     }
-    Some(
-        message
-            .get("errorMessage")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("pi: assistant turn ended with stopReason error")
-            .to_string(),
-    )
+    let error = message
+        .get("errorMessage")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("pi: assistant turn ended with stopReason error");
+    Some(if error == NETWORK_ERROR_REASON {
+        format!("provider error: {error}")
+    } else {
+        error.to_string()
+    })
 }
 
 pub(crate) fn is_pi_process_failure(message: &str) -> bool {
@@ -1939,7 +1967,9 @@ pub(crate) fn classified_chunk_with_source(
     display: &str,
     provider: &str,
 ) -> StreamChunk {
-    if is_non_retryable_error(source) {
+    if source == NETWORK_ERROR_REASON {
+        StreamChunk::Error(NETWORK_ERROR_REASON.to_string())
+    } else if is_non_retryable_error(source) {
         StreamChunk::Error(display.to_string())
     } else if is_pi_limit(source) {
         StreamChunk::Limit(LimitError {
@@ -2695,6 +2725,7 @@ mod tests {
         };
         let clone = PiRpcRunnerOptions {
             tools: vec![cloned_handler],
+
             ..Default::default()
         };
         let different = PiRpcRunnerOptions {
@@ -2717,6 +2748,73 @@ mod tests {
         );
         let tool = serde_json::json!({"type": "tool_execution_end", "isError": true});
         assert_eq!(message_end_error(&tool), None);
+    }
+
+    #[test]
+    fn structured_network_error_uses_only_exact_reason_aliases() {
+        for field in ["stopReason", "stop_reason", "finishReason", "finish_reason"] {
+            let mut message = serde_json::json!({"errorMessage": "ignored"});
+            message[field] = serde_json::Value::String(NETWORK_ERROR_REASON.to_string());
+            assert_eq!(
+                message_error(&message).as_deref(),
+                Some(NETWORK_ERROR_REASON),
+                "field {field}"
+            );
+        }
+        assert_eq!(
+            network_error_reason(&serde_json::json!({"stopReason": NETWORK_ERROR_REASON}))
+                .as_deref(),
+            Some(NETWORK_ERROR_REASON)
+        );
+        assert_eq!(
+            message_end_error(&serde_json::json!({
+                "type": "message_end",
+                "finish_reason": NETWORK_ERROR_REASON,
+                "message": {"stopReason": "stop"},
+            }))
+            .as_deref(),
+            Some(NETWORK_ERROR_REASON)
+        );
+        assert_eq!(
+            message_error(&serde_json::json!({
+                "finish_reason": "network_error_extra",
+                "errorMessage": "ordinary",
+            }))
+            .as_deref(),
+            None
+        );
+        assert_eq!(
+            message_error(&serde_json::json!({
+                "stopReason": "error",
+                "errorMessage": "ordinary",
+            }))
+            .as_deref(),
+            Some("ordinary")
+        );
+        assert!(matches!(
+            classified_chunk_with_source(
+                NETWORK_ERROR_REASON,
+                "network_error: stderr detail",
+                "pi",
+            ),
+            StreamChunk::Error(message) if message == NETWORK_ERROR_REASON
+        ));
+        assert_eq!(
+            message_error(&serde_json::json!({
+                "finish_reason": "error",
+                "errorMessage": "ordinary",
+            }))
+            .as_deref(),
+            None
+        );
+        assert_ne!(
+            message_error(&serde_json::json!({
+                "stopReason": "error",
+                "errorMessage": NETWORK_ERROR_REASON,
+            }))
+            .as_deref(),
+            Some(NETWORK_ERROR_REASON)
+        );
     }
 
     #[test]
