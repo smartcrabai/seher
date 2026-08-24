@@ -37,7 +37,7 @@ use crate::sdk::errors::{NON_RETRYABLE_PREFIX, RunError};
 #[cfg(unix)]
 use crate::sdk::pi_rpc::runtime_path_for_candidate;
 use crate::sdk::pi_rpc::{
-    StderrTail, append_stderr_redacted, canonical_cwd, classified_chunk,
+    StderrTail, ambient_secret_values, append_stderr_redacted, canonical_cwd, classified_chunk,
     classified_chunk_with_source, merged_child_path, message_end_error, message_error,
     parse_jsonl_frame, provider_api_key_env, read_jsonl_line, resolve_candidate_program,
     session_header_cwd, session_state_cwd, terminate_process, write_json_line,
@@ -951,6 +951,9 @@ struct SpawnedProcess {
 }
 
 fn append_stderr(message: &str, stderr: &str, opts: &OmpRpcRunnerOptions) -> String {
+    // The child inherits the parent environment, so ambient credentials it
+    // echoes on failure must be redacted alongside the configured ones.
+    let ambient_secrets = ambient_secret_values();
     let mut secrets: Vec<&str> = Vec::new();
     if let Some(secret) = &opts.api_key {
         secrets.push(secret);
@@ -961,6 +964,7 @@ fn append_stderr(message: &str, stderr: &str, opts: &OmpRpcRunnerOptions) -> Str
             .filter(|value| !value.is_empty())
             .map(String::as_str),
     );
+    secrets.extend(ambient_secrets.iter().map(String::as_str));
     append_stderr_redacted(message, stderr, &secrets)
 }
 
@@ -982,7 +986,12 @@ fn candidate_command(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    command.env_clear();
+    // The child inherits the complete parent environment; explicit overlays
+    // below win. This intentionally trades environment isolation for
+    // compatibility: ambient secrets reach the child and its descendants
+    // (stderr surfaced to callers is redacted accordingly), and inherited
+    // interpreter-influencing variables such as NODE_OPTIONS with relative
+    // paths can break child startup.
     for (name, value) in &opts.env {
         command.env(name, value);
     }
@@ -2241,6 +2250,64 @@ mod tests {
         assert!(validate_tool_names(&[tool("a"), tool("b")]).is_ok());
         assert!(validate_tool_names(&[tool("a"), tool("a")]).is_err());
         assert!(validate_tool_names(&[tool("")]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn candidate_command_inherits_parent_environment_and_explicit_env_overrides_it() {
+        use std::collections::HashMap;
+
+        // Skip gracefully in environments without HOME (e.g. bare containers);
+        // there is no inherited variable to compare against.
+        let Ok(home) = std::env::var("HOME") else {
+            return;
+        };
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let explicit_key = "SEHER_OMP_RPC_EXPLICIT_ENV_TEST";
+        let opts = OmpRpcRunnerOptions {
+            env: [(explicit_key.into(), "configured-value".into())].into(),
+            provider: Some("anthropic".into()),
+            api_key: Some("test-provider-key".into()),
+            ..Default::default()
+        };
+        let session = SessionKey {
+            cwd: dir.path().to_path_buf(),
+            id: "environment-test".into(),
+        };
+
+        // `/usr/bin/env` prints the child's inherited environment.
+        let output = candidate_command(&opts, &session, "/usr/bin/env", &[])
+            .output()
+            .expect("run env");
+        assert!(output.status.success());
+        let child_env: HashMap<_, _> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect();
+
+        assert_eq!(
+            child_env.get("HOME").map(String::as_str),
+            Some(home.as_str())
+        );
+        assert_eq!(
+            child_env.get(explicit_key).map(String::as_str),
+            Some("configured-value")
+        );
+        // Provider credentials are injected under their canonical variable name.
+        assert_eq!(
+            child_env.get("ANTHROPIC_API_KEY").map(String::as_str),
+            Some("test-provider-key")
+        );
+        // The parent PATH is replaced wholesale by the curated child PATH, the
+        // last surviving piece of the old sandboxing that shebang resolution
+        // relies on.
+        let expected_path = merged_child_path(None, None);
+        assert_eq!(
+            child_env.get("PATH").map(String::as_str),
+            Some(expected_path.to_string_lossy().as_ref())
+        );
     }
 
     #[cfg(unix)]
