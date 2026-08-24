@@ -1087,7 +1087,12 @@ fn candidate_command(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    command.env_clear();
+    // The child inherits the complete parent environment; explicit overlays
+    // below win. This intentionally trades environment isolation for
+    // compatibility: ambient secrets reach the child and its descendants
+    // (stderr surfaced to callers is redacted accordingly), and inherited
+    // interpreter-influencing variables such as NODE_OPTIONS with relative
+    // paths can break child startup.
     for (name, value) in &opts.env {
         command.env(name, value);
     }
@@ -2111,6 +2116,24 @@ pub(crate) fn append_stderr(
     opts: &PiRpcRunnerOptions,
     bridge_token: Option<&str>,
 ) -> String {
+    append_stderr_with_ambient_secrets(
+        message,
+        stderr,
+        opts,
+        bridge_token,
+        &ambient_secret_values(),
+    )
+}
+
+/// [`append_stderr`] with the ambient secret values supplied by the caller, so
+/// tests can exercise redaction without mutating the process environment.
+fn append_stderr_with_ambient_secrets(
+    message: &str,
+    stderr: &str,
+    opts: &PiRpcRunnerOptions,
+    bridge_token: Option<&str>,
+    ambient_secrets: &[String],
+) -> String {
     let mut secrets: Vec<&str> = Vec::new();
     if let Some(secret) = &opts.api_key {
         secrets.push(secret);
@@ -2121,10 +2144,52 @@ pub(crate) fn append_stderr(
             .filter(|value| !value.is_empty())
             .map(String::as_str),
     );
+    secrets.extend(ambient_secrets.iter().map(String::as_str));
     if let Some(token) = bridge_token {
         secrets.push(token);
     }
     append_stderr_redacted(message, stderr, &secrets)
+}
+
+/// Values of parent-environment variables whose names look secret-bearing
+/// (`*KEY`, `*TOKEN`, `*SECRET`, …). RPC children inherit the parent
+/// environment wholesale, so credentials that were never part of `opts.env`
+/// can still be echoed by a failing child and must be redacted too.
+///
+/// This is best-effort by design: only names containing one of the needles
+/// count as secret-bearing, so lookalike names without a needle (e.g.
+/// `GH_PAT`) are not covered, and values shorter than 8 bytes are ignored to
+/// limit false positives. Over-redaction of ordinary values whose variable
+/// happens to contain a needle (e.g. `GIT_AUTHOR_NAME` via `AUTH`) is the
+/// accepted trade-off: redacting too much only costs diagnostics, while
+/// redacting too little leaks credentials.
+pub(crate) fn ambient_secret_values() -> Vec<String> {
+    ambient_secret_values_from(std::env::vars_os())
+}
+
+/// [`ambient_secret_values`] over an explicit variable list (testable seam).
+pub(crate) fn ambient_secret_values_from(
+    vars: impl IntoIterator<Item = (OsString, OsString)>,
+) -> Vec<String> {
+    const SECRET_NEEDLES: [&str; 7] = [
+        "KEY",
+        "TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "PASSWD",
+        "CREDENTIAL",
+        "AUTH",
+    ];
+    vars.into_iter()
+        .filter_map(|(name, value)| {
+            let name = name.to_string_lossy().to_ascii_uppercase();
+            let value = value.to_string_lossy().into_owned();
+            (!value.is_empty()
+                && value.len() >= 8
+                && SECRET_NEEDLES.iter().any(|needle| name.contains(needle)))
+            .then_some(value)
+        })
+        .collect()
 }
 
 /// Append a stderr tail to `message`, redacting every secret first.
@@ -2846,6 +2911,125 @@ mod tests {
         );
         let _ = handle.join();
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn candidate_command_inherits_parent_environment_and_explicit_env_overrides_it() {
+        use std::collections::HashMap;
+
+        // Skip gracefully in environments without HOME (e.g. bare containers);
+        // there is no inherited variable to compare against.
+        let Ok(home) = std::env::var("HOME") else {
+            return;
+        };
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let explicit_key = "SEHER_PI_RPC_EXPLICIT_ENV_TEST";
+        let opts = PiRpcRunnerOptions {
+            env: [(explicit_key.into(), "configured-value".into())].into(),
+            provider: Some("anthropic".into()),
+            api_key: Some("test-provider-key".into()),
+            ..Default::default()
+        };
+        let session = SessionKey {
+            cwd: dir.path().to_path_buf(),
+            id: "environment-test".into(),
+        };
+
+        // `/usr/bin/env` prints the child's inherited environment.
+        let output = candidate_command(&opts, &session, None, "/usr/bin/env", &[])
+            .output()
+            .expect("run env");
+        assert!(output.status.success());
+        let child_env: HashMap<_, _> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect();
+
+        assert_eq!(
+            child_env.get("HOME").map(String::as_str),
+            Some(home.as_str())
+        );
+        assert_eq!(
+            child_env.get(explicit_key).map(String::as_str),
+            Some("configured-value")
+        );
+        // Provider credentials are injected under their canonical variable name.
+        assert_eq!(
+            child_env.get("ANTHROPIC_API_KEY").map(String::as_str),
+            Some("test-provider-key")
+        );
+        // The parent PATH is replaced wholesale by the curated child PATH, the
+        // last surviving piece of the old sandboxing that shebang resolution
+        // relies on.
+        let expected_path = merged_child_path(None, None);
+        assert_eq!(
+            child_env.get("PATH").map(String::as_str),
+            Some(expected_path.to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
+    fn ambient_secret_values_filters_by_name_needle_and_value_length() {
+        let vars = [
+            ("AWS_SECRET_ACCESS_KEY", "supersecret99"), // SECRET needle, kept
+            ("seher_test_token", "abcdefgh"),           // case-insensitive name match, kept
+            ("MY_KEY", "short"),                        // value below the 8-byte threshold, dropped
+            ("MY_TOKEN", ""),                           // empty value, dropped
+            ("HOME", "/Users/example/long"),            // no needle in name, dropped
+            ("GIT_AUTHOR_NAME", "Alice Smith"),         // over-redaction via AUTH, kept by design
+        ];
+        let mut values = ambient_secret_values_from(
+            vars.iter()
+                .map(|(name, value)| (OsString::from(name), OsString::from(value))),
+        );
+        values.sort();
+        assert_eq!(
+            values,
+            vec![
+                "Alice Smith".to_string(),
+                "abcdefgh".to_string(),
+                "supersecret99".to_string(),
+            ]
+        );
+        // Exactly 8 bytes passes the >= threshold.
+        assert_eq!(
+            ambient_secret_values_from([(OsString::from("MY_KEY"), OsString::from("12345678"))]),
+            vec!["12345678".to_string()]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ambient_secret_values_handles_non_utf8_values_lossily() {
+        use std::os::unix::ffi::OsStringExt;
+        let values = ambient_secret_values_from([(
+            OsString::from("MY_SECRET"),
+            OsString::from_vec(b"abc\xffdefg".to_vec()),
+        )]);
+        assert_eq!(values, vec!["abc\u{FFFD}defg".to_string()]);
+    }
+
+    #[test]
+    fn append_stderr_redacts_ambient_and_configured_secrets_on_surfaced_stderr() {
+        let opts = PiRpcRunnerOptions {
+            api_key: Some("configured-key-123456".into()),
+            ..Default::default()
+        };
+        let ambient = vec!["ambient-secret-9999".to_string()];
+        let message = append_stderr_with_ambient_secrets(
+            "candidate failed",
+            "fatal: AWS_SECRET_ACCESS_KEY=ambient-secret-9999 configured-key-123456",
+            &opts,
+            None,
+            &ambient,
+        );
+        assert!(!message.contains("ambient-secret-9999"));
+        assert!(!message.contains("configured-key-123456"));
+        assert!(message.contains("[redacted]"));
+    }
+
     #[cfg(unix)]
     #[test]
     #[ignore = "downloads and launches the real TypeScript Pi RPC package"]
@@ -3221,7 +3405,7 @@ done
     }
 
     #[test]
-    fn candidate_resolution_uses_resolved_path_before_child_env_is_cleared() {
+    fn candidate_resolution_uses_configured_path_before_system_lookup() {
         let dir = tempfile::tempdir().expect("tempdir");
         let program = dir.path().join("pi");
         std::fs::write(&program, b"").expect("program");
@@ -3233,7 +3417,7 @@ done
     }
     #[cfg(unix)]
     #[test]
-    fn shebang_launcher_gets_minimal_interpreter_path_after_env_clear() {
+    fn shebang_launcher_resolves_runtime_interpreter_path() {
         let dir = tempfile::tempdir().expect("tempdir");
         let launcher = dir.path().join("launcher");
         std::fs::write(&launcher, b"#!/usr/bin/env sh\n").expect("launcher");

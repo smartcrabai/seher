@@ -210,7 +210,10 @@ fn claude_family_model_and_effort(
 }
 
 /// Resolve a standard provider credential, preferring resolved environment
-/// overrides without exposing the parent environment wholesale.
+/// overrides over ambient provider variables. Note that RPC children inherit
+/// the parent environment wholesale by design (see `candidate_command`), so
+/// this selection governs only which key is *injected*, not what the child
+/// can already see.
 fn ambient_api_key_for_provider(
     provider: &str,
     overrides: Option<&indexmap::IndexMap<String, String>>,

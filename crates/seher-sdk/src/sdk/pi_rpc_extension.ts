@@ -7,8 +7,11 @@ type BridgeResponse = { ok: boolean; result?: string; error?: string };
 type BridgeConfig = { specPath?: string; host?: string; port: number; token?: string };
 
 // Pi may re-evaluate this module when a session switch changes its extension cache.
-// The global slot is initialized before the environment namespace is scrubbed, so
-// re-evaluation keeps the original bridge while descendants never inherit secrets.
+// The global slot is initialized before the SEHER_PI_* bridge credentials are
+// scrubbed from the environment below, so re-evaluation keeps the original
+// bridge. Only these SEHER_PI_* keys are guaranteed absent from descendants;
+// RPC children otherwise inherit the parent environment wholesale by design,
+// so any other ambient secrets remain visible to them.
 const bridgeConfigKey = Symbol.for("seher.pi.bridge.config");
 const bridgeGlobal = globalThis as typeof globalThis & { [key: symbol]: BridgeConfig | undefined };
 const bridgeConfig = bridgeGlobal[bridgeConfigKey] ?? (process.env.SEHER_PI_TOOL_SPEC ? {
