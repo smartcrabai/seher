@@ -1,5 +1,14 @@
 use chrono::{DateTime, Utc};
 
+/// Exact reason marker for provider/network failures that may trigger provider fallback.
+pub(crate) const NETWORK_ERROR_REASON: &str = "network_error";
+
+/// Returns true when the error message is the structured network-failure marker.
+#[must_use]
+pub(crate) fn is_network_error_message(message: &str) -> bool {
+    message == NETWORK_ERROR_REASON
+}
+
 /// Marker prefix for RPC backend failures that must never be retried.
 /// Wire/state contract: matched by [`is_non_retryable_error`] callers.
 pub const NON_RETRYABLE_PREFIX: &str = "Pi RPC non-retryable: ";
@@ -53,6 +62,16 @@ impl RunError {
             | Self::Timeout { partial, .. }
             | Self::Other { partial, .. } => partial,
         }
+    }
+
+    /// Return true when this failure carries the exact structured
+    /// network-failure marker.
+    #[must_use]
+    pub fn is_network_error(&self) -> bool {
+        matches!(
+            self,
+            Self::Other { message, .. } if is_network_error_message(message)
+        )
     }
 }
 
@@ -196,5 +215,21 @@ mod tests {
         assert!(!is_client_error_retryable(
             "Anthropic API error (HTTP 4040): not found"
         ));
+    }
+    #[test]
+    fn network_marker_requires_exact_reason() {
+        assert!(is_network_error_message(NETWORK_ERROR_REASON));
+        assert!(!is_network_error_message("network_error: connection reset"));
+        assert!(!is_network_error_message("Network_Error"));
+    }
+
+    #[test]
+    fn network_run_error_exposes_partial_and_type() {
+        let error = RunError::Other {
+            message: NETWORK_ERROR_REASON.to_string(),
+            partial: "before failure".to_string(),
+        };
+        assert!(error.is_network_error());
+        assert_eq!(error.partial(), "before failure");
     }
 }
