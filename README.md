@@ -320,10 +320,11 @@ See `crates/seher-sdk/examples/pi_mvp.rs` for a runnable example, and
 resolve -> stream -> retry-on-limit loop.
 
 For an SDK-level resolve-and-run flow, use `run_with_provider_fallback` with
-the same `ResolveOptions` and `LimitProbe`. A structured `network_error`
-excludes only the failed YAML provider for that invocation and re-runs
-resolution; rate limits, timeouts, cancellation, and ordinary errors retain
-their existing behavior, and resumed sessions stay pinned.
+the same `ResolveOptions` and `LimitProbe`. A structured `network_error` or an
+HTTP 5xx error after same-provider retries are exhausted excludes only the
+failed YAML provider for that invocation and re-runs resolution; rate limits,
+timeouts, cancellation, and ordinary errors retain their existing behavior,
+and resumed sessions stay pinned.
 
 ### Driving the `claude` CLI directly
 
@@ -493,7 +494,7 @@ prompt. The `pi-rust` backend is the explicit in-process Rust alternative.
 | `retry.maxDelaySecs` | integer | Maximum delay between retries, in seconds. Default: `60`. Also accepted at the top level |
 | `retry.multiplier` | number | Backoff multiplier applied after each retry. Default: `2.0`. Also accepted at the top level |
 | `retry.retryClientErrors` | boolean | Opt-in flag to also retry HTTP 401/404 errors that some providers return during transient outages. Default: `false`. Also accepted at the top level |
-| `env` | map (`string → string`) | Extra environment variables injected when this provider executes. Also accepted at the top level; root-level vars are applied first, then provider-level vars override on a per-key basis. The Pi/omp RPC child receives these variables; the in-process `pi-rust` backend applies them process-wide |
+| `env` | map (`string -> string`) | Extra environment variables injected when this provider executes. Also accepted at the top level; root-level vars are applied first, then provider-level vars override on a per-key basis. The Pi/omp RPC child receives these variables; the in-process `pi-rust` backend applies them process-wide |
 | `effort` | string | Provider-level reasoning effort default: `low`, `medium`, `high`, `xhigh`, or `max`. Overridden by a model entry's own `effort`. Also accepted at the top level as the final fallback (see *Model entries*) |
 | `models` | map | **Required.** Maps a mode key (`plan`, `build`, or any custom key passed via `-m`) to a model |
 

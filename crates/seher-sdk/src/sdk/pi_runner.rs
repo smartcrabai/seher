@@ -512,7 +512,7 @@ fn run_on_thread(
 
     let provider_label = opts.provider.clone().unwrap_or_else(|| "pi".to_string());
 
-    // Acquire env guard here — after all fast-fail guards, before the pi run.
+    // Acquire env guard here -- after all fast-fail guards, before the pi run.
     // Holds PI_ENV_MUTEX for the entire duration of block_on; dropped when this
     // function returns, restoring the original values of every modified key.
     let _env_guard = (!opts.env.is_empty()).then(|| PiEnvGuard::acquire(&opts.env));

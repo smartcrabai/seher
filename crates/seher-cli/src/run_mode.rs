@@ -1,18 +1,20 @@
 //! Shared "resolve + stream prompt through pi" flow used by both build and plan modes.
 //!
-//! Implements the retry-on-limit loop: on a `LimitError`, the resolved YAML
-//! provider name is added to `exclude_providers` and resolution is retried.
+//! Implements the retry-on-limit and retry-on-server-error loop: on a
+//! `LimitError` or exhausted HTTP 5xx error, the resolved YAML provider name is
+//! added to `exclude_providers` and resolution is retried.
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use seher::claude_terminal::{default_transcript_root, encode_transcript_path};
-use seher::sdk::is_non_retryable_error;
+use seher::sdk::{is_non_retryable_error, is_server_error_message};
+
 use seher::sdk::{
-    CancelToken, CodexBarProbe, Config, ResolveOptions, ResolvedAgent, RunAgentOptions,
-    TimeoutError, load_config, pi_session_path, resolve_agent, stream_for_resolved,
-    unsupported_sdk_providers,
+    CancelToken, CodexBarProbe, Config, ResolveError, ResolveOptions, ResolvedAgent,
+    RunAgentOptions, TimeoutError, load_config, pi_session_path, resolve_agent,
+    stream_for_resolved, unsupported_sdk_providers,
 };
 
 use crate::args::Args;
@@ -85,7 +87,7 @@ pub fn resolve_and_stream(
         );
     }
 
-    let resolver = |excluded: &[String]| -> Result<ResolvedAgent, String> {
+    let resolver = |excluded: &[String]| -> Result<ResolvedAgent, ResolverError> {
         resolve_once(rt, args, mode_key, excluded, &config)
     };
     let stream_runner = |resolved: &ResolvedAgent| -> Outcome {
@@ -331,7 +333,11 @@ fn resume_and_stream(
         format!("session '{resume_id}' not found under cwd '{cwd}' (resume requires the same --cwd used to create it)")
     })?;
 
-    let resolved = resolve_once(rt, args, mode_key, &[], config)?;
+    let resolved = resolve_once(rt, args, mode_key, &[], config).map_err(|e| match e {
+        // Resume is pinned to one backend; exhaustion and fatal resolution
+        // failures alike surface as plain string errors here.
+        ResolverError::Exhausted(message) | ResolverError::Fatal(message) => message,
+    })?;
     if !sdk_backends_compatible(&resolved.sdk, pinned) {
         return Err(format!(
             "resumed session '{resume_id}' belongs to backend '{pinned}', but the resolver selected '{}' (provider '{}') -- it may be rate-limited or lower priority; pass --provider to force the matching one",
@@ -368,13 +374,30 @@ fn resume_and_stream(
     }
 }
 
-/// Retry-on-limit loop. Pure: takes `resolver` (produces a `ResolvedAgent` given
-/// the current excluded set) and `stream_runner` (produces an `Outcome` for a
-/// resolved agent). Used by both production and tests.
+/// Error returned by the resolver closure passed to [`stream_with_retry`].
 ///
-/// On `Outcome::Limit`, the resolved YAML provider name is added to `excluded`
-/// and `resolver` is called again. The loop exits with `Done` text on success
-/// or a stringified error on terminal failure.
+/// Distinguishes provider exhaustion (every candidate excluded or limited)
+/// from other resolution failures so that the loop substitutes the last HTTP
+/// 5xx message only for genuine exhaustion -- mirroring
+/// `run_with_provider_fallback_inner`, which special-cases only
+/// [`ResolveError::NoMatching`] and surfaces every other resolve error as-is.
+#[derive(Debug)]
+pub enum ResolverError {
+    /// All remaining candidates were excluded or rate-limited.
+    Exhausted(String),
+    /// Any other resolution failure; must never be masked by an earlier
+    /// server-error report.
+    Fatal(String),
+}
+
+/// Retry-on-limit and retry-on-server-error loop. Pure: takes `resolver`
+/// (produces a `ResolvedAgent` given the current excluded set) and
+/// `stream_runner` (produces an `Outcome` for a resolved agent).
+///
+/// On `Outcome::Limit` or an exhausted HTTP 5xx `Outcome::Error`, the
+/// resolved YAML provider name is added to `excluded` and `resolver` is called
+/// again. The loop exits with `Done` text on success or a stringified error on
+/// terminal failure.
 ///
 /// # Errors
 ///
@@ -387,12 +410,27 @@ pub fn stream_with_retry<R, S>(
     mut stream_runner: S,
 ) -> Result<String, String>
 where
-    R: FnMut(&[String]) -> Result<ResolvedAgent, String>,
+    R: FnMut(&[String]) -> Result<ResolvedAgent, ResolverError>,
     S: FnMut(&ResolvedAgent) -> Outcome,
 {
     let mut excluded: Vec<String> = Vec::new();
+    let mut last_server_error: Option<String> = None;
+
     loop {
-        let agent = resolver(&excluded)?;
+        let agent = match resolver(&excluded) {
+            Ok(agent) => agent,
+            // Provider exhaustion after 5xx fallback: surface the last server
+            // error instead of the generic "no matching provider" message
+            // (mirrors run_with_provider_fallback_inner).
+            Err(ResolverError::Exhausted(message)) => {
+                return Err(last_server_error.unwrap_or(message));
+            }
+            // Any other resolution failure is surfaced as-is: substituting a
+            // stale HTTP 5xx report here would misdirect diagnosis away from
+            // the actual resolver failure.
+            Err(ResolverError::Fatal(message)) => return Err(message),
+        };
+
         logger.info(&format!(
             "Selected provider: {} ({}/{})",
             agent.provider, agent.sdk, agent.model_id
@@ -410,8 +448,24 @@ where
                 if !excluded.contains(&agent.provider) {
                     excluded.push(agent.provider.clone());
                 }
+                // A later rate/usage limit means exhaustion is no longer
+                // attributable to a pure server outage; drop any earlier
+                // server error so the resolver failure surfaces instead of a
+                // stale HTTP 5xx report.
+                last_server_error = None;
+            }
+            Outcome::Error(message) if is_server_error_message(&message) => {
+                logger.warn(&format!(
+                    "Provider '{}' failed with a server error: {message}; retrying with next provider...",
+                    agent.provider
+                ));
+                if !excluded.contains(&agent.provider) {
+                    excluded.push(agent.provider.clone());
+                }
+                last_server_error = Some(message);
             }
             Outcome::Error(message) => return Err(message),
+
             Outcome::Timeout => {
                 return Err(TimeoutError {
                     ms: timeout_ms.unwrap_or(0),
@@ -500,7 +554,7 @@ fn resolve_once(
     mode_key: &str,
     excluded: &[String],
     config: &Config,
-) -> Result<ResolvedAgent, String> {
+) -> Result<ResolvedAgent, ResolverError> {
     let opts = ResolveOptions {
         mode_key: mode_key.to_string(),
         provider_filter: args.provider.clone(),
@@ -514,7 +568,12 @@ fn resolve_once(
     // (mirrors seher-ts), so no browser/cookie session is needed here.
     let mut probe = CodexBarProbe;
     rt.block_on(async move { resolve_agent(opts, &mut probe).await })
-        .map_err(|e| e.to_string())
+        .map_err(|error| match &error {
+            ResolveError::NoMatching(_) | ResolveError::AllLimited(_) => {
+                ResolverError::Exhausted(error.to_string())
+            }
+            _ => ResolverError::Fatal(error.to_string()),
+        })
 }
 
 fn dispatch_stream(
@@ -619,6 +678,55 @@ mod tests {
     }
 
     #[test]
+    fn server_error_excludes_provider_and_falls_back() {
+        let logger = silent_logger();
+        let calls = RefCell::new(0u32);
+        let resolver = |excluded: &[String]| {
+            let n = *calls.borrow();
+            *calls.borrow_mut() = n + 1;
+            if n == 0 {
+                assert!(excluded.is_empty(), "first resolve sees empty excluded");
+                Ok(make_resolved("a", "anthropic/x"))
+            } else {
+                assert_eq!(excluded, &["a".to_string()]);
+                Ok(make_resolved("b", "openai/y"))
+            }
+        };
+        let outcomes = RefCell::new(vec![
+            Outcome::Error("Anthropic API error (HTTP 503): unavailable".to_string()),
+            Outcome::Done("ok".to_string()),
+        ]);
+        let stream_runner = |_resolved: &ResolvedAgent| outcomes.borrow_mut().remove(0);
+        let result = stream_with_retry(None, &logger, resolver, stream_runner).expect("done");
+        assert_eq!(result, "ok");
+        assert_eq!(*calls.borrow(), 2);
+    }
+
+    #[test]
+    fn server_error_exhaustion_returns_last_server_error() {
+        let logger = silent_logger();
+        let calls = RefCell::new(0u32);
+        let resolver = |excluded: &[String]| {
+            let n = *calls.borrow();
+            *calls.borrow_mut() = n + 1;
+            if n == 0 {
+                assert!(excluded.is_empty(), "first resolve sees empty excluded");
+                Ok(make_resolved("a", "anthropic/x"))
+            } else {
+                assert_eq!(excluded, &["a".to_string()]);
+                Err(ResolverError::Exhausted("no matching provider".to_string()))
+            }
+        };
+        let stream_runner = |_resolved: &ResolvedAgent| {
+            Outcome::Error("Anthropic API error (HTTP 503): unavailable".to_string())
+        };
+        let err = stream_with_retry(None, &logger, resolver, stream_runner)
+            .expect_err("server error should be returned after provider exhaustion");
+        assert!(err.contains("HTTP 503"), "got: {err}");
+        assert_eq!(*calls.borrow(), 2);
+    }
+
+    #[test]
     fn duplicate_limit_does_not_grow_excluded() {
         // Resolver bug simulation: resolver keeps returning provider "a" even after
         // it's in `excluded`. The loop must not push "a" twice; it should terminate
@@ -629,7 +737,7 @@ mod tests {
             let n = *attempts.borrow();
             *attempts.borrow_mut() = n + 1;
             if n >= 2 {
-                return Err("no more candidates".to_string());
+                return Err(ResolverError::Exhausted("no more candidates".to_string()));
             }
             // Pretend resolver returns "a" regardless of excluded -- checks dedup.
             let _ = excluded;
@@ -639,6 +747,107 @@ mod tests {
         let err =
             stream_with_retry(None, &logger, resolver, stream_runner).expect_err("should error");
         assert!(err.contains("no more candidates"), "got: {err}");
+    }
+
+    #[test]
+    fn non_retryable_marker_with_http_status_is_terminal() {
+        let logger = silent_logger();
+        let calls = RefCell::new(0u32);
+        let resolver = |_excluded: &[String]| {
+            *calls.borrow_mut() += 1;
+            Ok(make_resolved("a", "pi/x"))
+        };
+        let stream_runner = |_r: &ResolvedAgent| {
+            Outcome::Error(
+                "Pi RPC non-retryable: Pi RPC process exited while prompting: HTTP 503".to_string(),
+            )
+        };
+        let err = stream_with_retry(None, &logger, resolver, stream_runner)
+            .expect_err("non-retryable marker must never trigger provider fallback");
+        assert!(err.starts_with("Pi RPC non-retryable:"), "got: {err}");
+        assert_eq!(*calls.borrow(), 1);
+    }
+
+    #[test]
+    fn limit_after_server_error_surfaces_resolver_error_not_stale_503() {
+        let logger = silent_logger();
+        let calls = RefCell::new(0u32);
+        let resolver = |_excluded: &[String]| {
+            let n = *calls.borrow();
+            *calls.borrow_mut() = n + 1;
+            match n {
+                0 => Ok(make_resolved("a", "anthropic/x")),
+                1 => Ok(make_resolved("b", "openai/y")),
+                _ => Err(ResolverError::Exhausted("no matching provider".to_string())),
+            }
+        };
+        let outcomes = RefCell::new(vec![
+            Outcome::Error("Anthropic API error (HTTP 503): unavailable".to_string()),
+            Outcome::Limit,
+        ]);
+        let stream_runner = |_resolved: &ResolvedAgent| outcomes.borrow_mut().remove(0);
+        let err = stream_with_retry(None, &logger, resolver, stream_runner)
+            .expect_err("exhaustion should surface the resolver error");
+        assert_eq!(err, "no matching provider");
+        assert_eq!(*calls.borrow(), 3);
+    }
+
+    #[test]
+    fn fatal_resolver_error_after_server_error_is_not_masked_by_stale_503() {
+        // Given: a 503 excludes provider "a", then resolving the next
+        // candidate fails for an unrelated reason (e.g. a codexbar probe I/O
+        // failure)
+        // When: stream_with_retry exhausts candidates
+        // Then: the actual resolver failure is surfaced as-is, not masked by
+        // the stale HTTP 503 (mirrors run_with_provider_fallback_inner, which
+        // substitutes the last run error only for genuine exhaustion).
+        let logger = silent_logger();
+        let calls = RefCell::new(0u32);
+        let resolver = |excluded: &[String]| {
+            let n = *calls.borrow();
+            *calls.borrow_mut() = n + 1;
+            match n {
+                0 => {
+                    assert!(excluded.is_empty(), "first resolve sees empty excluded");
+                    Ok(make_resolved("a", "anthropic/x"))
+                }
+                _ => Err(ResolverError::Fatal(
+                    "codexbar probe failed: io error".to_string(),
+                )),
+            }
+        };
+        let stream_runner = |_resolved: &ResolvedAgent| {
+            Outcome::Error("Anthropic API error (HTTP 503): unavailable".to_string())
+        };
+        let err = stream_with_retry(None, &logger, resolver, stream_runner)
+            .expect_err("the fatal resolver error should surface as-is");
+        assert_eq!(err, "codexbar probe failed: io error");
+        assert_eq!(*calls.borrow(), 2);
+    }
+
+    #[test]
+    fn duplicate_server_error_does_not_grow_excluded() {
+        // Resolver bug simulation: resolver keeps returning provider "a" even
+        // after it's in `excluded`. The loop must not push "a" twice; it should
+        // terminate when the resolver itself starts returning an error.
+        let logger = silent_logger();
+        let attempts = RefCell::new(0u32);
+        let resolver = |excluded: &[String]| {
+            let n = *attempts.borrow();
+            *attempts.borrow_mut() = n + 1;
+            if n >= 2 {
+                return Err(ResolverError::Exhausted("no more candidates".to_string()));
+            }
+            let _ = excluded;
+            Ok(make_resolved("a", "anthropic/x"))
+        };
+        let stream_runner = |_r: &ResolvedAgent| {
+            Outcome::Error("Anthropic API error (HTTP 503): unavailable".to_string())
+        };
+        let err =
+            stream_with_retry(None, &logger, resolver, stream_runner).expect_err("should error");
+        assert!(err.contains("HTTP 503"), "got: {err}");
+        assert_eq!(*attempts.borrow(), 3);
     }
 
     #[test]
@@ -665,7 +874,9 @@ mod tests {
     #[test]
     fn resolver_error_propagates() {
         let logger = silent_logger();
-        let resolver = |_excluded: &[String]| Err("config broken".to_string());
+        let resolver = |_excluded: &[String]| -> Result<ResolvedAgent, ResolverError> {
+            Err(ResolverError::Fatal("config broken".to_string()))
+        };
         let stream_runner = |_r: &ResolvedAgent| Outcome::Done(String::new());
         let err =
             stream_with_retry(None, &logger, resolver, stream_runner).expect_err("should error");
