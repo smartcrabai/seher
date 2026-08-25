@@ -97,41 +97,52 @@ pub fn is_claude_rate_limit_message(msg: &str) -> bool {
         || lower.contains("session limit")
 }
 
-/// Returns true when `msg` contains `HTTP {status}` followed by a non-digit
-/// (or end of string), avoiding false positives like `HTTP 5002`.
+/// Returns true when `msg` contains `HTTP {status}` or Pi RPC's
+/// `command error: {status}:` form, followed by a non-digit boundary.
 pub(crate) fn contains_http_status(msg: &str, status: u16) -> bool {
     let needle = format!("HTTP {status}");
-    msg.match_indices(&needle).any(|(idx, _)| {
+    let http = msg.match_indices(&needle).any(|(idx, _)| {
         msg[idx + needle.len()..]
             .chars()
             .next()
             .is_none_or(|c| !c.is_ascii_digit())
+    });
+    http || msg.contains(&format!("command error: {status}:"))
+}
+
+fn contains_pi_command_server_error(msg: &str) -> bool {
+    const PREFIX: &str = "command error: ";
+    msg.match_indices(PREFIX).any(|(idx, _)| {
+        let status = &msg.as_bytes()[idx + PREFIX.len()..];
+        status.first() == Some(&b'5')
+            && status.get(1).is_some_and(u8::is_ascii_digit)
+            && status.get(2).is_some_and(u8::is_ascii_digit)
+            && status.get(3) == Some(&b':')
     })
 }
 
-/// Detect HTTP server errors (any 5xx status) that are eligible for
+/// Detect HTTP/Pi RPC server errors (any 5xx status) that are eligible for
 /// provider fallback after same-provider retries are exhausted.
 ///
 /// Matches `HTTP 5` followed by exactly two more digits and a non-digit
-/// boundary (or end of string). Rejects `HTTP 5002` and similar longer numbers.
-/// Messages carrying the [`NON_RETRYABLE_PREFIX`] marker are never matched,
-/// regardless of any HTTP status their text may contain.
+/// boundary, or Pi's `command error: 5xx:` form. Messages carrying the
+/// [`NON_RETRYABLE_PREFIX`] marker are never matched, regardless of status.
 #[must_use]
 pub fn is_server_error_message(msg: &str) -> bool {
     !is_non_retryable_error(msg)
-        && msg.match_indices("HTTP 5").any(|(idx, _)| {
+        && (msg.match_indices("HTTP 5").any(|(idx, _)| {
             let rest = &msg[idx + "HTTP 5".len()..];
             let mut chars = rest.chars();
             chars.next().is_some_and(|c| c.is_ascii_digit())
                 && chars.next().is_some_and(|c| c.is_ascii_digit())
                 && chars.next().is_none_or(|c| !c.is_ascii_digit())
-        })
+        }) || contains_pi_command_server_error(msg))
 }
 
-/// Detect transient HTTP errors that are always worth retrying.
+/// Detect transient HTTP/Pi RPC errors that are always worth retrying.
 ///
-/// Matches HTTP 429 and any full HTTP 5xx status-code substring, avoiding
-/// false positives such as byte counts containing `50` or `5029`.
+/// Matches HTTP 429, Pi's `command error: 429:` form, and any full HTTP/Pi
+/// 5xx status-code substring, avoiding false positives such as byte counts.
 #[must_use]
 pub fn is_transient_http_error(msg: &str) -> bool {
     contains_http_status(msg, 429) || is_server_error_message(msg)
@@ -164,6 +175,17 @@ mod tests {
     // -- is_transient_http_error ------------------------------------------------
 
     #[test]
+    fn transient_detects_pi_command_errors() {
+        assert!(is_transient_http_error(
+            "command error: 429: {\"type\":\"rate_limit_error\"}"
+        ));
+        assert!(is_transient_http_error(
+            "command error: 503: {\"type\":\"server_error\"}"
+        ));
+        assert!(!is_transient_http_error("command error: 5030: unknown"));
+    }
+
+    #[test]
     fn transient_detects_429_and_5xx() {
         assert!(is_transient_http_error(
             "Anthropic API error (HTTP 429): rate limited"
@@ -180,6 +202,39 @@ mod tests {
         assert!(is_transient_http_error(
             "Anthropic API error (HTTP 504): timeout"
         ));
+    }
+    // -- is_server_error_message -------------------------------------------------
+
+    #[test]
+    fn server_error_detects_5xx_and_rejects_longer_numbers() {
+        assert!(is_server_error_message(
+            "Anthropic API error (HTTP 500): internal"
+        ));
+        assert!(is_server_error_message(
+            "Anthropic API error (HTTP 503): unavailable"
+        ));
+        assert!(is_server_error_message(
+            "Anthropic API error (HTTP 529): overloaded"
+        ));
+        assert!(is_server_error_message(
+            "command error: 503: {\"type\":\"server_error\"}"
+        ));
+        assert!(!is_server_error_message(
+            "Anthropic API error (HTTP 499): client"
+        ));
+        assert!(!is_server_error_message(
+            "Anthropic API error (HTTP 5002): unknown"
+        ));
+        assert!(!is_server_error_message("command error: 5030: unknown"));
+        assert!(!is_server_error_message("command error: 400: bad request"));
+        assert!(!is_server_error_message("command error: 503"));
+        assert!(!is_server_error_message("command error: 50: incomplete"));
+        assert!(!is_server_error_message("command error: 5: incomplete"));
+        // Truncated status at a boundary must be rejected.
+        assert!(!is_server_error_message("request failed (HTTP 5)"));
+        assert!(!is_server_error_message("request failed HTTP 5"));
+        assert!(!is_server_error_message("Read 5029 bytes"));
+        assert!(!is_server_error_message("network_error"));
     }
 
     #[test]
@@ -209,36 +264,6 @@ mod tests {
             "Anthropic API error (HTTP 4290): unknown"
         ));
     }
-
-    // -- is_server_error_message -------------------------------------------------
-
-    #[test]
-    fn server_error_detects_5xx_and_rejects_longer_numbers() {
-        assert!(is_server_error_message(
-            "Anthropic API error (HTTP 500): internal"
-        ));
-        assert!(is_server_error_message(
-            "Anthropic API error (HTTP 503): unavailable"
-        ));
-        assert!(is_server_error_message(
-            "Anthropic API error (HTTP 529): overloaded"
-        ));
-        assert!(is_server_error_message(
-            "Anthropic API error (HTTP 599): unknown"
-        ));
-        assert!(!is_server_error_message(
-            "Anthropic API error (HTTP 499): client"
-        ));
-        assert!(!is_server_error_message(
-            "Anthropic API error (HTTP 5002): unknown"
-        ));
-        // Truncated status at a boundary must be rejected.
-        assert!(!is_server_error_message("request failed (HTTP 5)"));
-        assert!(!is_server_error_message("request failed HTTP 5"));
-        assert!(!is_server_error_message("Read 5029 bytes"));
-        assert!(!is_server_error_message("network_error"));
-    }
-
     #[test]
     fn server_error_excludes_non_retryable_marker() {
         let marked_message =
@@ -293,6 +318,8 @@ mod tests {
         assert!(is_client_error_retryable(
             "Anthropic API error (HTTP 404): not found"
         ));
+        assert!(is_client_error_retryable("command error: 401: auth_error"));
+        assert!(is_client_error_retryable("command error: 404: not found"));
     }
 
     #[test]

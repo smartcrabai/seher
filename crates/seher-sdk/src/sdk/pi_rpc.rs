@@ -19,7 +19,8 @@ use std::os::unix::process::CommandExt;
 
 use crate::sdk::cancel::CancelToken;
 use crate::sdk::errors::{
-    LimitError, NETWORK_ERROR_REASON, NON_RETRYABLE_PREFIX, RunError, is_non_retryable_error,
+    LimitError, NETWORK_ERROR_REASON, NON_RETRYABLE_PREFIX, RunError, contains_http_status,
+    is_non_retryable_error,
 };
 use crate::sdk::pi_runner::{PiRunOutput, StreamChunk};
 use crate::sdk::tool::SeherTool;
@@ -2025,16 +2026,6 @@ pub(crate) fn is_pi_limit(message: &str) -> bool {
                 )
             })
         || contains_http_status(message, 429)
-}
-
-fn contains_http_status(message: &str, status: u16) -> bool {
-    let needle = format!("HTTP {status}");
-    message.match_indices(&needle).any(|(idx, _)| {
-        message[idx + needle.len()..]
-            .chars()
-            .next()
-            .is_none_or(|c| !c.is_ascii_digit())
-    })
 }
 
 pub(crate) fn write_json_line(

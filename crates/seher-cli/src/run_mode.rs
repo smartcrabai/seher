@@ -693,7 +693,10 @@ mod tests {
             }
         };
         let outcomes = RefCell::new(vec![
-            Outcome::Error("Anthropic API error (HTTP 503): unavailable".to_string()),
+            Outcome::Error(
+                "command error: 503: {\"type\":\"server_error\",\"message\":\"unavailable\"}"
+                    .to_string(),
+            ),
             Outcome::Done("ok".to_string()),
         ]);
         let stream_runner = |_resolved: &ResolvedAgent| outcomes.borrow_mut().remove(0);
