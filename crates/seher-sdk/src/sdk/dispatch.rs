@@ -1614,7 +1614,7 @@ mod tests {
                 calls.push(resolved.provider.clone());
                 let result = if resolved.provider == "a" {
                     Err(RunError::Other {
-                        message: "Anthropic API error (HTTP 503): unavailable".to_string(),
+                        message: "command error: 503: {\"type\":\"server_error\",\"message\":\"unavailable\"}".to_string(),
                         partial: String::new(),
                     })
                 } else {
