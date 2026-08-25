@@ -135,7 +135,7 @@ fn spawn_reader<R: std::io::Read + Send + 'static>(
 /// controlling terminal, so codexbar cannot touch ours. It also implies a new
 /// process group, so terminal-generated signals (e.g. Ctrl-C SIGINT) don't
 /// reach codexbar, and our timeout kill can take down that whole group. A mere
-/// `process_group(0)` is not enough — the child would stay in our session and
+/// `process_group(0)` is not enough -- the child would stay in our session and
 /// could still claim the terminal.
 fn build_command(bin: &Path, args: &[String]) -> Command {
     let mut cmd = Command::new(bin);

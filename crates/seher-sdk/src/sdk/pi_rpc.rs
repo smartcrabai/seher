@@ -2152,7 +2152,7 @@ fn append_stderr_with_ambient_secrets(
 }
 
 /// Values of parent-environment variables whose names look secret-bearing
-/// (`*KEY`, `*TOKEN`, `*SECRET`, …). RPC children inherit the parent
+/// (`*KEY`, `*TOKEN`, `*SECRET`, ...). RPC children inherit the parent
 /// environment wholesale, so credentials that were never part of `opts.env`
 /// can still be echoed by a failing child and must be redacted too.
 ///

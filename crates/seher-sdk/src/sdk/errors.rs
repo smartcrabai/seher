@@ -73,6 +73,14 @@ impl RunError {
             Self::Other { message, .. } if is_network_error_message(message)
         )
     }
+    /// Return true when this failure is an HTTP 5xx server error, which is
+    /// eligible for provider fallback. Messages carrying the
+    /// [`NON_RETRYABLE_PREFIX`] marker are never eligible, regardless of any
+    /// HTTP status their text may contain.
+    #[must_use]
+    pub fn is_server_error(&self) -> bool {
+        matches!(self, Self::Other { message, .. } if is_server_error_message(message))
+    }
 }
 
 /// Heuristic rate-limit / usage-limit detector for free-form error messages
@@ -101,18 +109,32 @@ pub(crate) fn contains_http_status(msg: &str, status: u16) -> bool {
     })
 }
 
+/// Detect HTTP server errors (any 5xx status) that are eligible for
+/// provider fallback after same-provider retries are exhausted.
+///
+/// Matches `HTTP 5` followed by exactly two more digits and a non-digit
+/// boundary (or end of string). Rejects `HTTP 5002` and similar longer numbers.
+/// Messages carrying the [`NON_RETRYABLE_PREFIX`] marker are never matched,
+/// regardless of any HTTP status their text may contain.
+#[must_use]
+pub fn is_server_error_message(msg: &str) -> bool {
+    !is_non_retryable_error(msg)
+        && msg.match_indices("HTTP 5").any(|(idx, _)| {
+            let rest = &msg[idx + "HTTP 5".len()..];
+            let mut chars = rest.chars();
+            chars.next().is_some_and(|c| c.is_ascii_digit())
+                && chars.next().is_some_and(|c| c.is_ascii_digit())
+                && chars.next().is_none_or(|c| !c.is_ascii_digit())
+        })
+}
+
 /// Detect transient HTTP errors that are always worth retrying.
 ///
-/// Matches full status-code substrings (`HTTP 429`, `HTTP 500`, `HTTP 502`,
-/// `HTTP 503`, `HTTP 504`) to avoid false positives such as byte counts
-/// containing `50` or `5029`.
+/// Matches HTTP 429 and any full HTTP 5xx status-code substring, avoiding
+/// false positives such as byte counts containing `50` or `5029`.
 #[must_use]
 pub fn is_transient_http_error(msg: &str) -> bool {
-    contains_http_status(msg, 429)
-        || contains_http_status(msg, 500)
-        || contains_http_status(msg, 502)
-        || contains_http_status(msg, 503)
-        || contains_http_status(msg, 504)
+    contains_http_status(msg, 429) || is_server_error_message(msg)
 }
 
 /// Detect client HTTP errors that should only be retried when explicitly opted in.
@@ -186,6 +208,79 @@ mod tests {
         assert!(!is_transient_http_error(
             "Anthropic API error (HTTP 4290): unknown"
         ));
+    }
+
+    // -- is_server_error_message -------------------------------------------------
+
+    #[test]
+    fn server_error_detects_5xx_and_rejects_longer_numbers() {
+        assert!(is_server_error_message(
+            "Anthropic API error (HTTP 500): internal"
+        ));
+        assert!(is_server_error_message(
+            "Anthropic API error (HTTP 503): unavailable"
+        ));
+        assert!(is_server_error_message(
+            "Anthropic API error (HTTP 529): overloaded"
+        ));
+        assert!(is_server_error_message(
+            "Anthropic API error (HTTP 599): unknown"
+        ));
+        assert!(!is_server_error_message(
+            "Anthropic API error (HTTP 499): client"
+        ));
+        assert!(!is_server_error_message(
+            "Anthropic API error (HTTP 5002): unknown"
+        ));
+        // Truncated status at a boundary must be rejected.
+        assert!(!is_server_error_message("request failed (HTTP 5)"));
+        assert!(!is_server_error_message("request failed HTTP 5"));
+        assert!(!is_server_error_message("Read 5029 bytes"));
+        assert!(!is_server_error_message("network_error"));
+    }
+
+    #[test]
+    fn server_error_excludes_non_retryable_marker() {
+        let marked_message =
+            format!("{NON_RETRYABLE_PREFIX}Pi RPC process exited while prompting: HTTP 500");
+        assert!(!is_server_error_message(&marked_message));
+        let marked = RunError::Other {
+            message: marked_message,
+            partial: String::new(),
+        };
+        assert!(!marked.is_server_error());
+        assert!(!is_server_error_message(&format!(
+            "{NON_RETRYABLE_PREFIX}child exited: HTTP 503"
+        )));
+        let plain = RunError::Other {
+            message: "Anthropic API error (HTTP 500): internal".to_string(),
+            partial: String::new(),
+        };
+        assert!(plain.is_server_error());
+    }
+
+    #[test]
+    fn run_error_classification_is_false_for_limit_and_timeout() {
+        // Guards against a later broadening of the matches! over all RunError
+        // variants misclassifying Limit/Timeout as fallback-eligible.
+        let limit = RunError::Limit {
+            error: LimitError {
+                provider: "claude".to_string(),
+                reset_at: None,
+            },
+            partial: String::new(),
+        };
+        let timeout = RunError::Timeout {
+            error: TimeoutError {
+                ms: 1000,
+                label: "test",
+            },
+            partial: String::new(),
+        };
+        assert!(!limit.is_server_error());
+        assert!(!timeout.is_server_error());
+        assert!(!limit.is_network_error());
+        assert!(!timeout.is_network_error());
     }
 
     // -- is_client_error_retryable ----------------------------------------------

@@ -23,7 +23,7 @@ pub use dispatch::{
 };
 pub use errors::{
     LimitError, RunError, TimeoutError, is_claude_rate_limit_message, is_client_error_retryable,
-    is_non_retryable_error, is_transient_http_error,
+    is_non_retryable_error, is_server_error_message, is_transient_http_error,
 };
 pub use omp_rpc::{OmpRpcRunner, OmpRpcRunnerOptions, close_all_omp_sessions, close_omp_session};
 pub use pi_rpc::{PiRpcRunner, PiRpcRunnerOptions, close_all_pi_sessions, close_pi_session};

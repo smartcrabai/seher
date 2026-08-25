@@ -558,10 +558,9 @@ pub fn stream_for_resolved(
 /// Internal retry loop used by [`run_for_resolved`].
 ///
 /// Retries [`RunError::Limit`] (rate/usage limits are always transient) and
-/// [`RunError::Other`] messages classified as transient HTTP errors. Note that
-/// [`RunError::Limit`] is retried against the *same* provider; callers that want
-/// provider fallback should handle the limit error themselves or use the async
-/// resolution path.
+/// [`RunError::Other`] messages classified as transient HTTP errors. HTTP 5xx
+/// failures are returned after same-provider retries are exhausted so callers
+/// can hand them to [`run_with_provider_fallback`] for provider fallback.
 /// [`RunError::Timeout`] is surfaced immediately so callers can handle timeout
 /// configuration themselves.
 ///
@@ -622,15 +621,17 @@ where
 ///
 /// Internally calls [`stream_for_resolved`] and folds the chunks via
 /// [`fold_stream`], retrying transient failures according to `resolved.retry`.
-/// This function is synchronous and blocks the calling thread while waiting
-/// between retry attempts. Rate-limit errors are retried against the *same*
-/// provider; use the async resolution APIs if you need provider fallback.
+/// Rate-limit errors and HTTP 5xx errors are retried against the *same*
+/// provider; use [`run_with_provider_fallback`] to switch providers after HTTP
+/// 5xx retries are exhausted. This function is synchronous and blocks the
+/// calling thread while waiting between retry attempts.
 ///
 /// # Errors
 ///
 /// Returns [`RunError::Limit`] after retrying with exponential backoff,
 /// [`RunError::Other`] for non-retryable failures, including the exact
-/// structured network marker, and [`RunError::Timeout`] without retry.
+/// structured network marker and HTTP 5xx after retries, and
+/// [`RunError::Timeout`] without retry.
 pub fn run_for_resolved(
     resolved: &ResolvedAgent,
     prompt: String,
@@ -656,11 +657,12 @@ pub fn run_for_resolved(
     )
 }
 
-/// Run a prompt, falling back to the next eligible provider on a network error.
+/// Run a prompt, falling back to the next eligible provider on a network error
+/// or HTTP 5xx after same-provider retries are exhausted.
 ///
 /// Resolution and execution remain typed independently: resolver failures are
-/// returned as [`ProviderFallbackError::Resolve`], while execution failures are
-/// returned as [`ProviderFallbackError::Run`]. A resumed session is always
+/// returned as [`ProviderFallbackError::Resolve`], while execution failures
+/// are returned as [`ProviderFallbackError::Run`]. A resumed session is always
 /// pinned to the initially resolved provider.
 ///
 /// # Errors
@@ -708,7 +710,7 @@ where
         None => load_config(resolve_options.config_path.as_deref()).map_err(ResolveError::from)?,
     };
     let mut excluded = resolve_options.exclude_providers.clone();
-    let mut last_network_error = None;
+    let mut last_fallback_error = None;
 
     loop {
         let mut options = resolve_options.clone();
@@ -717,7 +719,7 @@ where
         let resolved = match resolve_agent(options, probe).await {
             Ok(resolved) => resolved,
             Err(error @ ResolveError::NoMatching(_)) => {
-                return Err(last_network_error.map_or_else(
+                return Err(last_fallback_error.map_or_else(
                     || ProviderFallbackError::Resolve(error),
                     ProviderFallbackError::Run,
                 ));
@@ -726,9 +728,12 @@ where
         };
         match run(&resolved, prompt.clone(), opts.clone()).await {
             Ok(output) => return Ok(output),
-            Err(error) if error.is_network_error() && opts.resume.is_none() => {
+            Err(error)
+                if (error.is_network_error() || error.is_server_error())
+                    && opts.resume.is_none() =>
+            {
                 excluded.push(resolved.provider.clone());
-                last_network_error = Some(error);
+                last_fallback_error = Some(error);
             }
             Err(error) => return Err(error.into()),
         }
@@ -750,7 +755,9 @@ mod tests {
     use crate::sdk::config::{
         Config, ModelEntry, ProviderEntry, ResolvedSkillsConfig, RetryConfig,
     };
-    use crate::sdk::errors::{LimitError, NETWORK_ERROR_REASON, TimeoutError};
+    use crate::sdk::errors::{
+        LimitError, NETWORK_ERROR_REASON, NON_RETRYABLE_PREFIX, TimeoutError,
+    };
     use crate::sdk::{CancelToken, LimitProbe, ProbeFuture};
 
     fn make_resolved(sdk: &str, provider: &str, model_id: &str) -> ResolvedAgent {
@@ -1465,6 +1472,165 @@ mod tests {
         assert_eq!(calls, vec!["a".to_string(), "b".to_string()]);
     }
 
+    #[test]
+    fn server_error_retried_on_same_provider_succeeds_without_fallback() {
+        // Given: provider "a" fails with HTTP 503 on its first two attempts
+        // and succeeds on the third, with a retry budget of 3 attempts
+        // When: the runner is wrapped in the real same-provider retry loop
+        // (`run_with_retry_inner`, as `run_for_resolved` does) inside the
+        // fallback loop
+        // Then: provider "a" recovers in place -- no attempt is made to
+        // switch to "b"
+        let config = fallback_config(&[("a", "pi"), ("b", "pi")]);
+        let resolve_options = ResolveOptions {
+            config: Some(config),
+            no_wait: true,
+            ..Default::default()
+        };
+        let mut probe = AvailableProbe;
+        let mut calls = Vec::new();
+        let retry = RetryConfig {
+            max_attempts: 3,
+            initial_delay_secs: 0,
+            ..RetryConfig::default()
+        };
+        let result = futures::executor::block_on(run_with_provider_fallback_inner(
+            resolve_options,
+            &mut probe,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            |resolved, prompt, _| {
+                let provider = resolved.provider.clone();
+                let mut attempts = 0u32;
+                let result = run_with_retry_inner(
+                    |_prompt, _opts| {
+                        attempts += 1;
+                        calls.push(format!("{provider}:{attempts}"));
+                        if attempts < 3 {
+                            Err(other_error("Anthropic API error (HTTP 503): unavailable"))
+                        } else {
+                            Ok(RunOutput {
+                                text: "ok".to_string(),
+                                session_id: None,
+                            })
+                        }
+                    },
+                    prompt,
+                    RunAgentOptions::default(),
+                    &retry,
+                    None,
+                    |_| {}, // no-op sleep for tests
+                );
+                async move { result }
+            },
+        ))
+        .expect("same-provider retry should recover without fallback");
+        assert_eq!(result.text, "ok");
+        assert_eq!(
+            calls,
+            vec!["a:1".to_string(), "a:2".to_string(), "a:3".to_string()]
+        );
+    }
+
+    #[test]
+    fn server_error_fallback_waits_for_same_provider_retries_to_exhaust() {
+        // Given: provider "a" always fails with HTTP 503 and has a retry
+        // budget of 3 attempts
+        // When: the runner is wrapped in the real same-provider retry loop
+        // inside the fallback loop
+        // Then: "a" is attempted exactly 3 times before the fallback layer
+        // switches to "b" -- a regression falling back after the first 5xx
+        // would surface here as ["a:1", "b:1"]
+        let config = fallback_config(&[("a", "pi"), ("b", "pi")]);
+        let resolve_options = ResolveOptions {
+            config: Some(config),
+            no_wait: true,
+            ..Default::default()
+        };
+        let mut probe = AvailableProbe;
+        let mut calls = Vec::new();
+        let retry = RetryConfig {
+            max_attempts: 3,
+            initial_delay_secs: 0,
+            ..RetryConfig::default()
+        };
+        let result = futures::executor::block_on(run_with_provider_fallback_inner(
+            resolve_options,
+            &mut probe,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            |resolved, prompt, _| {
+                let provider = resolved.provider.clone();
+                let result = run_with_retry_inner(
+                    |_prompt, _opts| {
+                        calls.push(format!("{provider}:{}", calls.len() + 1));
+                        if provider == "b" {
+                            Ok(RunOutput {
+                                text: "ok".to_string(),
+                                session_id: None,
+                            })
+                        } else {
+                            Err(other_error("Anthropic API error (HTTP 503): unavailable"))
+                        }
+                    },
+                    prompt,
+                    RunAgentOptions::default(),
+                    &retry,
+                    None,
+                    |_| {}, // no-op sleep for tests
+                );
+                async move { result }
+            },
+        ))
+        .expect("fallback should succeed once retries are exhausted");
+        assert_eq!(result.text, "ok");
+        assert_eq!(
+            calls,
+            vec![
+                "a:1".to_string(),
+                "a:2".to_string(),
+                "a:3".to_string(),
+                "b:4".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn provider_fallback_server_error_moves_from_a_to_b() {
+        let config = fallback_config(&[("a", "pi"), ("b", "pi")]);
+        let resolve_options = ResolveOptions {
+            config: Some(config),
+            no_wait: true,
+            ..Default::default()
+        };
+        let mut probe = AvailableProbe;
+        let mut calls = Vec::new();
+        let result = futures::executor::block_on(run_with_provider_fallback_inner(
+            resolve_options,
+            &mut probe,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            |resolved, _, _| {
+                calls.push(resolved.provider.clone());
+                let result = if resolved.provider == "a" {
+                    Err(RunError::Other {
+                        message: "Anthropic API error (HTTP 503): unavailable".to_string(),
+                        partial: String::new(),
+                    })
+                } else {
+                    Ok(RunOutput {
+                        text: "ok".to_string(),
+                        session_id: None,
+                    })
+                };
+                async move { result }
+            },
+        ))
+        .expect("fallback should succeed");
+        assert_eq!(result.text, "ok");
+        assert_eq!(calls, vec!["a".to_string(), "b".to_string()]);
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn public_provider_fallback_uses_the_real_runner_wrapper() {
         let resolve_options = ResolveOptions {
@@ -1550,6 +1716,77 @@ mod tests {
     }
 
     #[test]
+    fn provider_fallback_never_triggers_for_non_retryable_marker() {
+        let config = fallback_config(&[("a", "pi"), ("b", "pi")]);
+        let resolve_options = ResolveOptions {
+            config: Some(config),
+            no_wait: true,
+            ..Default::default()
+        };
+        let mut probe = AvailableProbe;
+        let mut calls = Vec::new();
+        let error = futures::executor::block_on(run_with_provider_fallback_inner(
+            resolve_options,
+            &mut probe,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            |resolved, _, _| {
+                calls.push(resolved.provider.clone());
+                let result = Err(RunError::Other {
+                    message: format!("{NON_RETRYABLE_PREFIX}child exited: HTTP 503"),
+                    partial: String::new(),
+                });
+                async move { result }
+            },
+        ))
+        .expect_err("non-retryable failures must stay terminal");
+        assert_eq!(calls, vec!["a".to_string()]);
+        assert!(matches!(
+            error,
+            ProviderFallbackError::Run(RunError::Other { message, .. })
+                if message.starts_with(NON_RETRYABLE_PREFIX)
+        ));
+    }
+
+    #[test]
+    fn provider_fallback_server_error_exhaustion_returns_last_error() {
+        let config = fallback_config(&[("a", "pi"), ("b", "pi")]);
+        let resolve_options = ResolveOptions {
+            config: Some(config),
+            no_wait: true,
+            ..Default::default()
+        };
+        let mut probe = AvailableProbe;
+        let mut calls = Vec::new();
+        let error = futures::executor::block_on(run_with_provider_fallback_inner(
+            resolve_options,
+            &mut probe,
+            "prompt".to_string(),
+            RunAgentOptions::default(),
+            |resolved, _, _| {
+                calls.push(resolved.provider.clone());
+                let result = Err(RunError::Other {
+                    message: format!(
+                        "Anthropic API error (HTTP 503): {} unavailable",
+                        resolved.provider
+                    ),
+                    partial: String::new(),
+                });
+                async move { result }
+            },
+        ))
+        .expect_err("all server failures should be returned");
+        assert_eq!(calls, vec!["a".to_string(), "b".to_string()]);
+        match error {
+            ProviderFallbackError::Run(RunError::Other { message, .. }) => {
+                // Must be the *last* provider's error (b), not an earlier one.
+                assert!(message.ends_with("b unavailable"), "got: {message}");
+            }
+            other => panic!("expected last server error, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn provider_fallback_keeps_resumed_session_pinned() {
         let resolve_options = ResolveOptions {
             config: Some(fallback_config(&[("a", "pi"), ("b", "pi")])),
@@ -1581,6 +1818,44 @@ mod tests {
             error,
             ProviderFallbackError::Run(RunError::Other { message, .. })
                 if message == NETWORK_ERROR_REASON
+        ));
+    }
+
+    #[test]
+    fn provider_fallback_keeps_resumed_server_error_pinned() {
+        let resolve_options = ResolveOptions {
+            config: Some(fallback_config(&[("a", "pi"), ("b", "pi")])),
+            no_wait: true,
+            ..Default::default()
+        };
+        let mut probe = AvailableProbe;
+        let mut calls = Vec::new();
+        let opts = RunAgentOptions {
+            resume: Some("session-a".to_string()),
+            ..Default::default()
+        };
+        let error = futures::executor::block_on(run_with_provider_fallback_inner(
+            resolve_options,
+            &mut probe,
+            "prompt".to_string(),
+            opts,
+            |resolved, prompt, opts| {
+                assert_eq!(prompt, "prompt");
+                assert_eq!(opts.resume.as_deref(), Some("session-a"));
+                calls.push(resolved.provider.clone());
+                let result = Err(RunError::Other {
+                    message: "Anthropic API error (HTTP 503): unavailable".to_string(),
+                    partial: String::new(),
+                });
+                async move { result }
+            },
+        ))
+        .expect_err("resumed server failure should stay terminal");
+        assert_eq!(calls, vec!["a".to_string()]);
+        assert!(matches!(
+            error,
+            ProviderFallbackError::Run(RunError::Other { message, .. })
+                if message.contains("HTTP 503")
         ));
     }
 

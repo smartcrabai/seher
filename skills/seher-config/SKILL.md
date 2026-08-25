@@ -1,6 +1,6 @@
 ---
 name: seher-config
-description: Create, edit, review, and troubleshoot Seher YAML configuration files. Use this skill whenever a request mentions Seher configuration, `config.yaml`, `SEHER_CONFIG`, `--config`, providers, model routing, SDK backends, priorities, retry policy, environment variables, skill discovery, or reasoning effort—even when the user only asks to add, remove, switch, or debug one provider/model. Read the repository's schema and runtime loader before changing YAML, preserve unrelated settings and secrets, and validate the resolved provider/model selection.
+description: Create, edit, review, and troubleshoot Seher YAML configuration files. Use this skill whenever a request mentions Seher configuration, `config.yaml`, `SEHER_CONFIG`, `--config`, providers, model routing, SDK backends, priorities, retry policy, environment variables, skill discovery, or reasoning effort--even when the user only asks to add, remove, switch, or debug one provider/model. Read the repository's schema and runtime loader before changing YAML, preserve unrelated settings and secrets, and validate the resolved provider/model selection.
 ---
 
 # Seher configuration
