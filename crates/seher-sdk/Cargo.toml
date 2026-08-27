@@ -18,7 +18,7 @@ claude-agent-sdk.workspace = true
 dirs.workspace = true
 futures = "0.3"
 indexmap.workspace = true
-pi_agent_rust = { version = "0.1.18", default-features = false, features = [
+pi_agent_rust = { version = "0.3.0", default-features = false, features = [
   "sqlite-sessions",
 ] }
 regex.workspace = true
