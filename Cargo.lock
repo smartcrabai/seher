@@ -1160,6 +1160,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dirs"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d57d423b3c82e89b9a24ca3091fee61f456a26edbd28d26c65906f4bc1dcd8f"
+dependencies = [
+ "dirs-sys",
+]
+
+[[package]]
 name = "dirs-sys"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3337,7 +3346,7 @@ dependencies = [
  "crc32c",
  "crossbeam-queue",
  "ctrlc",
- "dirs",
+ "dirs 6.0.0",
  "enable-ansi-support",
  "flate2",
  "fs4",
@@ -3960,7 +3969,7 @@ version = "0.0.59"
 dependencies = [
  "chrono",
  "clap",
- "dirs",
+ "dirs 7.0.0",
  "indexmap",
  "libc",
  "seher-sdk",
@@ -3976,7 +3985,7 @@ version = "0.0.59"
 dependencies = [
  "async-trait",
  "chrono",
- "dirs",
+ "dirs 7.0.0",
  "futures",
  "indexmap",
  "libc",
