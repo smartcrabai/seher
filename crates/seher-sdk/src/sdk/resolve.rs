@@ -911,7 +911,10 @@ mod tests {
             entry_with_sdk("a", "a", "pi", &[("build", "anthropic/x", None)]),
             entry_with_sdk("b", "b", "pi-rust", &[("build", "openai/y", None)]),
         ]);
-        assert_eq!(unsupported_sdk_providers(&c), Vec::<(String, String)>::new());
+        assert_eq!(
+            unsupported_sdk_providers(&c),
+            Vec::<(String, String)>::new()
+        );
     }
 
     #[test]
