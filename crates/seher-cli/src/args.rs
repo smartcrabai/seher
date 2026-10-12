@@ -153,7 +153,7 @@ mod tests {
     fn defaults_to_build_mode_with_no_args() {
         let a = parse(&[]).expect("ok");
         assert!(matches!(a.mode, Mode::Build));
-        assert!(a.prompt_tokens.is_empty());
+        assert_eq!(a.prompt_tokens, Vec::<String>::new());
     }
 
     #[test]
