@@ -44,6 +44,11 @@ on:
     tags:
       - '**[0-9]+.[0-9]+.[0-9]+*'
 
+# Uploaded artifacts are scratch storage between jobs; final files live in the
+# GitHub Release. PR runs never download them, tag runs keep a re-run window.
+env:
+  ARTIFACT_RETENTION_DAYS: ${{ github.event_name == 'pull_request' && 1 || 7 }}
+
 jobs:
   # Run 'dist plan' (or host) to determine what tasks we need to do
   plan:
@@ -70,6 +75,7 @@ jobs:
         with:
           name: cargo-dist-cache
           path: ~/.cargo/bin/dist
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
       # sure would be cool if github gave us proper conditionals...
       # so here's a doubly-nested ternary-via-truthiness to try to provide the best possible
       # functionality based on whether this is a pull_request, and whether it's from a fork.
@@ -86,6 +92,7 @@ jobs:
         with:
           name: artifacts-plan-dist-manifest
           path: plan-dist-manifest.json
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
 
   # Build and packages all the platform-specific things
   build-local-artifacts:
@@ -164,6 +171,7 @@ jobs:
           path: |
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
 
   # Build and package all the platform-agnostic(ish) things
   build-global-artifacts:
@@ -211,6 +219,7 @@ jobs:
           path: |
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
   # Determines if we should publish/announce
   host:
     needs:
@@ -255,6 +264,7 @@ jobs:
           # Overwrite the previous copy
           name: artifacts-dist-manifest
           path: dist-manifest.json
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
       # Create a GitHub Release while uploading all files to it
       - name: "Download GitHub Artifacts"
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
