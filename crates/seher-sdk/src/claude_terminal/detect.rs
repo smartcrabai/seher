@@ -233,22 +233,22 @@ mod tests {
     #[test]
     fn empty_prompt_gives_empty_needles() {
         let n = build_needles("");
-        assert!(n.prefix.is_empty());
-        assert!(n.suffix.is_empty());
+        assert_eq!(n.prefix, "");
+        assert_eq!(n.suffix, "");
     }
 
     #[test]
     fn whitespace_only_prompt_gives_empty_needles() {
         let n = build_needles("   \n  ");
-        assert!(n.prefix.is_empty());
-        assert!(n.suffix.is_empty());
+        assert_eq!(n.prefix, "");
+        assert_eq!(n.suffix, "");
     }
 
     #[test]
     fn ascii_prompt_builds_needles() {
         let n = build_needles("What is Python?");
-        assert!(!n.suffix.is_empty());
-        assert!(!n.prefix.is_empty());
+        assert_ne!(n.suffix, "");
+        assert_ne!(n.prefix, "");
     }
 
     #[test]
